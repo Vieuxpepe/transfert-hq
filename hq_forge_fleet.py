@@ -902,7 +902,9 @@ def _local_view() -> dict:
     global _local_status
     now = time.monotonic()
     cached = _local_status
-    if cached is None or now - cached[0] > 3.0:
+    # Long enough to cover the devices poll (6 s) and the bridge's own offline verdict (8 s):
+    # a shorter memo re-probed a closed Forge on every poll.
+    if cached is None or now - cached[0] > 8.0:
         try:
             status = forge.status()
         except Exception:
@@ -1236,7 +1238,7 @@ def _batch_state(batch: dict) -> str:
     done = states.count("completed")
     if done == len(states):
         return "completed"
-    if batch.get("cancelled") and done == 0:
+    if (batch.get("cancelled") or states.count("cancelled") == len(states)) and done == 0:
         return "cancelled"
     if done:
         return "partial"
@@ -1296,6 +1298,7 @@ def _batch_public(batch: dict) -> dict:
     return {
         "batch_id": batch["id"], "state": _batch_state(batch), "created": batch["created"], "updated": batch.get("updated"),
         "count": len(batch["tasks"]), "seed_mode": batch["seed_mode"], "cancelled": bool(batch.get("cancelled")),
+        "paused": bool(batch.get("paused")),
         "workers": list(per.values()), "counts": counts, "tasks": tasks, "settings": batch["settings"],
         "retryable": retryable, "retry_uncertain": retry_uncertain, "retry_of": batch.get("retry_of"),
         "sweep": batch.get("sweep"),
@@ -1454,6 +1457,35 @@ def resolve_task(batch_id: str, task_id: str, action) -> tuple[int, dict]:
     return 200, {"batch": snapshot}
 
 
+def cancel_task(batch_id: str, task_id: str) -> tuple[int, dict]:
+    """One image of a batch, not the whole batch. A queued image is dropped before it
+    reaches a device; one already sent gets a deferred cancellation, because Forge and
+    the device are never interrupted. Nothing is ever un-stored."""
+    if not BATCH_RE.fullmatch(batch_id or "") or not isinstance(task_id, str) or not task_id.startswith("tk-") or len(task_id) > 40:
+        return 404, {"error": "Introuvable"}
+    with _LOCK:
+        batch = _find_batch(batch_id)
+        task = next((t for t in (batch or {}).get("tasks", []) if t.get("id") == task_id), None)
+        if task is None:
+            return 404, {"error": "Introuvable"}
+        state = task.get("state")
+        if state == "queued":
+            task["state"] = "cancelled"
+            task["message"] = MESSAGES["cancelled"]
+            task["finished_at"] = _now_iso()
+            task.setdefault("error", "")
+        elif state in ("dispatched", "running", "saving") and not task.get("cancel_deferred"):
+            task["cancel_deferred"] = True
+            task["message"] = MESSAGES["cancel_deferred"]
+        elif not task.get("cancel_deferred"):
+            return 409, {"error": "Cette image est d\u00e9j\u00e0 termin\u00e9e.", "code": "not_cancellable"}
+        task["updated"] = _now_iso()
+        batch["updated"] = task["updated"]
+        _save_batches()
+        snapshot = _batch_public(batch)
+    return 200, {"batch": snapshot}
+
+
 def retry_batch(batch_id: str, key: str, only=None) -> tuple[int, dict]:
     """A new batch for the failed and uncertain images of a finished batch, with
     their seeds and settings. Uncertain images may still arrive late from their
@@ -1578,6 +1610,36 @@ def cancel_batch(batch_id: str) -> tuple[int, dict]:
         return 200, {"dropped": dropped, "deferred": deferred, "batch": _batch_public(batch)}
 
 
+def pause_batch(batch_id: str) -> tuple[int, dict]:
+    """Stop dispatching new images of a running batch. Queued tasks stay queued, the
+    current image finishes on its device, and nothing at Forge is interrupted."""
+    if not BATCH_RE.fullmatch(batch_id or ""):
+        return 404, {"error": "Introuvable"}
+    with _LOCK:
+        batch = _find_batch(batch_id)
+        if batch is None:
+            return 404, {"error": "Introuvable"}
+        if not batch.get("paused"):
+            batch["paused"] = True
+            batch["updated"] = _now_iso()
+            _save_batches()
+        return 200, {"batch": _batch_public(batch)}
+
+
+def resume_batch(batch_id: str) -> tuple[int, dict]:
+    if not BATCH_RE.fullmatch(batch_id or ""):
+        return 404, {"error": "Introuvable"}
+    with _LOCK:
+        batch = _find_batch(batch_id)
+        if batch is None:
+            return 404, {"error": "Introuvable"}
+        if batch.get("paused"):
+            batch.pop("paused", None)
+            batch["updated"] = _now_iso()
+            _save_batches()
+        return 200, {"batch": _batch_public(batch)}
+
+
 def _sweep() -> None:
     """Expire leases. Expired dispatched tasks become uncertain; they are never re-queued."""
     now = _clock()
@@ -1598,7 +1660,9 @@ def _sweep() -> None:
 
 def _next_task(worker_id: str) -> tuple[dict, dict] | None:
     for batch in _batches["batches"]:
-        if batch.get("cancelled") or worker_id not in batch["workers"]:
+        # A paused batch keeps its queued images and its seeds: nothing new is dispatched
+        # until the owner resumes it. In-flight work is never interrupted.
+        if batch.get("cancelled") or batch.get("paused") or worker_id not in batch["workers"]:
             continue
         for task in batch["tasks"]:
             if task["state"] == "queued":
@@ -1910,11 +1974,18 @@ def serve_post(raw: str, data: dict, key: str) -> tuple[int, dict] | None:
     if raw == "/api/forge/batches":
         return create_batch(data, key)
     prefix = "/api/forge/batches/"
+    if raw.startswith(prefix) and raw.endswith("/cancel") and "/tasks/" in raw:
+        batch_id, _, rest = raw[len(prefix):-len("/cancel")].partition("/tasks/")
+        return cancel_task(batch_id, rest)
     if raw.startswith(prefix) and raw.endswith("/cancel"):
         return cancel_batch(raw[len(prefix):-len("/cancel")])
     if raw.startswith(prefix) and raw.endswith("/retry"):
         only = data.get("tasks") if isinstance(data, dict) and isinstance(data.get("tasks"), list) else None
         return retry_batch(raw[len(prefix):-len("/retry")], key, [t for t in only if isinstance(t, str)][:64] if only else None)
+    if raw.startswith(prefix) and raw.endswith("/pause"):
+        return pause_batch(raw[len(prefix):-len("/pause")])
+    if raw.startswith(prefix) and raw.endswith("/resume"):
+        return resume_batch(raw[len(prefix):-len("/resume")])
     if raw.startswith(prefix) and raw.endswith("/resolve") and "/tasks/" in raw:
         batch_id, _, rest = raw[len(prefix):-len("/resolve")].partition("/tasks/")
         return resolve_task(batch_id, rest, data.get("action") if isinstance(data, dict) else None)

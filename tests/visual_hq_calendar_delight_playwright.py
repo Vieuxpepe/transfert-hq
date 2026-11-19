@@ -61,6 +61,290 @@ def events_on(page, base, day):
     return {item["title"]: item for item in data.get("items") or []}
 
 
+ERGO_JS = r"""
+() => {
+  const out = { hits: [], overlaps: [], clipped: [], off: [], small: [], doc: null, count: 0 };
+  const app = document.getElementById('hq-cal-app');
+  const sheet = [...document.querySelectorAll('.hq-sheet')].find((s) => !s.hidden && s.getBoundingClientRect().width > 0);
+  const scope = sheet ? [sheet] : [app, document.getElementById('btn-search-bar')].filter(Boolean);
+  const label = (el) => (el.tagName + '.' + (typeof el.className === 'string' ? el.className.trim().split(/\s+/).slice(0, 2).join('.') : '') + ' "' + (el.getAttribute('aria-label') || el.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 30) + '"');
+  const sr = (el) => { const r = el.getBoundingClientRect(), c = getComputedStyle(el); return r.width <= 1 || r.height <= 1 || (c.clip && c.clip !== 'auto') || (c.clipPath && c.clipPath !== 'none'); };
+  const seen = (el) => {
+    if (!el || el.disabled) return false;
+    const c = getComputedStyle(el);
+    if (c.visibility === 'hidden' || c.display === 'none' || c.pointerEvents === 'none' || c.opacity === '0') return false;
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0 && r.right > 0 && r.left < innerWidth;
+  };
+  const list = [];
+  const isCtl = 'button, input, select, textarea, a[href], [role=button], [tabindex]:not([tabindex="-1"])';
+  for (const s of scope) {
+    if (s.matches(isCtl) && seen(s) && !s.classList.contains('hq-cal-event')) list.push(s);
+    for (const el of s.querySelectorAll(isCtl)) if (seen(el) && !el.classList.contains('hq-cal-event')) list.push(el);  // event blocks are time-proportional overlays, not discrete targets
+  }
+  out.count = list.length;
+  for (const el of list) {
+    const r = el.getBoundingClientRect();
+    if (r.width < 43.5 || r.height < 43.5) out.hits.push([label(el), Math.round(r.width), Math.round(r.height)]);
+    if (r.left < -1 || r.right > innerWidth + 1) out.off.push([label(el), Math.round(r.left), Math.round(r.right)]);
+  }
+  for (let i = 0; i < list.length; i++) for (let j = i + 1; j < list.length; j++) {
+    const a = list[i], b = list[j];
+    if (a.parentElement !== b.parentElement || a.contains(b) || b.contains(a)) continue;
+    const A = a.getBoundingClientRect(), B = b.getBoundingClientRect();
+    const ox = Math.min(A.right, B.right) - Math.max(A.left, B.left);
+    const oy = Math.min(A.bottom, B.bottom) - Math.max(A.top, B.top);
+    if (ox > 1 && oy > 1) out.overlaps.push([label(a), label(b), Math.round(ox), Math.round(oy)]);
+  }
+  for (const s of scope) for (const el of s.querySelectorAll('*')) {
+    const c = getComputedStyle(el), r = el.getBoundingClientRect();
+    if (!r.width || !r.height || sr(el)) continue;
+    const own = [...el.childNodes].filter((n) => n.nodeType === 3).map((n) => n.textContent.trim()).join(' ').trim();
+    if (own) { const px = parseFloat(c.fontSize); if (px > 0 && px < 12) out.small.push([label(el), own.slice(0, 24), px]); }
+    if (!el.childElementCount && (el.textContent || '').trim() && c.overflow !== 'visible') {
+      const cx = el.scrollWidth > el.clientWidth + 1, cy = el.scrollHeight > el.clientHeight + 1;
+      const nw = c.whiteSpace === 'nowrap' || c.whiteSpace === 'pre';
+      if ((cx && nw && c.textOverflow !== 'ellipsis') || cy) out.clipped.push([label(el), el.textContent.trim().slice(0, 30)]);
+    }
+  }
+  if (document.documentElement.scrollWidth > innerWidth + 1) out.doc = [document.documentElement.scrollWidth, innerWidth];
+  return out;
+}
+"""
+
+FOCUS_JS = r"""
+() => {
+  const app = document.getElementById('hq-cal-app');
+  const sheet = [...document.querySelectorAll('.hq-sheet')].find((s) => !s.hidden && s.getBoundingClientRect().width > 0);
+  const scope = sheet ? [sheet] : [app, document.getElementById('btn-search-bar')].filter(Boolean);
+  const list = [];
+  const focusable = 'button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"]), .hq-cal-slot';
+  const add = (el) => {
+    const c = getComputedStyle(el), r = el.getBoundingClientRect();
+    if (c.visibility === 'hidden' || c.display === 'none' || r.width === 0 || r.height === 0) return;
+    if (!list.includes(el)) list.push(el);
+  };
+  for (const s of scope) {
+    if (s.matches(focusable)) add(s);
+    for (const el of s.querySelectorAll(focusable)) add(el);
+  }
+  const fails = [];
+  for (const el of list) {
+    if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+    const b = getComputedStyle(el);
+    const base = [b.outlineStyle, b.outlineWidth, b.outlineColor, b.boxShadow, b.borderColor, b.backgroundColor].join('|');
+    el.focus({ preventScroll: true });
+    if (document.activeElement !== el) continue;
+    const a = getComputedStyle(el);
+    const on = [a.outlineStyle, a.outlineWidth, a.outlineColor, a.boxShadow, a.borderColor, a.backgroundColor].join('|');
+    const ring = a.outlineStyle !== 'none' && parseFloat(a.outlineWidth) >= 1;
+    const other = a.boxShadow !== b.boxShadow || a.borderColor !== b.borderColor || a.backgroundColor !== b.backgroundColor;
+    if (!(ring || other) || on === base) fails.push(el.tagName + '.' + (typeof el.className === 'string' ? el.className.trim().split(/\s+/).slice(0, 2).join('.') : '') + ' "' + (el.getAttribute('aria-label') || el.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 24) + '"');
+  }
+  return { count: list.length, fails };
+}
+"""
+
+
+def ergonomics(page, viewport, view):
+    data = page.evaluate(ERGO_JS)
+    check(not data["hits"] and not data["overlaps"],
+          f"{viewport} {view}: every discrete control is at least 44x44 with no overlapping neighbors {data['hits'][:4]} {data['overlaps'][:3]}")
+    check(not data["clipped"] and not data["small"] and not data["off"] and not data["doc"],
+          f"{viewport} {view}: no clipped text, no text under 12px, no horizontal overflow, no control outside the viewport {data['clipped'][:3]} {data['small'][:3]} {data['off'][:3]} {data['doc']}")
+
+
+def ergonomics_focus(page, viewport, view):
+    page.keyboard.press("Tab")
+    data = page.evaluate(FOCUS_JS)
+    check(not data["fails"],
+          f"{viewport} {view}: a visible focus indicator paints on all {data['count']} keyboard-reachable controls {data['fails'][:4]}")
+
+
+def ergonomics_short_events(page, viewport, touch):
+    titles = ("Ergonomie avant", "Ergonomie 30 min", "Ergonomie après",
+              "Ergonomie 15 min", "Ergonomie 15 voisine", "Ergonomie 15 après")
+    for title in titles:
+        page.evaluate("""(title) => {
+            const el = [...document.querySelectorAll('.hq-cal-event[data-id]')].find((e) => (e.getAttribute('aria-label') || '').includes(title));
+            if (el) el.scrollIntoView({ block: 'center' });
+        }""", title)
+        page.wait_for_timeout(250)
+        rect = page.evaluate("""(title) => {
+            const el = [...document.querySelectorAll('.hq-cal-event[data-id]')].find((e) => (e.getAttribute('aria-label') || '').includes(title));
+            if (!el) return null;
+            const face = el.querySelector('.hq-cal-face') || el;
+            const f = face.getBoundingClientRect(), h = el.getBoundingClientRect();
+            const scroll = document.querySelector('.hq-cal-scroll')?.getBoundingClientRect();
+            const strip = document.querySelector('.hq-cal-weekstrip')?.getBoundingClientRect();
+            return { x: f.left + f.width / 2, y: f.top + f.height / 2, fw: f.width, fh: f.height,
+                     hw: h.width, hh: h.height, top: h.top, bottom: h.bottom,
+                     st: scroll ? scroll.top : 0, sb: scroll ? scroll.bottom : 0,
+                     strip: strip ? strip.bottom : 0 };
+        }""", title)
+        if not rect:
+            check(False, f"{viewport}: {title} is in the day grid")
+            continue
+        check(rect["hh"] >= 43.5 and rect["hw"] >= 43.5,
+              f"{viewport}: {title}: a 44 px target around a {rect['fw']:.0f}x{rect['fh']:.0f} block ({rect['hw']:.0f}x{rect['hh']:.0f})")
+        check(8 <= rect["fh"] < 44,
+              f"{viewport}: {title}: the visible block keeps its real time height ({rect['fh']:.0f} px)")
+        check(rect["top"] >= rect["st"] - 1 and rect["bottom"] <= rect["sb"] + 1 and rect["top"] >= rect["strip"] - 1,
+              f"{viewport}: {title}: the halo stays inside the grid, clear of the week strip")
+        if touch:
+            page.touchscreen.tap(rect["x"], rect["y"])
+        else:
+            page.mouse.click(rect["x"], rect["y"])
+        opened = ""
+        end = time.monotonic() + 2.0
+        while time.monotonic() < end:
+            opened = page.evaluate("""() => {
+                const s = [...document.querySelectorAll('.hq-sheet')].find((s) => !s.hidden && s.getBoundingClientRect().width > 0);
+                return s ? ((s.querySelector('#hq-cal-detail-title') || {}).textContent || '') : '';
+            }""")
+            if opened == title:
+                break
+            page.wait_for_timeout(100)
+        check(opened == title, f"{viewport}: tapping {title} selects it, not a neighbour ({opened!r})")
+        page.keyboard.press("Escape")
+        until(page, "() => ![...document.querySelectorAll('.hq-sheet')].some((s) => !s.hidden && s.getBoundingClientRect().width > 0)")
+        page.wait_for_timeout(550)  # let the detail-to-block morph finish before the next tap
+    strip = page.locator('.hq-cal-weekstrip button[aria-pressed="true"]')
+    if strip.count():
+        strip.click()
+        page.wait_for_timeout(250)
+        check(page.evaluate("() => ![...document.querySelectorAll('.hq-sheet')].some((s) => !s.hidden && s.getBoundingClientRect().width > 0)"),
+              f"{viewport}: the week strip keeps its own target over a short event")
+
+
+def empty_slot_under_short_halo(page, viewport, touch_mode, today):
+    """Tap the rim of an empty hour slot that lies under a short event's transparent halo."""
+    page.evaluate("""() => {
+        const el = [...document.querySelectorAll('.hq-cal-event.is-halo[data-id]')].find((e) =>
+            (e.getAttribute('aria-label') || '').includes('Ergonomie 15 après'));
+        if (!el) return;
+        const col = el.closest('[data-col-day]');
+        const slot = col && [...col.querySelectorAll('.hq-cal-slot')].find((s) => {
+            const r = s.getBoundingClientRect();
+            const halo = el.getBoundingClientRect();
+            return r.top > halo.top + 1 && r.top < halo.bottom - 2;
+        });
+        if (slot) slot.scrollIntoView({ block: 'center' });
+    }""")
+    page.wait_for_timeout(250)
+    geom = page.evaluate("""() => {
+        const el = [...document.querySelectorAll('.hq-cal-event.is-halo[data-id]')].find((e) =>
+            (e.getAttribute('aria-label') || '').includes('Ergonomie 15 après'));
+        if (!el) return null;
+        const halo = el.getBoundingClientRect();
+        const col = el.closest('[data-col-day]');
+        const slot = col && [...col.querySelectorAll('.hq-cal-slot')].find((s) => {
+            const r = s.getBoundingClientRect();
+            return r.top > halo.top + 1 && r.top < halo.bottom - 2;
+        });
+        if (!slot) return null;
+        const r = slot.getBoundingClientRect();
+        const x = halo.left + halo.width / 2;
+        const y = r.top + 3; // the slot's own top rim, still inside the event halo
+        const hit = document.elementFromPoint(x, y);
+        const face = el.querySelector('.hq-cal-face')?.getBoundingClientRect();
+        return { x, y, hour: slot.dataset.hour, selected: hit === slot,
+                 hit: hit ? (hit.tagName + '.' + (typeof hit.className === 'string' ? hit.className : '')) : '',
+                 faceBottom: face ? face.bottom : null, slotTop: r.top };
+    }""")
+    check(bool(geom and geom["selected"]),
+          f"{viewport}: an empty slot rim under the short-event halo stays an empty-slot target {geom}")
+    if not geom:
+        return
+    if touch_mode:
+        page.touchscreen.tap(geom["x"], geom["y"])
+    else:
+        page.mouse.click(geom["x"], geom["y"])
+    check(until(page, "() => document.getElementById('hq-cal-editor-title')?.textContent === 'Nouvel événement'"),
+          f"{viewport}: tapping that rim starts a new event")
+    start = page.locator("#cal-start").input_value()
+    check(start.startswith(today) and f"T{geom['hour'].zfill(2)}:00" in start,
+          f"{viewport}: the rim creates at its own hour ({start!r})")
+    page.keyboard.press("Escape")
+    until(page, "() => ![...document.querySelectorAll('.hq-sheet')].some((s) => !s.hidden && s.getBoundingClientRect().width > 0)")
+
+
+def drag_short_blocks(page, base, viewport, touch_mode, today):
+    """Drag every seeded 15/30-minute block by its visible face. The face is now the press target,
+    including where a former halo used to paint over it. Each move is checked on the server and then
+    put back."""
+    titles = ("Ergonomie avant", "Ergonomie 30 min", "Ergonomie après",
+              "Ergonomie 15 min", "Ergonomie 15 voisine", "Ergonomie 15 après")
+    hour_px = page.evaluate("() => document.querySelector('.hq-cal-day .hq-cal-slot')?.getBoundingClientRect().height || 48")
+    step = max(6, hour_px / 4)  # one 15-minute snap
+    for index, title in enumerate(titles):
+        page.evaluate("""(title) => {
+            const el = [...document.querySelectorAll('.hq-cal-event[data-id]')].find((e) => (e.getAttribute('aria-label') || '').includes(title));
+            const scroll = document.querySelector('.hq-cal-scroll');
+            if (!el || !scroll) return;
+            const r = el.getBoundingClientRect(), s = scroll.getBoundingClientRect();
+            const top = r.top - s.top + scroll.scrollTop;
+            scroll.scrollTop = top - scroll.clientHeight / 2 + r.height / 2;
+        }""", title)
+        page.wait_for_timeout(300)
+        geom = page.evaluate("""(title) => {
+            const el = [...document.querySelectorAll('.hq-cal-event[data-id]')].find((e) => (e.getAttribute('aria-label') || '').includes(title));
+            if (!el) return null;
+            const face = el.querySelector('.hq-cal-face') || el;
+            const f = face.getBoundingClientRect();
+            const scroll = document.querySelector('.hq-cal-scroll')?.getBoundingClientRect();
+            const strip = document.querySelector('.hq-cal-weekstrip')?.getBoundingClientRect();
+            const x = f.left + Math.max(4, f.width * 0.12);
+            const y = f.top + f.height * 0.8;
+            const top = document.elementFromPoint(x, y)?.closest?.('.hq-cal-event[data-id]');
+            return { x, y, target: el.dataset.id, top: top?.dataset.id || '', inside: !!scroll && !!strip && y > Math.max(scroll.top, strip.bottom) && y < scroll.bottom - 1,
+                     scrollTop: document.querySelector('.hq-cal-scroll')?.scrollTop || 0,
+                     scroll: scroll ? [scroll.top, scroll.bottom] : null, strip: strip ? strip.bottom : null,
+                     face: [f.top, f.bottom], faceHeight: f.height };
+        }""", title)
+        check(bool(geom and geom["inside"]), f"{viewport}: {title} is reachable in the grid for a drag {geom}")
+        check(bool(geom["top"] and geom["top"] == geom["target"]),
+              f"{viewport}: the press point on {title} belongs to its visible face, not a halo")
+        before = events_on(page, base, today)
+        if title not in before:
+            check(False, f"{viewport}: {title} is on the server before its drag")
+        if touch_mode:
+            touch(page, "pointerdown", geom["x"], geom["y"], 41)
+            page.wait_for_timeout(470)  # the long press turns the press into a drag
+            for dy in (step / 2, step):
+                touch(page, "pointermove", geom["x"], geom["y"] + dy, 41)
+                page.wait_for_timeout(40)
+            touch(page, "pointerup", geom["x"], geom["y"] + step, 41)
+        else:
+            page.mouse.move(geom["x"], geom["y"])
+            page.mouse.down()
+            page.mouse.move(geom["x"], geom["y"] + step, steps=6)
+            page.mouse.up()
+        moved_ok, moved = server_until(page, base, today, title,
+                                       lambda e: e and (e["start"] != before[title]["start"] or e["end"] != before[title]["end"]))
+        check(moved_ok, f"{viewport}: dragging {title} moves that block, not its halo neighbour ({moved and moved['start']})")
+        after = events_on(page, base, today)
+        disturbed = [name for name, item in before.items() if name != title
+                     and (after.get(name, {}).get("start") != item["start"] or after.get(name, {}).get("end") != item["end"])]
+        check(not disturbed, f"{viewport}: dragging {title} leaves every neighbour where it was {disturbed[:3]}")
+        until(page, "() => !document.querySelector('#hq-cal-app').dataset.busy")
+        current = after.get(title)
+        if not current:
+            check(False, f"{viewport}: {title} is still on the server after its drag")
+        restored = dict(current)
+        restored["start"] = before[title]["start"]
+        restored["end"] = before[title]["end"]
+        r = page.context.request.post(base + "/api/calendar", headers={"origin": base, "content-type": "application/json"},
+                                      data=json.dumps({"action": "save", "expected_rev": current["rev"], "event": restored}))
+        check(r.ok, f"{viewport}: {title} can be put back after the drag")
+        back_ok, _ = server_until(page, base, today, title,
+                                  lambda e: e and e["start"] == before[title]["start"] and e["end"] == before[title]["end"])
+        check(back_ok, f"{viewport}: {title} is back at its original time")
+        page.evaluate("() => window.hqCalendarShow()")
+        until(page, "() => !document.querySelector('#hq-cal-app').dataset.busy && !!document.querySelector('.hq-cal-stage')")
+        page.wait_for_timeout(500)  # the refreshed stage may settle and reset its scroll
+
+
 def server_until(page, base, day, title, ok, tries=40):
     item = None
     for _ in range(tries):
@@ -238,7 +522,8 @@ def main() -> None:
                     break
                 page.wait_for_timeout(100)
             y = box["y"] + min(160, box["height"] / 2)
-            x0 = box["x"] + box["width"] - 40
+            # Keep clear of the event's move grip: this gesture is a day swipe, not a drag.
+            x0 = box["x"] + box["width"] - 84
             touch(page, "pointerdown", x0, y)
             for dx in (12, 30, 50, 70):
                 touch(page, "pointermove", x0 - dx, y)
@@ -359,6 +644,74 @@ def main() -> None:
             h1 = page.evaluate("() => document.querySelector('.hq-cal-day .hq-cal-slot').getBoundingClientRect().height")
             check(h1 > h0 * 1.3, f"Ctrl + wheel makes the hours taller ({h0:.0f} → {h1:.0f} px)")
             ctx.close()
+
+            # Physical ergonomics at both target viewports: every discrete control is thumb-sized,
+            # legible, inside the viewport, and clearly focused; the jump sheet is checked too.
+            ergo_errors: list[str] = []
+            ergo_seeded = False
+            for ew, eh in ((390, 844), (1280, 800)):
+                ectx = browser.new_context(viewport={"width": ew, "height": eh}, bypass_csp=True,
+                                           has_touch=ew < 900, is_mobile=ew < 900)
+                epage = ectx.new_page()
+                epage.on("pageerror", lambda e: ergo_errors.append(str(e)))
+                elogin = ectx.request.post(base + "/login", headers={"Origin": base},
+                                           form={"pin": info["admin_pin"]}, max_redirects=0)
+                check(elogin.status == 303, f"{ew}x{eh}: the fixture admin session is ready")
+                if not ergo_seeded:
+                    for ev in ({"title": "Ergonomie 1 h", "all_day": False, "category": "hq", "start": f"{today}T10:00", "end": f"{today}T11:00"},
+                               {"title": "Ergonomie avant", "all_day": False, "category": "study", "start": f"{today}T12:30", "end": f"{today}T13:00"},
+                               {"title": "Ergonomie 30 min", "all_day": False, "category": "study", "start": f"{today}T13:00", "end": f"{today}T13:30"},
+                               {"title": "Ergonomie après", "all_day": False, "category": "study", "start": f"{today}T13:30", "end": f"{today}T14:00"},
+                               {"title": "Ergonomie 15 min", "all_day": False, "category": "hq", "start": f"{today}T15:00", "end": f"{today}T15:15"},
+                               {"title": "Ergonomie 15 voisine", "all_day": False, "category": "study", "start": f"{today}T15:15", "end": f"{today}T15:30"},
+                               {"title": "Ergonomie 15 après", "all_day": False, "category": "study", "start": f"{today}T15:30", "end": f"{today}T16:00"},
+                               {"title": "Ergonomie journée", "all_day": True, "category": "hq", "start": today.isoformat(), "end": (today + timedelta(days=1)).isoformat()}):
+                        check(save(epage, base, ev) is not None, f"the ergonomics fixture saved {ev['title']}")
+                    ergo_seeded = True
+                epage.goto(base + "/#calendrier", wait_until="domcontentloaded")
+                epage.locator("body.session-admin").wait_for(timeout=20000)
+                epage.add_style_tag(content="#hq-debug-panel{display:none!important}")
+                if epage.locator('.bottom-nav [data-nav="calendrier"]').is_visible():
+                    epage.locator('.bottom-nav [data-nav="calendrier"]').dispatch_event("click")
+                else:
+                    epage.evaluate("() => setView('calendrier')")
+                until(epage, "() => !!document.querySelector('#hq-cal-app .hq-cal-bar')")
+                epage.locator('#hq-cal-app .hq-cal-view[data-view="day"]').click()
+                epage.wait_for_timeout(700)
+                epage.evaluate("(d) => window.hqCalendarOpenDay(d)", today.isoformat())
+                epage.wait_for_timeout(700)
+                epage.fill('#hq-cal-quick-input', 'Ergonomie')
+                epage.wait_for_timeout(200)
+                ergonomics(epage, f"{ew}x{eh}", "day")
+                ergonomics_focus(epage, f"{ew}x{eh}", "day")
+                epage.fill('#hq-cal-quick-input', '')
+                epage.wait_for_timeout(200)
+                ergonomics_short_events(epage, f"{ew}x{eh}", ew < 900)
+                empty_slot_under_short_halo(epage, f"{ew}x{eh}", ew < 900, today.isoformat())
+                drag_short_blocks(epage, base, f"{ew}x{eh}", ew < 900, today)
+                epage.locator('#hq-cal-app .hq-cal-view[data-view="month"]').click()
+                epage.wait_for_timeout(700)
+                ergonomics(epage, f"{ew}x{eh}", "month")
+                ergonomics_focus(epage, f"{ew}x{eh}", "month")
+                if ew >= 900:
+                    epage.locator('#hq-cal-app .hq-cal-view[data-view="week"]').click()
+                    epage.wait_for_timeout(700)
+                    ergonomics(epage, f"{ew}x{eh}", "week")
+                    head = epage.locator(".hq-cal-weekhead button").first
+                    if head.count():
+                        head.click()
+                        epage.wait_for_timeout(250)
+                        check(not epage.evaluate("() => [...document.querySelectorAll('.hq-sheet')].some((s) => !s.hidden && s.getBoundingClientRect().width > 0)"),
+                              f"{ew}x{eh}: the sticky week head keeps its own target over a short event")
+                epage.locator('.hq-cal-date-trigger').first.click()
+                check(until(epage, "() => { const i = document.getElementById('hq-cal-jump-input'); return !!i && i.offsetParent !== null; }"),
+                      f"{ew}x{eh}: the date jump sheet opens")
+                epage.wait_for_timeout(600)  # the sheet morphs in; measure its final geometry
+                ergonomics(epage, f"{ew}x{eh}", "jump")
+                ergonomics_focus(epage, f"{ew}x{eh}", "jump")
+                epage.keyboard.press("Escape")
+                ectx.close()
+            check(not ergo_errors, f"the ergonomics viewports raised no page errors {ergo_errors[:3]}")
             browser.close()
     finally:
         proc.stdin.close()

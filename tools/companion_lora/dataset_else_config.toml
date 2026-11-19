@@ -1,0 +1,19 @@
+[general]
+enable_bucket = true
+bucket_no_upscale = true
+keep_tokens = 2
+shuffle_caption = true
+caption_tag_dropout_rate = 0.05
+caption_extension = ".txt"
+min_bucket_reso = 512
+max_bucket_reso = 1536
+
+[[datasets]]
+resolution = 1024
+batch_size = 1
+
+  [[datasets.subsets]]
+  image_dir = "C:/Transfert/.hq-ai/else_lora_dataset/10_else"
+  class_tokens = "else_char"
+  num_repeats = 3
+  flip_aug = true

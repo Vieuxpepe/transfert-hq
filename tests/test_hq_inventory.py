@@ -185,7 +185,7 @@ class WiringTests(unittest.TestCase):
     def test_bridge_routes_and_assets(self):
         src = (Path(__file__).resolve().parents[1] / "iphone_bridge.py").read_text(encoding="utf-8")
         self.assertEqual(src.count('raw == "/api/inventory"'), 2)
-        self.assertIn('<script src="/assets/hq-inventory.js"></script>', src)
+        self.assertRegex(src, r'<script src="/assets/hq-inventory\.js"( defer)?></script>')
         self.assertIn('data-nav="inventaire"', src)
         self.assertIn('data-panel="inventaire"', src)
 

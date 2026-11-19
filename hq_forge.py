@@ -8,9 +8,11 @@ global interrupt.
 
 from __future__ import annotations
 
+import http.client
 import json
 import math
 import re
+import socket
 import threading
 import time
 import urllib.error
@@ -22,7 +24,20 @@ PROBE_TIMEOUT_SEC = 2.5
 MAX_RESPONSE_BYTES = 1024 * 1024
 MAX_SUBMIT_BYTES = 32 * 1024 * 1024
 MAX_TXT2IMG_BODY = 8 * 1024 * 1024  # ControlNet reference images in alwayson_scripts
-CATALOG_TTL_SEC = 60.0
+CATALOG_TTL_SEC = 300.0
+# A closed loopback port is refused by Windows after about two seconds, so the studio's opening
+# probes (status, catalogue, devices) used to cost two seconds each. The verdict is remembered
+# for a few seconds instead, and a connect is given a third of a second: a running Forge accepts
+# at once even while the GPU is busy, so a short connect never mistakes a slow render for an
+# offline one. `fresh=True` (the "start Forge" poll) bypasses both.
+OFFLINE_TTL_SEC = 8.0
+CONNECT_TIMEOUT_SEC = 0.6
+
+# Forge's accept queue is finite (Windows hands back a refusal once it is full), so a burst of
+# concurrent probes must not open more sockets at once than it can absorb. The gate is held only
+# around the connect itself — a loopback handshake is a millisecond — never across a request.
+_CONNECT_GATE = threading.BoundedSemaphore(4)
+OFFLINE_CODES = ("forge_offline", "forge_timeout")
 MAX_CACHE_ENTRIES = 8
 MAX_LIST = 64
 SUBMIT_PATH = "/sdapi/v1/txt2img"
@@ -69,6 +84,10 @@ _probe_timeout = PROBE_TIMEOUT_SEC
 _catalog_ttl = CATALOG_TTL_SEC
 _catalog_cache: dict[str, tuple[float, dict]] = {}
 _lock = threading.Lock()
+# Plain module state on purpose: it is a hint, not a resource, and taking _lock inside a probe
+# would serialise status against the catalogue it is called next to.
+_offline_code = ""
+_offline_until = 0.0
 _LOOPBACK_ORIGIN = re.compile(r"^http://127\.0\.0\.1:([0-9]{1,5})$")
 
 
@@ -80,6 +99,33 @@ class _Probe(Exception):
         self.elapsed_ms = elapsed_ms if isinstance(elapsed_ms, int) and 0 <= elapsed_ms <= 3_600_000 else None
 
 
+class _FastConnectConnection(http.client.HTTPConnection):
+    """Plain HTTP connection that gives up quickly when nothing is listening.
+
+    Windows takes about two seconds to refuse a closed loopback port, which is what made every
+    studio probe cost two seconds while Forge was off. Only the connect is short: the read timeout
+    stays the caller's, so a slow render never looks like an unreachable Forge.
+    """
+
+    def __init__(self, host: str, *, connect_timeout: float = CONNECT_TIMEOUT_SEC, **kwargs) -> None:
+        self._connect_timeout = connect_timeout
+        super().__init__(host, **kwargs)
+
+    def connect(self) -> None:
+        try:
+            with _CONNECT_GATE:
+                self.sock = socket.create_connection((self.host, self.port), self._connect_timeout, self.source_address)
+        except OSError:
+            # No byte was exchanged: from the studio's side, Forge is simply not running.
+            raise ConnectionRefusedError from None
+        self.sock.settimeout(self.timeout)
+
+
+class _FastConnectHandler(urllib.request.HTTPHandler):
+    def http_open(self, req):
+        return self.do_open(_FastConnectConnection, req, connect_timeout=CONNECT_TIMEOUT_SEC)
+
+
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
@@ -87,7 +133,7 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 def _opener() -> urllib.request.OpenerDirector:
     # An empty proxy map ignores HTTP_PROXY, HTTPS_PROXY, and ALL_PROXY.
-    return urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect(), _FastConnectHandler())
 
 
 def _require_json(header: str | None) -> None:
@@ -98,6 +144,7 @@ def _require_json(header: str | None) -> None:
 
 def reset_for_tests() -> None:
     global _test_transport, _upstream, _probe_timeout, _catalog_ttl
+    _forget_offline()
     _test_transport = None
     _upstream = UPSTREAM_ORIGIN
     _probe_timeout = PROBE_TIMEOUT_SEC
@@ -155,6 +202,25 @@ def set_catalog_ttl_for_tests(seconds: float | None) -> None:
 def cache_entry_count_for_tests() -> int:
     with _lock:
         return len(_catalog_cache)
+
+
+def _cached_offline() -> str | None:
+    """The last "Forge is not there" answer, while it is still worth believing."""
+    if _offline_code and time.monotonic() < _offline_until:
+        return _offline_code
+    return None
+
+
+def _remember_offline(code: str) -> None:
+    global _offline_code, _offline_until
+    _offline_code = code if code in OFFLINE_CODES else "forge_offline"
+    _offline_until = time.monotonic() + OFFLINE_TTL_SEC
+
+
+def _forget_offline() -> None:
+    global _offline_code, _offline_until
+    _offline_code = ""
+    _offline_until = 0.0
 
 
 def _resolve(transport):
@@ -352,17 +418,6 @@ def _upscaler_row(item) -> dict | None:
     return {"name": name}
 
 
-def _safe_upscalers(transport) -> list:
-    """Upscalers are optional. A missing list leaves Hires. fix unavailable."""
-    try:
-        rows = _rows(_records(_call(transport, "/sdapi/v1/upscalers")), _upscaler_row)
-    except _Probe:
-        return []
-    if not rows:
-        return []
-    return rows[:32]
-
-
 def _scheduler_row(item) -> dict | None:
     if not isinstance(item, dict):
         return None
@@ -386,17 +441,73 @@ def _rows(records, parser) -> list | None:
     return rows
 
 
-def status(*, transport=None) -> dict:
+def _fanout(calls):
+    """Issue independent upstream reads together.
+
+    A Forge that is busy rendering answers each GET behind its queue, so four serial probes cost
+    four waits where one would do. The caller re-raises in declaration order, which keeps the
+    error precedence identical to the serial version.
+    """
+    values: dict = {}
+    errors: dict = {}
+
+    def run(key, fn) -> None:
+        try:
+            values[key] = fn()
+        except BaseException as exc:  # noqa: BLE001 - the caller re-raises it, in order
+            errors[key] = exc
+
+    threads = [
+        threading.Thread(target=run, args=(key, fn), daemon=True, name=f"forge-probe-{key}")
+        for key, fn in calls
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    return values, errors
+
+
+def status(*, transport=None, fresh: bool = False) -> dict:
     transport = _resolve(transport)
+    cached_samplers = None
+    if not fresh:
+        cached = _cached_offline()
+        if cached is not None:
+            return _status_payload(cached)
+        key = _cache_key(transport)
+        now = time.monotonic()
+        with _lock:
+            hit = _catalog_cache.get(key)
+            if hit is not None and now - hit[0] < _catalog_ttl:
+                cached_samplers = hit[1].get("samplers")
+    probes = [
+        ("progress", lambda: _call(transport, "/sdapi/v1/progress", "?skip_current_image=true")),
+        ("pending", lambda: _call(transport, "/internal/pending-tasks")),
+        ("options", lambda: _call(transport, "/sdapi/v1/options")),
+    ]
+    if not cached_samplers:
+        probes.insert(0, ("samplers", lambda: _records(_call(transport, "/sdapi/v1/samplers"))))
+    values, errors = _fanout(probes)
+
+    def take(key):
+        failed = errors.get(key)
+        if failed is not None:
+            raise failed
+        return values[key]
+
     try:
-        samplers = _records(_call(transport, "/sdapi/v1/samplers"))
+        samplers = cached_samplers if cached_samplers else take("samplers")
         if samplers is None:
             raise _Probe("forge_error")
-        progress = _call(transport, "/sdapi/v1/progress", "?skip_current_image=true")
-        pending = _call(transport, "/internal/pending-tasks")
-        options = _call(transport, "/sdapi/v1/options")
+        progress = take("progress")
+        pending = take("pending")
+        options = take("options")
     except _Probe as exc:
+        if exc.code in OFFLINE_CODES:
+            _remember_offline(exc.code)
         return _status_payload(exc.code)
+    _forget_offline()
     if not isinstance(progress, dict) or not isinstance(pending, dict) or not isinstance(options, dict):
         return _status_payload("forge_error")
     state = progress.get("state")
@@ -425,18 +536,40 @@ def status(*, transport=None) -> dict:
 
 
 def _build_catalog(transport) -> dict:
+    # The four lists are independent: a busy Forge answers them in one queue wait, as status() does.
+    values, errors = _fanout([
+        ("models", lambda: _rows(_records(_call(transport, "/sdapi/v1/sd-models")), _model_row)),
+        ("samplers", lambda: _rows(_records(_call(transport, "/sdapi/v1/samplers")), _sampler_row)),
+        ("schedulers", lambda: _records(_call(transport, "/sdapi/v1/schedulers"))),
+        ("upscalers", lambda: _rows(_records(_call(transport, "/sdapi/v1/upscalers")), _upscaler_row)),
+    ])
+
+    def take(key):
+        failed = errors.get(key)
+        if failed is not None:
+            raise failed
+        return values[key]
+
     try:
-        models = _rows(_records(_call(transport, "/sdapi/v1/sd-models")), _model_row)
-        samplers = _rows(_records(_call(transport, "/sdapi/v1/samplers")), _sampler_row)
-        schedulers_raw = _records(_call(transport, "/sdapi/v1/schedulers"))
+        models = take("models")
+        samplers = take("samplers")
+        schedulers_raw = take("schedulers")
     except _Probe as exc:
+        if exc.code in OFFLINE_CODES:
+            _remember_offline(exc.code)
         return _catalog_payload(exc.code)
+    _forget_offline()
     if models is None or samplers is None or schedulers_raw is None:
         return _catalog_payload("forge_error")
     schedulers = _rows(schedulers_raw, _scheduler_row)
     if schedulers is None:
         return _catalog_payload("forge_error")
-    upscalers = _safe_upscalers(transport)
+    # Upscalers stay optional: a failed read only costs Hires. fix.
+    upscaler_failure = errors.get("upscalers")
+    if upscaler_failure is not None and not isinstance(upscaler_failure, _Probe):
+        raise upscaler_failure
+    upscaler_rows = values.get("upscalers")
+    upscalers = upscaler_rows[:32] if isinstance(upscaler_rows, list) else []
     if not models or not samplers or not schedulers:
         return _catalog_payload("catalog_empty", upscalers=upscalers)
     return _catalog_payload(
@@ -462,15 +595,20 @@ def _cache_sweep(now: float) -> None:
             _catalog_cache.pop(key, None)
 
 
-def catalog(*, transport=None) -> dict:
+def catalog(*, transport=None, fresh: bool = False) -> dict:
     transport = _resolve(transport)
+    if not fresh:
+        cached = _cached_offline()
+        if cached is not None:
+            return _catalog_payload(cached)
     key = _cache_key(transport)
     now = time.monotonic()
-    with _lock:
-        _cache_sweep(now)
-        hit = _catalog_cache.get(key)
-        if hit is not None and now - hit[0] < _catalog_ttl:
-            return json.loads(json.dumps(hit[1]))
+    if not fresh:
+        with _lock:
+            _cache_sweep(now)
+            hit = _catalog_cache.get(key)
+            if hit is not None and now - hit[0] < _catalog_ttl:
+                return json.loads(json.dumps(hit[1]))
     payload = _build_catalog(transport)
     if payload.get("forge") == "ready":
         with _lock:

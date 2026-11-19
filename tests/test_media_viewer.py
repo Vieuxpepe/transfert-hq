@@ -268,13 +268,13 @@ class MediaRouteTests(unittest.TestCase):
         expected = {".mp3": "audio/mpeg", ".m4a": "audio/mp4", ".aac": "audio/aac", ".wav": "audio/wav", ".flac": "audio/flac",
                     ".ogg": "audio/ogg", ".opus": "audio/ogg", ".mp4": "video/mp4", ".m4v": "video/mp4",
                     ".mov": "video/quicktime", ".webm": "video/webm",
-                    ".glb": "model/gltf-binary", ".stl": "model/stl"}
+                    ".glb": "model/gltf-binary", ".stl": "model/stl", ".obj": "model/obj", ".3mf": "model/3mf"}
         self.assertEqual(self.types, expected)
-        self.assertEqual(B.MEDIA_ATTACHMENT_EXTS, {".glb", ".stl"})
+        self.assertEqual(B.MEDIA_ATTACHMENT_EXTS, {".glb", ".stl", ".obj", ".3mf"})
         for ext, ctype in expected.items():
             status, headers, body = self.get(f"/media/Print/t{ext}")
             self.assertEqual((status, headers["content-type"], body), (200, ctype, b"x" * 10), ext)
-            disposition = "attachment;" if ext in (".glb", ".stl") else "inline;"
+            disposition = "attachment;" if ext in B.MEDIA_ATTACHMENT_EXTS else "inline;"
             self.assertTrue(headers["content-disposition"].startswith(disposition), ext)
 
     MODEL = "/media/Uni/3D/pi%C3%A8ce.glb"
@@ -406,13 +406,13 @@ class LecteurTabStaticTests(unittest.TestCase):
 
     def test_js_types_match_server(self):
         block = re.search(r"const HQ_MEDIA_TYPES = \{(.*?)\};", self.js, re.S).group(1)
-        js_types = dict(re.findall(r"(\w+): '([^']+)'", block))
+        js_types = dict(re.findall(r"'?(\w+)'?: '([^']+)'", block))
         self.assertEqual({"." + k: v for k, v in js_types.items()}, B.MEDIA_CONTENT_TYPES)
         self.assertIn("'mkv', 'avi'", self.js)
         self.assertIn("ne se lit pas dans un navigateur", self.js)
 
     def test_model_viewer_wiring(self):
-        self.assertIn('<script src="/assets/hq-model-view.js"></script>', self.html)
+        self.assertRegex(self.html, r'<script src="/assets/hq-model-view\.js"( defer)?></script>')
         self.assertIn('<canvas id="player-model-canvas"', self.html)
         self.assertIn('id="btn-player-fit">Recadrer</button>', self.html)
         self.assertIn(".player-model canvas{display:block;width:100%;height:min(62vh,520px);background:#edf5fa;border-radius:12px;touch-action:none", B.BASE_CSS)

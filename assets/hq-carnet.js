@@ -2583,16 +2583,17 @@
   }
 
   // Responsive library modes (capability-aware, no UA sniffing):
-  // - dock   : persistent collapsible sidebar. Any width >= 1100px, OR a desktop-usable width
-  //            (>= 1000px) whose primary input is a fine hover-capable pointer (a 1024x768
-  //            Windows browser is a desktop workspace, not a tablet).
-  // - drawer : 600–1099px touch/coarse (e.g. iPad portrait, even ~1024px) and narrow desktops.
+  // - dock   : persistent collapsible sidebar, only where the page keeps its full width
+  //            (DOCK_MIN). Below that the app reserves a right-hand lane for the floating
+  //            companions, and a docked library would squeeze the editor into clipped labels.
+  // - drawer : 600–1199px, opened on demand over the page.
   // - sheet  : phones (< 600px).
   const MQ_WIDE = "(min-width: 1100px)";
   const MQ_DESK = "(min-width: 1000px) and (hover: hover) and (pointer: fine)";
   const MQ_TABLET = "(min-width: 600px)";
+  const DOCK_MIN = 1200;
   function libMode() {
-    if (mq(MQ_WIDE) || mq(MQ_DESK)) return "dock";
+    if ((mq(MQ_WIDE) || mq(MQ_DESK)) && (global.innerWidth || 0) >= DOCK_MIN) return "dock";
     if (mq(MQ_TABLET)) return "drawer";
     return "sheet";
   }

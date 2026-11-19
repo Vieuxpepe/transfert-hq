@@ -42,7 +42,9 @@ class CarnetShellTests(unittest.TestCase):
         self.assertEqual(order, sorted(order))
 
     def test_assets_same_origin(self):
-        self.assertIn('<link rel="stylesheet" href="/assets/hq-carnet.css"/>', self.html)
+        # The carnet sheet is no longer fetched on every page: the lazy map loads it when the view opens.
+        self.assertNotIn('<link rel="stylesheet" href="/assets/hq-carnet.css"/>', self.html)
+        self.assertIn("'hq-carnet.css'", self.html)
         self.assertIn("'hq-carnet.js'", self.html)
         self.assertTrue((ROOT / "assets" / "hq-carnet.js").is_file())
         self.assertTrue((ROOT / "assets" / "hq-carnet.css").is_file())

@@ -9,6 +9,7 @@ import hashlib
 import hmac
 import html
 import http.client
+import inspect
 import json
 import math
 import mimetypes
@@ -44,6 +45,7 @@ import hq_diagnostics
 import hq_diagnostics_ui
 import hq_security
 import hq_drawings
+import hq_drawings_live
 import hq_ai
 import hq_assistant_visits
 import hq_personhood
@@ -90,9 +92,13 @@ import hq_search
 import hq_music
 import hq_spotify
 import hq_musica
+import hq_lecteur
 import hq_securia
 import hq_culinia
 import hq_forgia
+import zlib
+import hq_print3d
+import hq_print3d_models
 
 PORT = 8765
 CODE_ROOT = Path(__file__).resolve().parent
@@ -162,10 +168,13 @@ MEDIA_CONTENT_TYPES = {
     # as attachment + CSP sandbox so a direct navigation downloads instead of rendering.
     ".glb": "model/gltf-binary",
     ".stl": "model/stl",
+    ".obj": "model/obj",
+    ".3mf": "model/3mf",
 }
 # Types /media/ must never serve inline (fetched by the Lecteur's parser, not a media element).
-MEDIA_ATTACHMENT_EXTS = {".glb", ".stl"}
-MEDIA_LIBRARY_MAX = 500      # files returned by /api/media/library
+MEDIA_ATTACHMENT_EXTS = {".glb", ".stl", ".obj", ".3mf"}
+MEDIA_LIBRARY_MAX = 500      # files returned by /api/media/library by default
+MEDIA_LIBRARY_HARD_MAX = 3000  # ceiling for ?limit= (the Lecteur asks for more than the default)
 MEDIA_SCAN_MAX = 20000       # directory entries visited per library request
 MEDIA_SCAN_DEPTH = 12
 
@@ -277,13 +286,10 @@ def asset_gzip(path: Path, st: os.stat_result) -> bytes | None:
 
 # perf9 (fix 4): page <script>/<link> URLs carry ?v=<mtime+size>; such a URL is cached for a year (immutable) when the
 # version still matches the file, so a repeat load makes no request at all. Un-versioned URLs (JS loaders, tests) keep
-# no-cache + ETag. Any edit changes the URL on the next page render (stat cached _ASSET_VER_TTL seconds at most).
+# no-cache + ETag. Any edit changes the URL on the next page render (each link is re-statted when the page is built).
 ASSET_IMMUTABLE_CC = "public, max-age=31536000, immutable"
 ASSET_TAGGED_IMAGE_CC = "public, max-age=86400"
 ASSET_TAGGED_IMAGE_EXT = {".webp", ".png", ".jpg", ".jpeg", ".svg"}
-_ASSET_VER_TTL = 5.0
-_ASSET_VER_CACHE: dict[str, tuple[float, str | None]] = {}
-_ASSET_VER_LOCK = threading.Lock()
 _PAGE_ASSET_RE = re.compile(rb'(<script src="|<link rel="stylesheet" href=")/assets/([A-Za-z0-9._-]+\.(?:js|css))"')
 
 
@@ -292,21 +298,14 @@ def asset_version(st: os.stat_result) -> str:
 
 
 def asset_version_for(rel: str) -> str | None:
-    key = f"{ROOT}|{rel}"
-    now = time.monotonic()
-    with _ASSET_VER_LOCK:
-        hit = _ASSET_VER_CACHE.get(key)
-        if hit and now - hit[0] < _ASSET_VER_TTL:
-            return hit[1]
+    """The published version of one page asset: its size and mtime, read on every render.
+
+    Deliberately uncached. A page render stats a few dozen scripts; a tag that outlives its file costs a
+    browser a year of stale bytes it will not even ask about again."""
     try:
-        ver = asset_version((CODE_ROOT / "assets" / rel).stat())
+        return asset_version((CODE_ROOT / "assets" / rel).stat())
     except OSError:
-        ver = None
-    with _ASSET_VER_LOCK:
-        if len(_ASSET_VER_CACHE) > 512:
-            _ASSET_VER_CACHE.clear()
-        _ASSET_VER_CACHE[key] = (now, ver)
-    return ver
+        return None
 
 
 _ASSET_BUILD_TTL = 5.0
@@ -331,17 +330,22 @@ def _asset_digest(path: Path, st: os.stat_result) -> str:
     return digest
 
 
-def asset_build_stamp() -> str:
+def asset_build_stamp(refresh: bool = False) -> str:
     """Content version of assets/*.js|css for lazily loaded files.
 
     A lazy loader cannot know a file's own stat, so it carries this stamp instead. It is derived from
     file contents rather than mtimes: a rewrite that leaves the bytes identical (a formatter, a build
     step) must not re-version every cached module. Per-file digests are cached by (size, mtime), so a
-    real edit re-reads only the edited file. The 't' prefix can never start a per-file version (hex)."""
+    real edit re-reads only the edited file. The 't' prefix can never start a per-file version (hex).
+
+    The page publishes this stamp, so it asks for `refresh` and gets the bytes as they are now; naming a
+    changed file with the previous stamp would hand out an immutable URL that no reload ever refreshes.
+    Asset requests keep the short cache: there the stamp only decides how to answer a URL the page has
+    already published."""
     global _ASSET_BUILD_CACHE
     now = time.monotonic()
     hit = _ASSET_BUILD_CACHE
-    if hit and now - hit[0] < _ASSET_BUILD_TTL:
+    if not refresh and hit and now - hit[0] < _ASSET_BUILD_TTL:
         return hit[1]
     rows: list[tuple[str, str]] = []
     try:
@@ -372,7 +376,7 @@ def version_page_assets(body: bytes) -> bytes:
     except Exception:
         return body
     # Lazily appended scripts read this to build ?v= URLs; without it they revalidate on every visit.
-    tag = b'<script>window.HQ_ASSET_BUILD="' + asset_build_stamp().encode("ascii") + b'";</script>'
+    tag = b'<script>window.HQ_ASSET_BUILD="' + asset_build_stamp(refresh=True).encode("ascii") + b'";</script>'
     return out.replace(b"</body>", tag + b"</body>", 1) if b"</body>" in out else out
 
 
@@ -438,6 +442,7 @@ SYSTEM_NAMES = {
     "hq_automation.py",
     "hq_devices.py",
     "hq_drawings.py",
+    "hq_drawings_live.py",
     "hq_solid.py",
     "hq_face_solid.py",
     "hq_round_solid.py",
@@ -1173,6 +1178,7 @@ def default_config() -> dict:
         "public_base_urls": [],  # optional https://… bases (Tailscale Serve) for CSRF allowlist + QR
         "nvidia_api_key": "",  # optional nvapi- key for ambient chip visits (server-side only)
         "nvidia_visit_model": "nvidia/nemotron-3.5-bolt-e4b",  # NVIDIA NIM fallback model for those visits
+        "nim_fallback": False,  # opt-in: NVIDIA NIM overflow (same key) when every Gemini model failed, deep + background calls only
         "upload_sessions_max": UPLOAD_SESSIONS_MAX,
         "upload_disk_reserve_gb": UPLOAD_DISK_RESERVE_GB_DEFAULT,
         "automation_enabled": True,
@@ -1873,6 +1879,11 @@ def session_info(token: str | None, touch: bool = True) -> dict | None:
 
     hq_forge_vault.retain_only(live)
     return info
+
+
+def session_memory_owner(session: dict | None) -> str:
+    """Re-export for bridge handlers; see ``hq_security.session_memory_owner``."""
+    return hq_security.session_memory_owner(session)
 
 
 def session_valid(token: str | None) -> bool:
@@ -3573,6 +3584,9 @@ def bind_hq() -> None:
         key=lambda: str(CONFIG.get("gemini_api_key") or os.environ.get("HQ_GEMINI_KEY") or "").strip(),
         # Second Google project: its own per-model quota, tried after key 1 for each model.
         extra_keys=lambda: [str(CONFIG.get("gemini_api_key_2") or os.environ.get("HQ_GEMINI_KEY_2") or "").strip()],
+        # Opt-in NVIDIA NIM overflow once every Gemini model failed (deep and background calls only); key stays server-side.
+        nvidia_key=lambda: str(CONFIG.get("nvidia_api_key") or os.environ.get("HQ_NVIDIA_KEY") or "").strip(),
+        nim_fallback=lambda: bool(CONFIG.get("nim_fallback", False)),
         calendar=lambda a, b: hq_calendar.query(a, b, with_catalog=False).get("items") or [],
         projects=lambda: hq_projects.http_get({})[1],
         inventory=hq_inventory.snapshot,
@@ -3634,6 +3648,7 @@ def bind_hq() -> None:
                   calendar=lambda start, end: hq_calendar.manual_between(start, end)[0])  # Musique preferences / discoveries / presets (admin + CSRF on POST); calendar read-only for mood picks
     hq_spotify.bind(root=ROOT, config_getter=lambda: CONFIG)  # Spotify OAuth + Web API (tokens under .hq-music/)
     hq_musica.bind(root=ROOT)  # Musica steward chat + music tools (admin + CSRF on POST)
+    hq_lecteur.bind(root=ROOT)  # Lecteur: playlists / favourites / resume points (.hq-lecteur), tags, subtitles
     import hq_music_dj
     hq_music_dj.boot()  # DJ Musica PC station resumes when it was left on (voice on the PC speakers)
     def _securia_sessions() -> list[dict]:
@@ -3973,7 +3988,233 @@ def write_pid() -> None:
     PID_PATH.write_text(str(os.getpid()), encoding="utf-8")
 
 
+# The restarter's contract: how to bring *this* instance back. Written in the code directory so it is found whichever
+# state root is in use, and only for the live port so a scratch instance cannot overwrite the live identity.
+_BOOT_CODE_ROOT = Path(__file__).resolve().parent
+BOOT_FACTS_PATH = _BOOT_CODE_ROOT / ".hq-boot.json"
+# Held from a successful write until clear_boot_facts() on shutdown: a process-lifetime lease that
+# prevents a racing publisher from replacing .hq-boot.json while this instance is still bound.
+BOOT_FACTS_LOCK_PATH = _BOOT_CODE_ROOT / ".hq-boot.publish.lock"
+_BOOT_INSTANCE_ID = secrets.token_hex(16)
+_BOOT_PUBLISH_LOCK_HANDLE = None
+_BOOT_FACTS_PUBLISHED = False
+
+
+def _boot_paths_are_safe() -> bool:
+    for path in (BOOT_FACTS_PATH, BOOT_FACTS_LOCK_PATH):
+        if path.exists() and (_is_reparse_point(path) or not path.is_file()):
+            return False
+    return True
+
+
+def _acquire_boot_publish_lock() -> None:
+    """Exclusive guard for reading/writing .hq-boot.json (separate from bridge.lock)."""
+    global _BOOT_PUBLISH_LOCK_HANDLE
+    if _BOOT_PUBLISH_LOCK_HANDLE is not None:
+        return
+    if not _boot_paths_are_safe():
+        raise OSError("boot facts path must be a regular file")
+    BOOT_FACTS_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    handle = open(BOOT_FACTS_LOCK_PATH, "a+b")
+    handle.seek(0)
+    try:
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as exc:
+        handle.close()
+        raise OSError("boot facts publish lock busy") from exc
+    _BOOT_PUBLISH_LOCK_HANDLE = handle
+
+
+def _release_boot_publish_lock() -> None:
+    global _BOOT_PUBLISH_LOCK_HANDLE
+    handle = _BOOT_PUBLISH_LOCK_HANDLE
+    if handle is None:
+        return
+    try:
+        handle.seek(0)
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    except OSError:
+        pass
+    try:
+        handle.close()
+    finally:
+        _BOOT_PUBLISH_LOCK_HANDLE = None
+
+
+def _pid_is_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        SYNCHRONIZE = 0x00100000
+        handle = kernel32.OpenProcess(SYNCHRONIZE, False, pid)
+        if not handle:
+            return False
+        kernel32.CloseHandle(handle)
+        return True
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _foreign_boot_owner_alive(facts: dict) -> bool:
+    if not isinstance(facts, dict):
+        return False
+    other_id = str(facts.get("instance_id") or "")
+    if other_id and other_id == _BOOT_INSTANCE_ID:
+        return False
+    pid = int(facts.get("pid") or 0)
+    return _pid_is_alive(pid)
+
+
+def write_boot_facts() -> None:
+    """Publish boot identity only after the bridge and planner sockets are bound."""
+    global _BOOT_FACTS_PUBLISHED
+    if PORT != 8765:
+        return
+    if not _boot_paths_are_safe():
+        print("boot facts: refusing to write through a link", file=sys.stderr)
+        return
+    keep_lock = False
+    try:
+        _acquire_boot_publish_lock()
+        existing: dict | None = None
+        if BOOT_FACTS_PATH.is_file():
+            try:
+                existing = json.loads(BOOT_FACTS_PATH.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                existing = None
+        if isinstance(existing, dict) and _foreign_boot_owner_alive(existing):
+            print(
+                "boot facts: live instance "
+                f"{existing.get('instance_id') or existing.get('pid')} owns .hq-boot.json; not overwriting",
+                file=sys.stderr,
+            )
+            return
+        facts = {
+            "instance_id": _BOOT_INSTANCE_ID,
+            "pid": os.getpid(),
+            "port": PORT,
+            "state_root": str(ROOT),
+            "production_owner": production_owner_mode(),
+            "code_root": str(_BOOT_CODE_ROOT),
+            "started": int(time.time()),
+        }
+        tmp_name = f".hq-boot.json.{os.getpid()}.{secrets.token_hex(6)}.tmp"
+        tmp = BOOT_FACTS_PATH.with_name(tmp_name)
+        if tmp.exists():
+            tmp.unlink(missing_ok=True)
+        tmp.write_text(json.dumps(facts, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, BOOT_FACTS_PATH)
+        _BOOT_FACTS_PUBLISHED = True
+        keep_lock = True
+    except OSError as exc:
+        print(f"boot facts: {exc}", file=sys.stderr)
+    finally:
+        if not keep_lock:
+            _release_boot_publish_lock()
+
+
+def clear_boot_facts() -> None:
+    """Remove the file only while it still describes this bridge instance."""
+    try:
+        _acquire_boot_publish_lock()
+    except OSError:
+        return
+    try:
+        if not BOOT_FACTS_PATH.is_file():
+            return
+        try:
+            facts = json.loads(BOOT_FACTS_PATH.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        try:
+            ours = str(facts.get("instance_id") or "") == _BOOT_INSTANCE_ID
+            if not ours:
+                pid = int(facts.get("pid") or 0)
+                ours = pid == os.getpid() and not facts.get("instance_id")
+            if not ours:
+                return
+            BOOT_FACTS_PATH.unlink(missing_ok=True)
+            global _BOOT_FACTS_PUBLISHED
+            _BOOT_FACTS_PUBLISHED = False
+        except (OSError, TypeError, ValueError):
+            pass
+    finally:
+        _release_boot_publish_lock()
+
+
+def ensure_startup_lock() -> None:
+    """Take bridge.lock on ROOT before startup may rewrite shared state."""
+    if _STATE_LOCK is not None:
+        return
+    acquire_state_lock()
+
+
+def _startup_release(*, clear_boot: bool = False) -> None:
+    if clear_boot:
+        clear_boot_facts()
+    else:
+        _release_boot_publish_lock()
+    try:
+        PID_PATH.unlink(missing_ok=True)
+    except OSError:
+        pass
+    release_state_lock()
+
+
+def _callable_accepts_keyword(fn, name: str) -> bool:
+    try:
+        sig = inspect.signature(fn)
+    except (ValueError, TypeError):
+        return False
+    if name in sig.parameters:
+        return True
+    return any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+
+
+def _forge_call_status(*, fresh: bool) -> dict:
+    if _callable_accepts_keyword(hq_forge.status, "fresh"):
+        return hq_forge.status(fresh=fresh)
+    return hq_forge.status()
+
+
+def _forge_call_catalog(*, fresh: bool) -> dict:
+    if _callable_accepts_keyword(hq_forge.catalog, "fresh"):
+        return hq_forge.catalog(fresh=fresh)
+    return hq_forge.catalog()
+
+
+def _bridge_probe_hosts() -> list[str]:
+    host = configured_bind_host()
+    hosts: list[str] = []
+    if host and host not in ("0.0.0.0", "::", ""):
+        hosts.append(host)
+    if host == "::":
+        hosts.append("::1")
+    if "127.0.0.1" not in hosts:
+        hosts.append("127.0.0.1")
+    return hosts
+
+
 APP_JS = r"""
+function hqSectionFromHash() {
+  const m = /^#plus\/([^/?#]+)/.exec(location.hash || "");
+  return m ? decodeURIComponent(m[1]) : "";
+}
 const $ = (s, el=document) => el.querySelector(s);
 const $$ = (s, el=document) => [...el.querySelectorAll(s)];
 const toastBox = () => $('#toasts');
@@ -3996,7 +4237,8 @@ function toast(msg, kind='ok', ms=3200) {
   setTimeout(hide, ms);
 }
 
-const VIEW_LABELS = { accueil: 'Accueil', carnet: 'Carnet', calendrier: 'Calendrier', repas: 'Repas', budget: 'Budget', dessiner: 'Dessiner', forge: 'Forge Studio', fichiers: 'Fichiers', lecteur: 'Lecteur', musique: 'Musique', projets: 'Projets', inventaire: 'Inventaire', engine: 'Engine', robotique: 'Robotique', securite: 'Sécurité', ops: 'Terminal', intime: 'Tête-à-tête', plus: 'Plus' };
+const VIEW_LABELS = { accueil: 'Accueil', carnet: 'Carnet', calendrier: 'Calendrier', repas: 'Repas', budget: 'Budget', dessiner: 'Dessiner', playground: 'Playground', forge: 'Forge Studio', atelier3d: 'Atelier 3D', fichiers: 'Fichiers', lecteur: 'Lecteur', musique: 'Musique', projets: 'Projets', inventaire: 'Inventaire', engine: 'Engine', robotique: 'Robotique', securite: 'Sécurité', ops: 'Terminal', intime: 'Tête-à-tête', plus: 'Plus' };
+const VIEW_LABELS_WIDE = { plus: 'Système' };
 let hqRoleKnown = false;
 function hqViewFromHash(hash = location.hash) {
   const [view, detail] = (hash || '').slice(1).split('/');
@@ -4038,19 +4280,27 @@ function hqApplySessionRole(me) {
   if (admin) {
     try {
       const want = hqViewFromHash() || localStorage.getItem('tf_hq_view') || '';
-      if ((want === 'intime' || want === 'repas' || want === 'budget' || want === 'musique' || want === 'robotique') && document.body.dataset.view !== want) {
+      if ((want === 'intime' || want === 'repas' || want === 'budget' || want === 'musique' || want === 'robotique' || want === 'atelier3d') && document.body.dataset.view !== want) {
         setView(want, { historyMode: 'replace' });
       }
     } catch (_) {}
-  } else if (['intime', 'repas', 'budget', 'musique', 'robotique'].includes(document.body.dataset.view)) {
+  } else if (['intime', 'repas', 'budget', 'musique', 'robotique', 'atelier3d'].includes(document.body.dataset.view)) {
     setView('accueil');
   }
   return admin;
 }
 function viewTitle(view) {
-  if (view === 'plus' && window.matchMedia('(min-width: 900px)').matches) return 'Système';
+  if (VIEW_LABELS_WIDE[view] && window.matchMedia('(min-width: 900px)').matches) return VIEW_LABELS_WIDE[view];
   return VIEW_LABELS[view] || 'Accueil';
 }
+function applyViewLabel() {
+  const title = viewTitle(document.body.dataset.view || 'accueil');
+  const lab = document.getElementById('view-label');
+  if (lab) lab.textContent = title;
+  document.title = 'Transfert HQ · ' + title;
+}
+const VIEW_SHAPE_QUERY = window.matchMedia('(min-width: 900px)');
+VIEW_SHAPE_QUERY.addEventListener('change', applyViewLabel);
 // Forge: five core scripts gate the first paint (hooks, shell, couch, gallery wiring). The add-ons
 // load once the view is usable, so their parse and their first requests stay off the entry path;
 // order still matters because hq-forge.js defines window.hqForgeHooks the others read at load.
@@ -4170,6 +4420,42 @@ function hqMusicEnsureMounted() {
   host.dataset.hqmMounted = '1';
 }
 window.hqMusicEnsureMounted = hqMusicEnsureMounted;
+let hqPlaygroundLoading;
+function hqPlaygroundLoad() {
+  if (hqPlaygroundLoading) return hqPlaygroundLoading;
+  const asset = (tag, url) => new Promise((resolve, reject) => {
+    const el = document.createElement(tag);
+    if (tag === 'script') el.src = url;
+    else { el.rel = 'stylesheet'; el.href = url; }
+    el.onload = () => resolve(el);
+    el.onerror = () => { el.remove(); reject(new Error('Playground indisponible')); };
+    document.head.append(el);
+  });
+  hqPlaygroundLoading = asset('link', hqAssetUrl('hq-playground.css')).then(css =>
+    asset('script', hqAssetUrl('hq-playground.js')).catch(err => { css.remove(); throw err; })
+  ).catch(err => { hqPlaygroundLoading = null; throw err; });
+  return hqPlaygroundLoading;
+}
+let hqPrint3dLoading;
+function hqPrint3dLoad() {
+  if (hqPrint3dLoading) return hqPrint3dLoading;
+  const asset = (tag, url) => new Promise((resolve, reject) => {
+    const el = document.createElement(tag);
+    if (tag === 'script') el.src = url;
+    else { el.rel = 'stylesheet'; el.href = url; }
+    el.onload = () => resolve(el);
+    el.onerror = () => { el.remove(); reject(new Error('Atelier 3D indisponible')); };
+    document.head.append(el);
+  });
+  hqPrint3dLoading = asset('link', hqAssetUrl('hq-print3d.css')).then(css =>
+    asset('script', hqAssetUrl('hq-model-view.js'))
+      .then(() => asset('script', hqAssetUrl('hq-gcode-view.js')))
+      .then(() => asset('script', hqAssetUrl('hq-print3d-prepare.js')))
+      .then(() => asset('script', hqAssetUrl('hq-print3d.js')))
+      .catch(err => { css.remove(); throw err; })
+  ).catch(err => { hqPrint3dLoading = null; throw err; });
+  return hqPrint3dLoading;
+}
 let hqRoboticsLoading;
 function hqRoboticsLoad() {
   if (hqRoboticsLoading) return hqRoboticsLoading;
@@ -4538,8 +4824,8 @@ function setView(name, { historyMode = 'push', focus = '', section = '' } = {}) 
   let view = Object.hasOwn(VIEW_LABELS, name) ? name : 'accueil';
   if (document.body.classList.contains('mode-simple') && view === 'ops') view = 'accueil';
   if (view === 'intime' && !hqSessionIsAdmin()) view = 'accueil';
-  if (['repas', 'budget', 'musique', 'engine', 'securite', 'robotique'].includes(view) && !hqSessionIsAdmin()) view = 'accueil';
-  const deferIntime = ['intime', 'robotique'].includes(name) && !hqRoleKnown;
+  if (['repas', 'budget', 'musique', 'engine', 'securite', 'robotique', 'atelier3d'].includes(view) && !hqSessionIsAdmin()) view = 'accueil';
+  const deferIntime = ['intime', 'robotique', 'atelier3d'].includes(name) && !hqRoleKnown;
   if (!deferIntime && (historyMode !== 'none' || view !== name) && hqViewFromHash() !== view) {
     if (historyMode === 'push') history.pushState(null, '', '#' + view);
     else history.replaceState(null, '', '#' + view);
@@ -4551,6 +4837,7 @@ function setView(name, { historyMode = 'push', focus = '', section = '' } = {}) 
   const focusHeading = prevView !== view && document.activeElement?.closest('.hq-more-nav');
   if (prevView !== view) closeCompanions();
   document.body.dataset.view = view;
+  if (window.hqEnsureViewCss) window.hqEnsureViewCss(view);
   if (prevView !== view && historyMode === 'push') window.scrollTo(0, 0);
   if (window.hqClientLogView) { try { window.hqClientLogView(prevView, view); } catch (_) {} }
   if (window.hqHideHelp) window.hqHideHelp();
@@ -4570,8 +4857,11 @@ function setView(name, { historyMode = 'push', focus = '', section = '' } = {}) 
     if (on) { b.setAttribute('aria-current', 'page'); const bar = b.parentElement; if (bar && bar.scrollWidth > bar.clientWidth + 4) bar.scrollTo({ left: b.offsetLeft - (bar.clientWidth - b.offsetWidth) / 2, behavior: 'smooth' }); }
     else b.removeAttribute('aria-current');
   });
+  // The Plus panel is itself a view, so while it is open "current" means the space the user came from: that is the
+  // entry the panel has to mark, otherwise opening it from Dessiner showed eleven links and no highlight.
+  const moreMarked = view === 'plus' ? prevView : view;
   $$('.hq-more-nav [data-view-link]').forEach(link => {
-    if (link.dataset.viewLink === view) link.setAttribute('aria-current', 'page');
+    if (link.dataset.viewLink === moreMarked) link.setAttribute('aria-current', 'page');
     else link.removeAttribute('aria-current');
   });
   if (!deferIntime) try { localStorage.setItem('tf_hq_view', view); } catch (_) {}
@@ -4589,6 +4879,26 @@ function setView(name, { historyMode = 'push', focus = '', section = '' } = {}) 
       if (note) note.textContent = 'Chargement impossible. Rouvrez Robotique pour réessayer.';
     });
   } else if (prevView === 'robotique') window.HqRobotics?.hide();
+  if (view === 'atelier3d') {
+    hqPrint3dLoad().then(() => {
+      if (viewTicket !== currentViewTicket || !hqSessionIsAdmin()) return;
+      window.HqPrint3d.show(document.getElementById('hq-print3d-app'), api, section);
+      window.hqPerfMark?.('nav', { op: 'setView-lazy', target: 'atelier3d', ms: Math.round(performance.now() - viewT0), ok: true });
+    }).catch(() => {
+      const note = document.getElementById('hq-print3d-loading');
+      if (note) note.textContent = 'Chargement impossible. Rouvrez Atelier 3D pour réessayer.';
+    });
+  } else if (prevView === 'atelier3d') window.HqPrint3d?.hide();
+  if (view === 'playground') {
+    hqPlaygroundLoad().then(() => {
+      if (viewTicket !== currentViewTicket) return;
+      window.HqPlayground.show(document.getElementById('hq-playground-app'));
+      window.hqPerfMark?.('nav', { op: 'setView-lazy', target: 'playground', ms: Math.round(performance.now() - viewT0), ok: true });
+    }).catch(() => {
+      const note = document.getElementById('hq-playground-loading');
+      if (note) note.textContent = 'Chargement impossible. Rouvrez Playground pour réessayer.';
+    });
+  } else if (prevView === 'playground') window.HqPlayground?.hide();
   if (view === 'fichiers') hqDeferViewRender(view, viewTicket, () => refreshFiles().catch(() => {}));
   if (view === 'carnet' && window.hqCarnetShow) {
     hqDeferViewRender(view, viewTicket, () => { try { window.hqCarnetShow(); } catch (e) { console.error(e); } });
@@ -5786,13 +6096,89 @@ function hqTermBegin(head, meta) {
   if (!out) return;
   out.textContent = '$ ' + (head || 'commande') + (meta ? '\n# ' + meta : '') + '\n';
   out.scrollTop = out.scrollHeight;
+  hqTermHasOutput = true;
+  hqTermEmptyRender();
+}
+
+// stdout and stderr arrive on the same pipe: a line that reads like a failure gets its own colour.
+const HQ_TERM_ERR_RE = /(n['’]est pas reconnu|introuvable|acc[èe]s refus[ée]|refus[ée]|erreur|error|failed|[ée]chec|denied|not found|cannot|impossible|exception|fatal|d[ée]lai d[ée]pass[ée])/i;
+
+function hqTermLineNode(line) {
+  if (!HQ_TERM_ERR_RE.test(line)) return document.createTextNode(line);
+  const span = document.createElement('span');
+  span.className = 'term-err';
+  span.textContent = line;
+  return span;
+}
+
+let hqTermHasOutput = false;
+
+// The console is empty: offer the first quick commands instead of only the placeholder.
+function hqTermEmptyRender() {
+  const box = $('#term-empty');
+  const out = $('#shell-out');
+  if (!box || !out) return;
+  const empty = !hqTermHasOutput && !hqTermJob;
+  box.hidden = !empty;
+  const card = box.closest('.term-console');
+  if (card) card.classList.toggle('is-empty', empty);
+  if (!empty) return;
+  const host = $('#term-empty-cmds');
+  if (host) {
+    host.textContent = '';
+    $$('#term-cmds [data-term]').slice(0, 3).forEach(src => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'secondary';
+      b.textContent = src.textContent || '';
+      b.addEventListener('click', () => hqTermStart('terminal', { id: src.dataset.term }, src.textContent || src.dataset.term, ''));
+      host.appendChild(b);
+    });
+    hqTermHistoryList().slice(0, 2).forEach(cmd => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'chip';
+      b.textContent = cmd.length > 24 ? cmd.slice(0, 23) + '…' : cmd;
+      b.title = cmd;
+      b.addEventListener('click', () => {
+        const input = $('#shell-cmd');
+        if (input) { input.value = cmd; input.focus(); hqTermGrowInput(); }
+      });
+      host.appendChild(b);
+    });
+    box.hidden = !host.children.length;
+  }
+}
+
+// A one-row textarea: it grows with the text instead of hiding the second line.
+function hqTermGrowInput() {
+  const el = $('#shell-cmd');
+  if (!el || el.tagName !== 'TEXTAREA') return;
+  el.style.height = 'auto';
+  el.style.height = Math.min(el.scrollHeight, 132) + 'px';
+}
+
+// Copy only what the command printed: the "$ label" header and the "exit 0 · 6.1 s" footer are ours.
+function hqTermPlainOutput(text) {
+  const lines = String(text || '').replace(/\r\n?/g, '\n').split('\n');
+  if (lines.length && /^\$ /.test(lines[0])) lines.shift();
+  if (lines.length && /^# /.test(lines[0])) lines.shift();
+  while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+  if (lines.length && /^(—|exit )/.test(lines[lines.length - 1].trim())) lines.pop();
+  while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+  return lines.join('\n').trim();
 }
 
 function hqTermAppend(text) {
   const out = $('#shell-out');
   if (!out || !text) return;
   const stick = out.scrollTop + out.clientHeight >= out.scrollHeight - 24;
-  out.appendChild(document.createTextNode(text));
+  const body = String(text);
+  body.split(/\r?\n/).forEach((line, i) => {
+    if (i) out.appendChild(document.createTextNode('\n'));
+    if (line) out.appendChild(hqTermLineNode(line));
+  });
+  if (!hqTermHasOutput) { hqTermHasOutput = true; hqTermEmptyRender(); }
   if (hqTermFollow || stick) out.scrollTop = out.scrollHeight;
 }
 
@@ -5829,7 +6215,10 @@ function hqTermSetRunning(on) {
   const run = $('#btn-shell-run');
   if (run) run.disabled = !!on;
   $$('#term-cmds button').forEach(b => { b.disabled = !!on; });
+  const out = $('#shell-out');
+  if (out) out.setAttribute('aria-live', on ? 'off' : 'polite');  // a streaming log must not read every line
   if (on) hqTermStatus('en cours', 'running');
+  hqTermEmptyRender();
 }
 
 function hqTermRelease() {
@@ -6095,6 +6484,7 @@ function hqTermRecentRender() {
     line.className = 'term-job-text';
     line.textContent = hqTermJobLine(job);
     open.appendChild(line);
+    const cmd = String(job.command || job.cmd_id || '').trim();
     if (state === 'running') {
       const live = document.createElement('span');
       live.className = 'term-job-elapsed';
@@ -6102,6 +6492,13 @@ function hqTermRecentRender() {
       live.dataset.at = String(Date.now());
       live.textContent = hqTermMs(Number(job.elapsed_ms) || 0);
       open.appendChild(live);
+    }
+    if (cmd) {
+      const sub = document.createElement('span');
+      sub.className = 'term-job-sub';
+      sub.textContent = cmd;
+      sub.title = cmd;
+      open.appendChild(sub);
     }
     open.addEventListener('click', () => { hqTermOpen(job.job_id, job.label); });
     row.appendChild(open);
@@ -6291,19 +6688,61 @@ function hqTermCandidates() {
 
 function hqTermComplete() {
   const input = $('#shell-cmd');
-  if (!input) return;
+  if (!input) return false;
   const raw = input.value.trim();
-  if (!raw) return;
+  if (!raw) return false;
   // Keep matching the typed prefix, so a second Tab cycles instead of locking on one match.
   const prefix = (hqTermCompleteSet.length && hqTermCompleteSet.indexOf(raw) >= 0)
     ? hqTermCompletePrefix
     : raw.toLowerCase();
   const matches = hqTermCandidates().filter(c => c.toLowerCase().startsWith(prefix));
-  if (!matches.length) return;
+  if (!matches.length) return false;
   hqTermCompletePrefix = prefix;
   hqTermCompleteSet = matches;
   hqTermCompleteAt = (hqTermCompleteAt + 1) % matches.length;
   input.value = matches[hqTermCompleteAt];
+  return true;
+}
+
+// Older Safari has no overscroll-behavior: without this the transcript's scroll chains to the page.
+// A wheel is simply cancelled at the edges; a touch gesture keeps its native momentum and the page is held
+// still instead, because cancelling touchmove would kill the flick.
+function hqTermScrollGuard() {
+  const out = $('#shell-out');
+  if (!out || out.dataset.scrollGuard) return;
+  out.dataset.scrollGuard = '1';
+  if (window.CSS && CSS.supports && CSS.supports('overscroll-behavior', 'contain')) return; // the CSS already holds it
+  const atTop = () => out.scrollTop <= 0;
+  const atEnd = () => out.scrollTop + out.clientHeight >= out.scrollHeight - 1;
+  out.addEventListener('wheel', (e) => {
+    if (!e.deltaY) return;
+    if ((e.deltaY < 0 && atTop()) || (e.deltaY > 0 && atEnd())) e.preventDefault();
+  }, { passive: false });
+  let hold = null;
+  let raf = 0;
+  let lastMove = 0;
+  let liftedAt = 0;
+  const stop = () => { if (raf) cancelAnimationFrame(raf); raf = 0; hold = null; };
+  // Follow the flick frame by frame: the page stays pinned while the transcript still glides, or while the
+  // overscroll keeps trying to drag the page, and lets go only after both have been quiet for 140 ms.
+  const tick = () => {
+    if (!hold) { raf = 0; return; }
+    const now = performance.now();
+    if (out.scrollTop !== hold.top) { hold.top = out.scrollTop; lastMove = now; }
+    if (Math.abs(scrollX - hold.x) > 0.5 || Math.abs(scrollY - hold.y) > 0.5) {
+      window.scrollTo(hold.x, hold.y);
+      lastMove = now; // still chaining: keep holding
+    }
+    if (now - lastMove > 140 && now - liftedAt > 260) { stop(); return; }
+    raf = requestAnimationFrame(tick);
+  };
+  out.addEventListener('touchstart', () => {
+    hold = { x: Math.round(scrollX), y: Math.round(scrollY), top: out.scrollTop };
+    lastMove = liftedAt = performance.now();
+    if (!raf) raf = requestAnimationFrame(tick);
+  }, { passive: true });
+  out.addEventListener('touchend', () => { liftedAt = performance.now(); }, { passive: true });
+  out.addEventListener('touchcancel', stop, { passive: true });
 }
 
 function hqTermSetFollow(on) {
@@ -6717,19 +7156,23 @@ function hqTermFail(message) {
   hqTermElapsedStop();
 }
 
+const HQ_TERM_HISTORY_MAX = 50;
+// Never persist commands that look like credentials, tokens, or inline secrets.
+const HQ_TERM_HISTORY_SENSITIVE_RE = /(?:\b(?:pin|password|passwd|token|secret|api[_-]?key|nvapi|bearer)\b|=.*@|:\/\/[^/\s]+@)/i;
+
 function hqTermHistoryList() {
   try {
-    const raw = JSON.parse(sessionStorage.getItem('hq_shell_history') || '[]');
-    return Array.isArray(raw) ? raw.filter(x => typeof x === 'string' && x.trim()).slice(0, 20) : [];
+    const raw = JSON.parse(localStorage.getItem('hq_shell_history') || '[]');
+    return Array.isArray(raw) ? raw.filter(x => typeof x === 'string' && x.trim()).slice(0, HQ_TERM_HISTORY_MAX) : [];
   } catch (_) { return []; }
 }
 
 function hqTermHistoryAdd(cmd) {
   const text = String(cmd || '').trim();
-  if (!text) return;
+  if (!text || HQ_TERM_HISTORY_SENSITIVE_RE.test(text)) return;
   const list = hqTermHistoryList().filter(x => x !== text);
   list.unshift(text);
-  try { sessionStorage.setItem('hq_shell_history', JSON.stringify(list.slice(0, 20))); } catch (_) {}
+  try { localStorage.setItem('hq_shell_history', JSON.stringify(list.slice(0, HQ_TERM_HISTORY_MAX))); } catch (_) {}
   hqShellHistIndex = -1;
   hqTermHistoryRender();
 }
@@ -6743,8 +7186,9 @@ function hqTermHistoryRender() {
   $$('[data-term-hist]', el).forEach(b => b.addEventListener('click', () => {
     const cmd = hqTermHistoryList()[Number(b.dataset.termHist)] || '';
     const input = $('#shell-cmd');
-    if (input) { input.value = cmd; input.focus(); }
+    if (input) { input.value = cmd; input.focus(); hqTermGrowInput(); }
   }));
+  hqTermEmptyRender();
 }
 
 // A non-Windows Tailscale peer only answers a raw command; a Windows peer needs its own shell.
@@ -6786,6 +7230,7 @@ function renderTerminalCmds(cmds) {
   $$('[data-term]', el).forEach(b => b.addEventListener('click', () => {
     hqTermStart('terminal', { id: b.dataset.term }, b.textContent || b.dataset.term, '');
   }));
+  hqTermEmptyRender();
 }
 
 function fillShellTargets(targets) {
@@ -7159,15 +7604,18 @@ function setupHQ() {
   });
   $('#btn-shell-run')?.addEventListener('click', () => { hqTermRunFromInput(); });
   $('#btn-term-stop')?.addEventListener('click', () => { hqTermStopNow(); });
+  hqTermScrollGuard();
+  $('#shell-cmd')?.addEventListener('input', () => { hqTermGrowInput(); });
   $('#shell-cmd')?.addEventListener('keydown', (e) => {
     const input = $('#shell-cmd');
     const list = hqTermHistoryList();
     if (e.key === 'Tab' && !e.shiftKey) {
-      e.preventDefault();
-      hqTermComplete();
+      // Tab completes a command name; with nothing to complete it must move focus on.
+      if (hqTermComplete()) e.preventDefault();
       return;
     }
     if (e.key === 'Enter') {
+      if (e.shiftKey && !e.ctrlKey && !e.metaKey) return;  // Shift+Enter: a new line, not a launch
       // Enter from the phone keyboard, Ctrl+Enter and ⌘+Enter both launch the command.
       e.preventDefault();
       hqTermRunFromInput();
@@ -7206,7 +7654,8 @@ function setupHQ() {
     } catch (e) { toast(e.message, 'err'); }
   });
   $('#btn-term-copy')?.addEventListener('click', async () => {
-    const text = ($('#shell-out')?.textContent || '').trim();
+    const raw = ($('#shell-out')?.textContent || '').trim();
+    const text = hqTermPlainOutput(raw) || raw;
     if (!text) { toast('Rien à copier', 'err'); return; }
     try { await navigator.clipboard.writeText(text); toast('Sortie copiée'); }
     catch (_) { toast('Copie refusée par le navigateur', 'err'); }
@@ -7214,6 +7663,8 @@ function setupHQ() {
   $('#btn-term-clear')?.addEventListener('click', () => {
     const out = $('#shell-out');
     if (out) out.textContent = '';
+    hqTermHasOutput = false;
+    hqTermEmptyRender();
     toast('Sortie effacée');
   });
   $('#btn-term-save')?.addEventListener('click', () => {
@@ -7296,6 +7747,8 @@ function setupHQ() {
   });
   hqTermPinsRender();
   hqTermHistoryRender();
+  hqTermGrowInput();
+  hqTermEmptyRender();
   window.addEventListener('online', () => { toast('En ligne — reprise file'); flushOfflineQueue(); });
   setupRecentsFilters();
   beatPresence();
@@ -7347,7 +7800,7 @@ async function clipFromPc() {
 // Types streamed by /media/ (keep in sync with MEDIA_CONTENT_TYPES in iphone_bridge.py).
 const HQ_MEDIA_TYPES = { mp3: 'audio/mpeg', m4a: 'audio/mp4', aac: 'audio/aac', wav: 'audio/wav', flac: 'audio/flac',
   ogg: 'audio/ogg', opus: 'audio/ogg', mp4: 'video/mp4', m4v: 'video/mp4', mov: 'video/quicktime', webm: 'video/webm',
-  glb: 'model/gltf-binary', stl: 'model/stl' };
+  glb: 'model/gltf-binary', stl: 'model/stl', obj: 'model/obj', '3mf': 'model/3mf' };
 function hqMediaIcon(kind) { return kind === 'video' ? '🎬' : kind === 'audio' ? '🎵' : kind === 'model' ? '🧊' : '📄'; }
 // Containers no browser plays: the Lecteur explains instead of showing a broken player.
 const HQ_MEDIA_UNSUPPORTED = ['mkv', 'avi', 'wmv', 'flv', 'wma', 'mpg', 'mpeg', 'vob'];
@@ -7422,7 +7875,7 @@ async function hqModelLoad(rel) {
   await new Promise(res => setTimeout(res, 0));  // let the message paint before a long parse
   if (token !== hqModel.token) return;
   try {
-    const model = M.parse(rel.split('/').pop() || rel, buf);
+    const model = await (M.parseAsync || ((n, b) => M.parse(n, b)))(rel.split('/').pop() || rel, buf);  // parseAsync adds 3MF
     if (!hqModel.viewer) hqModel.viewer = M.viewer(canvas);
     hqModel.viewer.setModel(model);
     hqPlayer.restored = false;
@@ -7716,9 +8169,12 @@ BASE_CSS = """
   --font-mono:ui-monospace,Consolas,monospace;
   --nav-h:64px;
   --tap-min:44px;
-  --text-xs:.75rem;
-  --text-sm:.82rem;
-  --text-base:1rem;
+  --text-xs:11px;
+  --text-sm:13px;
+  --text-md:15px;
+  --text-lg:17px;
+  --text-xl:20px;
+  --text-2xl:26px;
   --focus-ring:2px solid var(--accent);
 }
 @media (prefers-color-scheme: light) {
@@ -7758,6 +8214,8 @@ body[data-view="ops"] [data-panel="ops"],
 body[data-view="engine"] [data-panel="engine"],
 body[data-view="securite"] [data-panel="securite"],
 body[data-view="robotique"] [data-panel="robotique"],
+body[data-view="atelier3d"] [data-panel="atelier3d"],
+body[data-view="playground"] [data-panel="playground"],
 body[data-view="lecteur"] [data-panel="lecteur"],
 body[data-view="musique"] [data-panel="musique"],
 body[data-view="forge"] [data-panel="forge"],
@@ -7770,7 +8228,9 @@ body:not(.session-admin) .bottom-nav [data-nav="musique"],
 body:not(.session-admin) .bottom-nav [data-nav="engine"],
 body:not(.session-admin) .bottom-nav [data-nav="securite"],
 body:not(.session-admin) .bottom-nav [data-nav="robotique"],
-body:not(.session-admin) [data-view-link="robotique"]{display:none!important}
+body:not(.session-admin) .bottom-nav [data-nav="atelier3d"],
+body:not(.session-admin) [data-view-link="robotique"],
+body:not(.session-admin) [data-view-link="atelier3d"]{display:none!important}
 body[data-view="intime"] .hq-intime-panel{
   position:relative;
   display:flex;
@@ -7972,8 +8432,8 @@ li.file.is-dir .fname{color:var(--ok)}
 .term-cmd-field{margin-bottom:0}
 .term-cmd-line{display:flex;align-items:center;gap:8px;border:1px solid var(--line);border-radius:10px;background:#0a0e14;padding:0 12px}
 .term-cmd-line:focus-within{border-color:var(--accent)}
-.term-cmd-line input{border:0;background:transparent;color:#c6f6d5;font-family:var(--font-mono);font-size:var(--text-sm);padding:11px 0;border-radius:0}
-.term-cmd-line input:focus-visible{outline:none}
+.term-cmd-line input,.term-cmd-line textarea{border:0;background:transparent;color:#c6f6d5;font-family:var(--font-mono);font-size:var(--text-sm);padding:11px 0;border-radius:0}
+.term-cmd-line input:focus-visible,.term-cmd-line textarea:focus-visible{outline:none}
 .term-prompt{color:var(--accent);font-family:var(--font-mono);font-weight:800}
 .term-run{justify-content:flex-start;margin:10px 0 6px}
 .term-label{margin:10px 0 6px;font-size:var(--text-xs);font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
@@ -8018,8 +8478,8 @@ li.file.is-dir .fname{color:var(--ok)}
 #shell-target,#shell-type{min-height:var(--tap-min)}
 .term-cmd-line{padding:0 6px 0 12px;border-radius:12px;transition:border-color .15s ease,box-shadow .15s ease}
 .term-cmd-line:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 18%,transparent)}
-.term-cmd-line input{flex:1 1 auto;min-width:0;padding:13px 0;letter-spacing:.01em}
-.term-cmd-line input::placeholder{color:color-mix(in srgb,var(--muted) 75%,transparent)}
+.term-cmd-line input,.term-cmd-line textarea{flex:1 1 auto;min-width:0;padding:13px 0;letter-spacing:.01em}
+.term-cmd-line input::placeholder,.term-cmd-line textarea::placeholder{color:color-mix(in srgb,var(--muted) 75%,transparent)}
 #shell-cmd{font-size:14px}
 .term-run{gap:8px;flex-wrap:wrap}
 .term-run button{min-height:var(--tap-min);touch-action:manipulation}
@@ -8093,6 +8553,53 @@ li.file.is-dir .fname{color:var(--ok)}
 #term-cmds::-webkit-scrollbar,#term-history::-webkit-scrollbar,#term-pinned::-webkit-scrollbar{display:none}
 #term-cmds .chip,#term-history .chip,#term-pinned .chip{flex:0 0 auto;white-space:nowrap;max-width:100%;min-height:40px;overflow:hidden;text-overflow:ellipsis}
 }
+/* Phone and mouse alike: every console control is a comfortable 44 px tap target. */
+.term-console-tools button,#btn-term-stop-all,#btn-term-jobs-clear,.term-jobs-actions button,.term-job-actions button{min-height:44px}
+.term-job-actions button{min-width:44px}
+#term-cmds .chip,#term-history .chip,#term-pinned .chip{min-height:44px}
+.term-view summary{min-height:44px;padding-block:9px}
+/* On the Terminal page the console head already shows the running job: the floating pill would sit on the output. */
+body[data-view="ops"] #op-busy{display:none}
+/* iOS Safari zooms the whole page when a field under 16 px takes focus: landscape bypasses the <=640 px block. */
+@media (hover:none) and (pointer:coarse) and (min-width:641px){
+#shell-cmd,#shell-target,#shell-type,#term-find-input,#term-jobs-filter{font-size:16px}
+}
+/* A failing line is tinted: stderr arrives merged into stdout, so colour is the only cue. */
+.term-out .term-err{color:#ffb3a7}
+/* The empty console offers the first quick commands instead of only a placeholder. */
+.term-empty{margin-top:10px;display:flex;flex-direction:column;gap:8px}
+.term-empty[hidden]{display:none}
+.term-empty p{margin:0;color:color-mix(in srgb,#dbe7f0 62%,transparent)}
+.term-empty .chip,.term-empty button{color:#e6eef6;background:color-mix(in srgb,#fff 9%,transparent);
+  border:1px solid rgba(255,255,255,.22)}
+.term-empty .chip:hover,.term-empty button:hover{background:color-mix(in srgb,#fff 16%,transparent)}
+.term-console.is-empty .term-out{min-height:96px}
+/* A job row carries its command on a second, quieter line. */
+.term-job-open{flex-wrap:wrap}
+.term-job-sub{flex:1 1 100%;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  color:var(--muted);font:11.5px/1.35 var(--font-mono)}
+/* The command field grows with Shift+Enter instead of staying a one-liner. */
+.term-cmd-line textarea{resize:none;overflow:hidden;min-height:44px;max-height:132px;line-height:1.35;padding-block:10px}
+/* Desktop: the transcript starts taller, so short output does not look cramped. */
+@media(min-width:1100px){.term-console .term-out{min-height:240px}}
+/* iPhone in landscape: the composer folds to one row and the transcript takes the height. */
+@media (hover:none) and (pointer:coarse) and (orientation:landscape){
+  .term-compose{display:grid;grid-template-columns:minmax(126px,1.05fr) minmax(124px,1fr) minmax(0,2fr) auto;
+    gap:8px;align-items:end;padding:10px 12px}
+  .term-compose>.term-grid2{display:contents}
+  .term-compose>.term-grid2 .field{display:flex;flex-direction:column;gap:2px;min-width:0}
+  .term-compose>.term-grid2 .field label{font-size:11px;line-height:1.1}
+  .term-compose>.term-grid2 .term-inline{gap:4px}
+  .term-compose #btn-shell-refresh{display:none}
+  .term-compose>#shell-target-note,.term-compose>#shell-where,.term-compose>.term-label,
+  .term-compose>#term-cmds,.term-compose>#term-history,.term-compose>#term-pinned,
+  .term-compose>.sec-hint{display:none}
+  .term-compose>.term-cmd-field{display:flex;flex-direction:column;gap:2px;min-width:0}
+  .term-compose>.term-cmd-field>label{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
+  .term-compose>.term-run{display:flex;flex-direction:column;gap:6px;margin:0}
+  .term-compose>.term-run #btn-term-next-target,.term-compose>.term-run #btn-term-pin{display:none}
+  .term-console .term-out{min-height:140px;max-height:calc(100vh - 300px)}
+}
 @media (min-width:900px){
 .term-compose{padding:16px}
 .term-console .term-out{font-size:13.5px}
@@ -8156,7 +8663,9 @@ body.kiosk .bottom-nav{display:none}
   body:not(.session-admin) .hq-more-links [data-view-link="engine"],
   body:not(.session-admin) .hq-more-links [data-view-link="securite"],
   body:not(.session-admin) .hq-more-links [data-view-link="musique"],
-  body:not(.session-admin) .hq-more-links [data-view-link="robotique"]{display:none}
+  body:not(.session-admin) .hq-more-links [data-view-link="robotique"],
+  body:not(.session-admin) .hq-more-links [data-view-link="atelier3d"]{display:none}
+  .bottom-nav button.hq-nav-collapse{display:none}
 }
 @media (max-width:520px){
   /* The view toolbar (search, history, Mode complet) used to refuse to wrap: on a 320px phone it forced the layout
@@ -8168,21 +8677,23 @@ body.kiosk .bottom-nav{display:none}
   .icon-actions{grid-template-columns:repeat(4,minmax(0,1fr))}
 }
 @media (min-width:900px){
-  body{padding-bottom:0;display:grid;grid-template-columns:164px 1fr;min-height:100vh}
-  .bottom-nav{position:sticky;top:0;left:auto;right:auto;bottom:auto;height:100vh;width:164px;grid-template-columns:1fr;
-    border-top:0;border-right:1px solid var(--line);padding:10px 8px;align-content:stretch;gap:2px;order:0;
-    grid-auto-rows:minmax(0,1fr);overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin}
-  /* Icon and label on one line: a 14-row rail of stacked pairs ran past the bottom of a 768px window and hid Système. */
-  /* The rows share the window height instead of overflowing it: 18 tabs at 768px would need 800px of rail and cut Système. */
+  :root{--nav-w:164px}
+  body.nav-rail-compact{--nav-w:56px}
+  body{padding-bottom:0;display:grid;grid-template-columns:var(--nav-w,164px) 1fr;min-height:100vh}
+  .bottom-nav{position:sticky;top:0;left:auto;right:auto;bottom:auto;height:100vh;width:var(--nav-w,164px);grid-template-columns:1fr;
+    border-top:0;border-right:1px solid var(--line);padding:10px 8px;align-content:start;gap:2px;order:0;
+    grid-auto-rows:minmax(44px,auto);overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-gutter:stable}
+  body.nav-rail-compact .bottom-nav{scrollbar-gutter:stable;padding-left:calc(4px + var(--nav-gutter,0px));padding-right:4px}
   .bottom-nav button{display:flex;flex-direction:row;align-items:center;justify-content:flex-start;gap:10px;
-    min-height:0;padding:6px 10px;border-radius:9px;font-size:.82rem;font-weight:650;text-align:left}
+    min-height:44px;padding:6px 10px;border-radius:9px;font-size:.82rem;font-weight:650;text-align:left}
+  body.nav-rail-compact .bottom-nav button{justify-content:center;padding:6px 0}
+  .nav-rail-compact .bottom-nav .nav-label{display:none}
   .bottom-nav .nav-ico{flex:0 0 auto}
   .bottom-nav .nav-svg{width:18px;height:18px}
   .bottom-nav .nav-label{overflow:hidden;text-overflow:ellipsis}
   .bottom-nav button.active{box-shadow:inset 3px 0 0 var(--accent),inset 0 0 0 1px color-mix(in srgb,var(--accent) 30%,transparent)}
-  /* Hairlines between the three kinds of space (quotidien, créer/espaces, système) without wrapping the buttons, so the
-     drag ordering in hq-nav-order.js keeps working on the same flat children. */
-  .bottom-nav [data-nav="dessiner"],.bottom-nav [data-nav="ops"]{margin-top:7px;border-top:1px solid var(--line);padding-top:7px}
+  /* Hairlines between the three kinds of space (quotidien, créer/espaces, système) follow data-group-start written by hq-nav-order.js */
+  .bottom-nav button[data-group-start="1"]{margin-top:7px;border-top:1px solid var(--line);padding-top:7px}
   /* Simple mode keeps Engine / Sécurité / Musique out of the rail, but those pages stay reachable (Pistonia's chip opens
      Engine, the music chip opens Musique, and #engine is a link). Being on one used to leave no highlighted row at all, so
      the row that belongs to the current view is revealed while you are in it, and only then. */
@@ -8191,12 +8702,34 @@ body.kiosk .bottom-nav{display:none}
   body.mode-simple[data-view="musique"] .bottom-nav [data-nav="musique"]{display:flex}
   .nav-label-mobile{display:none}
   .nav-label-desktop{display:inline}
-  .wrap{order:1;max-width:980px;padding:20px 24px 40px}
+  .wrap{order:1;width:100%;max-width:980px;padding:20px 24px 40px}
   #toasts{bottom:18px}
   .op-busy{bottom:72px}
   body[data-view="accueil"] .accueil-grid{display:grid;grid-template-columns:1.15fr 0.95fr;gap:12px;align-items:start}
   .accueil-side{display:flex;flex-direction:column;gap:0}
 }
+/* 900–1199px: the content uses the whole lane, so the floating companions sat on top of
+   robot monitor labels and Forge's drawer sliders. Reserve the strip they occupy. */
+@media (min-width:900px) and (max-width:1199px){
+  .wrap{padding-right:168px}
+}
+/* Same lane on the 600–899px band: the companion dock is 120–136px wide and pinned right,
+   so the page keeps a clear strip for it instead of running text underneath. */
+@media (min-width:600px) and (max-width:899px){
+  .wrap{padding-right:164px}
+}
+/* Phones: the chip is pinned 12px from the edge, so 120px keeps it and its bubble clear of the
+   content column. The page header is chrome above the companion band and keeps the full width. */
+@media (max-width:599.98px){
+  .wrap{padding-right:120px}
+  header.topbar{margin-right:-120px}
+}
+/* Forge keeps a full-height side panel to the right of the page at every desktop width, so the
+   same lane is reserved there too: the Forgia dock sits beside the panel, not on its sliders. */
+@media (min-width:900px){body[data-view="forge"] main.wrap{padding-right:168px}}
+/* Above 1200 the centred wrap leaves only a slim margin, so every view reserves the same
+   companion lane instead of letting the floating companion sit on the content edge. */
+@media (min-width:1200px){main.wrap{padding-right:168px}}
 .skip-link{position:absolute;left:-9999px;top:0;z-index:100;background:var(--accent);color:var(--accent-text);padding:10px 14px;font-weight:800;border-radius:0 0 8px 0}
 .skip-link:focus{left:0}
 .visually-hidden{position:absolute!important;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0}
@@ -8847,7 +9380,7 @@ try {{
         </div>
       </div>
 
-      <p id="pinHelp" class="visually-hidden">Saisis le code PIN à 8 chiffres pour déverrouiller l'accès.</p>
+      <p id="pinHelp" class="visually-hidden">Saisis ton code PIN pour déverrouiller l'accès.</p>
       <button type="submit" class="btn-submit" id="submitBtn">
         <span class="btn-spinner" aria-hidden="true"></span>
         <span id="btnText">Connexion</span>
@@ -9414,6 +9947,35 @@ def render_app() -> bytes:
     # The adult line bank ships only when adult mode is enabled in the config.
     lewd_script = ('<script src="/assets/hq-companion-lewd-lines.js"></script>'
                    if CONFIG.get("companion_nsfw_enabled", False) is True else "")
+    lazy_css_script = """<script>
+window.HQ_LAZY_CSS = {
+  carnet: ['hq-carnet.css'],
+  forge: ['hq-forge.css'],
+  dessiner: ['hq-dessiner.css', 'hq-dessiner-motion.css'],
+  projets: ['hq-projects.css'],
+  inventaire: ['hq-inventory.css'],
+  engine: ['hq-engine.css'],
+  securite: ['hq-security.css']
+};
+window.hqEnsureViewCss = function (view) {
+  const files = window.HQ_LAZY_CSS && window.HQ_LAZY_CSS[view];
+  if (!files) return;
+  const v = window.HQ_ASSET_BUILD ? '?v=' + encodeURIComponent(window.HQ_ASSET_BUILD) : '';
+  for (const file of files) {
+    if (document.querySelector('link[data-hq-css="' + file + '"]')) continue;
+    const link = document.createElement('link');
+    link.rel = 'stylesheet';
+    link.setAttribute('data-hq-css', file);
+    link.href = '/assets/' + file + v;
+    document.head.appendChild(link);
+  }
+};
+window.hqWarmLazyCss = function () {
+  for (const view of Object.keys(window.HQ_LAZY_CSS || {})) window.hqEnsureViewCss(view);
+};
+if (window.requestIdleCallback) requestIdleCallback(function () { window.hqWarmLazyCss(); }, { timeout: 4000 });
+else window.addEventListener('load', function () { setTimeout(window.hqWarmLazyCss, 1500); });
+</script>"""
     page = f"""<!DOCTYPE html>
 <html lang="fr" data-hq-boot-revision="{_BOOT_REVISION}">
 <head>
@@ -9433,13 +9995,8 @@ def render_app() -> bytes:
 <link rel="stylesheet" href="/assets/hq-household-icons.css"/>
 <link rel="stylesheet" href="/assets/hq-household-meals.css"/>
 <link rel="stylesheet" href="/assets/hq-household-budget.css"/>
-<link rel="stylesheet" href="/assets/hq-dessiner.css"/>
-<link rel="stylesheet" href="/assets/hq-carnet.css"/>
-<link rel="stylesheet" href="/assets/hq-inventory.css"/>
-<link rel="stylesheet" href="/assets/hq-projects.css"/>
 <link rel="stylesheet" href="/assets/hq-mini-quests.css"/>
 <link rel="stylesheet" href="/assets/hq-files.css"/>
-<link rel="stylesheet" href="/assets/hq-forge.css"/>
 <link rel="stylesheet" href="/assets/hq-home.css"/>
 <link rel="stylesheet" href="/assets/hq-home-fx.css"/>
 <link rel="preload" href="/assets/hq-font-inter.woff2" as="font" type="font/woff2" crossorigin/>
@@ -9453,14 +10010,11 @@ def render_app() -> bytes:
 <link rel="stylesheet" href="/assets/hq-radial.css"/>
 <link rel="stylesheet" href="/assets/hq-desk.css"/>
 <link rel="stylesheet" href="/assets/hq-lecteur.css"/>
-<link rel="stylesheet" href="/assets/hq-dessiner-motion.css"/>
 <link rel="stylesheet" href="/assets/hq-ai.css"/>
 <link rel="stylesheet" href="/assets/hq-companion.css"/>
 <link rel="stylesheet" href="/assets/hq-inventoria.css"/>
 <link rel="stylesheet" href="/assets/hq-musica-chip.css"/>
-<link rel="stylesheet" href="/assets/hq-engine.css"/>
 <link rel="stylesheet" href="/assets/hq-pistonia.css"/>
-<link rel="stylesheet" href="/assets/hq-security.css"/>
 <link rel="stylesheet" href="/assets/hq-securia-chip.css"/>
 <link rel="stylesheet" href="/assets/hq-culinia-chip.css"/>
 <link rel="stylesheet" href="/assets/hq-forgia-chip.css"/>
@@ -9469,6 +10023,7 @@ def render_app() -> bytes:
 <link rel="stylesheet" href="/assets/hq-companion-adult-face.css"/>
 <link rel="stylesheet" href="/assets/hq-companion-adult-fx.css"/>
 {debug_css_link}
+{lazy_css_script}
 <script src="/assets/qrcode.min.js"></script>
 </head>
 <body data-view="accueil"{debug_attr}>
@@ -9478,7 +10033,8 @@ def render_app() -> bytes:
     <img class="hq-dangling-member" src="/assets/dangling-member.png" alt="" width="153" height="486" decoding="async" draggable="false"/>
   </div>
 </div>
-<nav class="bottom-nav" aria-label="Navigation HQ">
+<nav class="bottom-nav" id="hq-nav" aria-label="Navigation HQ">
+  <button type="button" class="hq-nav-collapse" id="hq-nav-collapse" aria-expanded="true" aria-controls="hq-nav" aria-label="Réduire le menu" data-help="Réduire ou déployer le rail latéral."><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M15 6l-6 6 6 6M4 5v14"/></svg></span><span class="nav-label">Réduire</span></button>
   <button data-help="La page d'accueil : l'essentiel du jour." type="button" class="active" data-nav="accueil" aria-current="page"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" d="M4 10.5 12 4l8 6.5V20a1 1 0 0 1-1 1h-5v-6H10v6H5a1 1 0 0 1-1-1z"/></svg></span><span class="nav-label">Accueil</span></button>
   <button type="button" id="nav-intime" data-nav="intime" hidden data-help="Espace rien qu'à vous deux — visible seulement avec une session admin (PIN admin)."><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M12 20.5s-6.5-4.2-6.5-9.4a4.9 4.9 0 0 1 9.3-2.1A4.9 4.9 0 0 1 18.5 11c0 5.2-6.5 9.5-6.5 9.5z"/></svg></span><span class="nav-label">Intime</span></button>
   <button data-help="Le carnet : notes, idées et brouillons." type="button" data-nav="carnet"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" d="M6 3.5h11a1.5 1.5 0 0 1 1.5 1.5v14a1.5 1.5 0 0 1-1.5 1.5H6zM6 3.5v17M9.5 8h5.5M9.5 11.5h5.5"/></svg></span><span class="nav-label">Carnet</span></button>
@@ -9486,16 +10042,18 @@ def render_app() -> bytes:
   <button data-help="Les repas de la semaine et les recettes." type="button" id="nav-repas" data-nav="repas" hidden><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M5 10h14v8a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2zM8 10V7a4 4 0 0 1 8 0v3"/></svg></span><span class="nav-label">Repas</span></button>
   <button data-help="Les comptes du foyer et les dépenses du mois." type="button" id="nav-budget" data-nav="budget" hidden><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><rect x="3.5" y="6" width="17" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path fill="none" stroke="currentColor" stroke-width="1.8" d="M3.5 10h17"/></svg></span><span class="nav-label">Budget</span></button>
   <button data-help="Un espace de dessin, au doigt ou au stylet." type="button" data-nav="dessiner"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" d="M4 20l1.2-4.6L15.8 4.8a2 2 0 0 1 2.8 0l.6.6a2 2 0 0 1 0 2.8L8.6 18.8zM13.5 7l3.5 3.5M4 20h7"/></svg></span><span class="nav-label">Dessiner</span></button>
+  <button data-help="Playground : parties d'échecs et duels avec Else et Transferania." type="button" data-nav="playground"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" d="M7 20h10M8.5 17h7l-1-6.5 2.5-2-3-2.5V4h-4v2L7 8.5l2.5 2z"/></svg></span><span class="nav-label">Playground</span></button>
   <button data-help="Forge : générer et garder des images." type="button" data-nav="forge"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><rect x="4" y="5" width="16" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="9" cy="10" r="1.4" fill="currentColor"/><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M4 16l4.2-3.2 2.6 2.2L15 11l5 4"/></svg></span><span class="nav-label">Forge</span></button>
   <button data-help="Les fichiers du HQ : parcourir, ouvrir, envoyer." type="button" data-nav="fichiers"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M3 7.5A1.5 1.5 0 0 1 4.5 6H9l2 2h8.5A1.5 1.5 0 0 1 21 9.5v8a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z"/></svg></span><span class="nav-label">Fichiers</span></button>
   <button data-help="Les projets en cours et leurs tâches." type="button" data-nav="projets"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" d="M14.5 6.5l3 3M4 20l4.5-1 10-10a2.1 2.1 0 0 0-3-3l-10 10zM4 4h6M4 8h3M16 20h4"/></svg></span><span class="nav-label">Projets</span></button>
   <button data-help="L'inventaire de la maison : stocks et courses." type="button" data-nav="inventaire"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" d="M12 3.5l8 4v9l-8 4-8-4v-9zM4 7.5l8 4 8-4M12 11.5v9"/></svg></span><span class="nav-label">Inventaire</span></button>
   <button data-help="Lire ou regarder un fichier en grand." type="button" data-nav="lecteur"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path fill="currentColor" d="M10 8.6v6.8l5.6-3.4z"/></svg></span><span class="nav-label">Lecteur</span></button>
   <button type="button" id="nav-musique" data-nav="musique" hidden data-help="Spotify natif : lecture, playlists, mixer DJ et découvertes. Réservé admin."><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M9 18V6l12-2v12"/><circle cx="7" cy="18" r="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="19" cy="16" r="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/></svg></span><span class="nav-label">Musique</span></button>
+  <button type="button" data-nav="atelier3d" data-help="Atelier 3D : préparation de plateau, tranchage OrcaSlicer, aperçu G-code et impression 3D. Réservé admin."><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" d="M12 3l7.5 4.2v9.6L12 21l-7.5-4.2V7.2zM4.5 7.2 12 11.4l7.5-4.2M12 11.4V21"/></svg></span><span class="nav-label">Atelier 3D</span></button>
   <button data-help="Le terminal : commandes et opérations du pont." type="button" data-nav="ops"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M5 7l5 5-5 5M12 17h7"/></svg></span><span class="nav-label">Terminal</span></button>
   <button type="button" id="nav-engine" data-nav="engine" data-help="Moteurs locaux (voix, images, serveur) : état, mémoire, démarrer/arrêter. Réservé admin."><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><rect x="7" y="7" width="10" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4"/></svg></span><span class="nav-label">Engine</span></button>
   <button type="button" id="nav-securite" data-nav="securite" data-help="Trafic réseau, IPs, provenance, sécurité et alertes en direct. Réservé admin."><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M12 3s7 3 7 9c0 5-7 9-7 9s-7-4-7-9c0-6 7-9 7-9z"/><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="m9.5 12 1.8 1.8 3.7-3.6"/></svg></span><span class="nav-label">Sécurité</span></button>
-  <button type="button" data-nav="robotique"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path d="M4 20h16M8 20v-4l5-5-4-5m4 5 5-3m0 0V4m0 4h4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><circle cx="9" cy="6" r="2" fill="none" stroke="currentColor" stroke-width="1.8"/></svg></span><span class="nav-label">Robotique</span></button>
+  <button type="button" data-nav="robotique" data-help="Laboratoire Robotique : bras, caméra et cinématique 3D. Réservé admin."><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path d="M4 20h16M8 20v-4l5-5-4-5m4 5 5-3m0 0V4m0 4h4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><circle cx="9" cy="6" r="2" fill="none" stroke="currentColor" stroke-width="1.8"/></svg></span><span class="nav-label">Robotique</span></button>
   <button data-help="Système : réglages, sécurité, sauvegardes." type="button" data-nav="plus"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><circle cx="6" cy="12" r="1.4" fill="currentColor"/><circle cx="12" cy="12" r="1.4" fill="currentColor"/><circle cx="18" cy="12" r="1.4" fill="currentColor"/></svg></span><span class="nav-label nav-label-mobile">Plus</span><span class="nav-label nav-label-desktop">Système</span></button>
 </nav>
 <main class="wrap" id="main" tabindex="-1">
@@ -9563,8 +10121,16 @@ def render_app() -> bytes:
       <button type="button" class="home-act" id="home-act-event" data-help="Ajoute un événement en une phrase : « Dentiste demain 14h »."><span class="home-act-ico" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><rect x="4" y="5" width="16" height="15" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M8 3.5v3M16 3.5v3M4 10h16M12 13v4.5M9.75 15.25h4.5"/></svg></span><span class="home-act-label">Événement</span></button>
       <button type="button" class="home-act" id="home-act-file" data-help="Envoie un fichier dans le dossier choisi (Envoyer, plus bas). Sur ordinateur, glisse-le n'importe où sur Accueil."><span class="home-act-ico" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" d="M12 15V4.5M7.5 9 12 4.5 16.5 9M5 14.5v4A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5v-4"/></svg></span><span class="home-act-label">Envoyer</span></button><button type="button" class="home-act" id="home-act-budget" data-home-open="budget" data-help="Ouvre Budget pour ajouter une dépense."><span class="home-act-ico" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><rect x="3.5" y="6" width="17" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path fill="none" stroke="currentColor" stroke-width="1.8" d="M3.5 10h17"/></svg></span><span class="home-act-label">Dépense</span></button>
 <button type="button" class="home-act" id="home-act-repas" data-home-open="repas" data-help="Ouvre Repas pour planifier un repas."><span class="home-act-ico" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M5 10h14v8a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2zM8 10V7a4 4 0 0 1 8 0v3"/></svg></span><span class="home-act-label">Repas</span></button>
-<button type="button" class="home-act" id="home-act-inventaire" data-home-open="inventaire" data-help="Ouvre Inventaire pour ajouter un article."><span class="home-act-ico" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M4.5 8 12 4l7.5 4v8L12 20l-7.5-4zM4.5 8 12 12l7.5-4M12 12v8"/></svg></span><span class="home-act-label">Article</span></button>
+      <button type="button" class="home-act" id="home-act-inventaire" data-home-open="inventaire" data-help="Ouvre Inventaire pour ajouter un article."><span class="home-act-ico" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M4.5 8 12 4l7.5 4v8L12 20l-7.5-4zM4.5 8 12 12l7.5-4M12 12v8"/></svg></span><span class="home-act-label">Article</span></button>
     </nav>
+
+    <section class="hq" id="system-brief" aria-labelledby="brief-title">
+      <div class="sec-head">
+        <h2 id="brief-title">Brief du jour</h2>
+        <p class="sec-hint">Résumé déterministe, sans service externe</p>
+      </div>
+      <div id="hq-brief" class="brief"><p class="hint">Chargement…</p></div>
+    </section>
 
     <div class="home-col home-col-main">
         <section class="hq home-brief" id="home-brief-card" aria-labelledby="home-brief-title" hidden>
@@ -9762,6 +10328,8 @@ def render_app() -> bytes:
   <div data-panel="engine" id="hq-engine-panel" aria-label="Engine"></div>
   <div data-panel="securite" id="hq-security-panel" aria-label="Sécurité et Trafic"></div>
   <section data-panel="robotique" id="hq-robotics-app" aria-label="Robotique"><p id="hq-robotics-loading" class="hint">Chargement du laboratoire…</p></section>
+  <section data-panel="atelier3d" id="hq-print3d-app" aria-label="Atelier 3D"><p id="hq-print3d-loading" class="hint">Chargement de l'Atelier 3D…</p></section>
+  <section data-panel="playground" id="hq-playground-app" aria-label="Playground"><p id="hq-playground-loading" class="hint">Chargement du Playground…</p></section>
   <div data-panel="inventaire">
     <section class="hq hq-inv" aria-labelledby="inv-title">
       <div class="sec-head">
@@ -9892,7 +10460,7 @@ def render_app() -> bytes:
           <label for="shell-cmd">Commande</label>
           <div class="term-cmd-line">
             <span class="term-prompt" aria-hidden="true">$</span>
-            <input id="shell-cmd" type="text" placeholder="Ex. Get-Process | Select -First 5" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" enterkeyhint="send" aria-describedby="shell-where"/>
+            <textarea id="shell-cmd" rows="1" placeholder="Ex. Get-Process | Select -First 5" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" enterkeyhint="send" aria-describedby="shell-where"></textarea>
           </div>
         </div>
         <p class="hint" id="shell-where"><span class="term-hint-wide">Entrée ou Ctrl+Entrée lance · ↑ ↓ historique · Tab complète · stdin fermé (pas de commande interactive)</span><span class="term-hint-narrow">Entrée lance · stdin fermé</span></p>
@@ -9932,6 +10500,10 @@ def render_app() -> bytes:
         </div>
         <div class="busy-line" id="shell-busy" hidden><span class="busy-dot"></span><span class="busy-text">Exécution…</span><span class="busy-elapsed">0s</span></div>
         <pre id="shell-out" class="term-out" role="log" aria-live="polite" aria-atomic="false" aria-label="Sortie du terminal" tabindex="0" dir="ltr"></pre>
+        <div class="term-empty" id="term-empty" hidden>
+          <p class="hint">Aucune sortie encore — une commande rapide :</p>
+          <div class="row hq-actions" id="term-empty-cmds"></div>
+        </div>
       </div>
 
       <div class="term-jobs-wrap" id="term-jobs-wrap" hidden>
@@ -10738,8 +11310,8 @@ def render_app() -> bytes:
       </section>
       <section class="forge-block forge-m" id="forge-normal-gallery" aria-labelledby="forge-gallery-title">
         <h2 id="forge-gallery-title">Galerie</h2>
-        <form id="forge-gallery-search" class="forge-gallery-search" role="search"><input id="forge-gallery-q" type="search" maxlength="120" autocomplete="off" spellcheck="false" placeholder="Prompt, modèle, étiquette…" aria-label="Chercher dans la galerie"/><button type="submit">Chercher</button><button type="button" id="forge-gallery-clear" hidden>Effacer</button></form>
-        <div id="forge-gallery-filters" class="forge-triage-row" role="group" aria-label="Filtres et rangement de la galerie"><div class="forge-gallery-filter-group" role="group" aria-label="Filtres de la galerie"><button type="button" class="forge-triage-chip" data-gview="" aria-pressed="true">Tout</button><button type="button" class="forge-triage-chip" data-gview="untriaged" aria-pressed="false">À trier</button></div><div class="forge-gallery-action-group" role="group" aria-label="Actions de la galerie"><button data-help="Ouvrir les filtres complets de la galerie." type="button" id="forge-gallery-advanced" class="forge-tool">Recherche avancée</button><button data-help="Trier les images à garder." type="button" id="forge-triage-open" class="secondary">Trier</button><button data-help="Ouvrir la corbeille des images." type="button" id="forge-trash-open" class="secondary">Corbeille</button></div></div>
+        <form id="forge-gallery-search" class="forge-gallery-search" role="search"><input id="forge-gallery-q" type="search" maxlength="120" autocomplete="off" spellcheck="false" placeholder="Prompt, modèle, étiquette…" aria-label="Chercher dans la galerie"/><button data-help="Lancer la recherche dans la galerie." type="submit">Chercher</button><button data-help="Effacer la recherche." type="button" id="forge-gallery-clear" hidden>Effacer</button></form>
+        <div id="forge-gallery-filters" class="forge-triage-row" role="group" aria-label="Filtres et rangement de la galerie"><div class="forge-gallery-filter-group" role="group" aria-label="Filtres de la galerie"><button data-help="Afficher toutes les images de la galerie." type="button" class="forge-triage-chip" data-gview="" aria-pressed="true">Tout</button><button data-help="Afficher uniquement les images à trier." type="button" class="forge-triage-chip" data-gview="untriaged" aria-pressed="false">À trier</button></div><div class="forge-gallery-action-group" role="group" aria-label="Actions de la galerie"><button data-help="Ouvrir les filtres complets de la galerie." type="button" id="forge-gallery-advanced" class="forge-tool">Recherche avancée</button><button data-help="Trier les images à garder." type="button" id="forge-triage-open" class="secondary">Trier</button><button data-help="Ouvrir la corbeille des images." type="button" id="forge-trash-open" class="secondary">Corbeille</button></div></div>
         <p id="forge-gallery-count" class="forge-gallery-count" role="status"></p>
         <div id="forge-gallery-empty" class="forge-empty-steps"><p class="forge-note">La galerie HQ est vide. Les images de Forge ne sont pas copiées ici toutes seules.</p><ol class="forge-steps"><li>Génère une image : elle s'ouvre dans Résultat.</li><li>Sur cette image, touche Gardée (ou Favori) pour la ranger ici.</li><li>Ensuite, cherche par prompt, modèle ou étiquette juste au-dessus.</li></ol></div>
         <div id="forge-gallery" class="forge-grid"></div>
@@ -10983,42 +11555,59 @@ def render_app() -> bytes:
       <section aria-labelledby="hq-more-spaces">
         <h2 id="hq-more-spaces">Autres espaces</h2>
         <div class="hq-more-links">
+          <a href="#playground" data-view-link="playground">Playground</a>
           <a href="#lecteur" data-view-link="lecteur">Lecteur</a>
           <a href="#musique" data-view-link="musique">Musique</a>
           <a href="#intime" data-view-link="intime">Tête-à-tête</a>
           <a href="#engine" data-view-link="engine">Engine</a>
           <a href="#robotique" data-view-link="robotique">Robotique</a>
+          <a href="#atelier3d" data-view-link="atelier3d">Atelier 3D</a>
           <a href="#securite" data-view-link="securite">Sécurité</a>
           <a href="#ops" data-view-link="ops" class="mode-complet-only">Terminal</a>
         </div>
       </section>
       <h2 class="hq-more-system-title">Système</h2>
     </nav>
-    <nav class="sys-jump" aria-label="Sections Système">
-      <button type="button" class="admin-only" id="system-robotics-settings">Réglages Robotique</button>
-      <button data-help="Gemini principal, clé NVIDIA de repli et modèle des visites." type="button" class="admin-only" data-jump="system-nvidia">Visites (Gemini / NVIDIA)</button>
-      <button data-help="Cet appareil, la session et la déconnexion." type="button" data-jump="system-session">Session</button>
-      <button data-help="PINs, accès et sécurité du pont." type="button" data-jump="system-security">Sécurité &amp; PINs</button>
-      <button data-help="Sauvegardes et restauration." type="button" data-jump="system-backups">Sauvegardes</button>
-      <button data-help="Notifications sur cet appareil." type="button" data-jump="system-notifications">Notifications</button>
-      <button data-help="Règles automatiques du foyer." type="button" class="mode-complet-only" data-jump="system-automations">Automatisations</button>
-      <button data-help="Tâches planifiées du pont." type="button" class="mode-complet-only" data-jump="system-tasks">Tâches</button>
-      <button data-help="Journal des événements récents." type="button" data-jump="system-journal">Journal</button>
-      <button data-help="Petites quêtes du quotidien." type="button" data-jump="system-mini-quests">Mini-Quêtes</button>
-      <button data-help="Alertes en attente." type="button" data-jump="system-alerts">Alertes</button>
-      <button data-help="Version, appareils et diagnostic." type="button" data-jump="system-info">Infos</button>
-    </nav>
+    <details class="hq-sys-fold" id="hq-sys-fold">
+      <summary>Accès direct</summary>
+      <div class="sys-actions">
+        <button data-help="Ouvrir les réglages de la section Robotique." type="button" class="admin-only" id="system-robotics-settings">Réglages Robotique</button>
+      </div>
+      <nav class="sys-jump" aria-label="Sections Système">
+        <button data-help="Gemini principal, clé NVIDIA de repli et modèle des visites." type="button" class="admin-only" data-jump="system-nvidia">Visites (Gemini / NVIDIA)</button>
+        <button data-help="Cet appareil, la session et la déconnexion." type="button" data-jump="system-session">Session</button>
+        <button data-help="PINs, accès et sécurité du pont." type="button" data-jump="system-security">Sécurité &amp; PINs</button>
+        <button data-help="Sauvegardes et restauration." type="button" data-jump="system-backups">Sauvegardes</button>
+        <button data-help="Notifications sur cet appareil." type="button" data-jump="system-notifications">Notifications</button>
+        <button data-help="Règles automatiques du foyer." type="button" class="mode-complet-only" data-jump="system-automations">Automatisations</button>
+        <button data-help="QR, wallboard et installation PWA." type="button" data-jump="system-access">Accès</button>
+        <button data-help="Journal des événements récents." type="button" data-jump="system-journal">Journal</button>
+        <button data-help="Transferania, bulle et préférences locales." type="button" data-jump="system-transferania">Transferania</button>
+        <button data-help="Petites quêtes du quotidien." type="button" data-jump="system-mini-quests">Mini-Quêtes</button>
+        <button data-help="Alertes en attente." type="button" data-jump="system-alerts">Alertes</button>
+        <button data-help="Pont : dossiers et limites du bridge." type="button" data-jump="system-info">Pont</button>
+      </nav>
+    </details>
     <section class="hq" id="system-session" aria-labelledby="plus-status-title">
       <div class="sec-head">
-        <h2 id="plus-status-title">Session <span class="badge" id="hq-uptime">—</span></h2>
-        <p class="sec-hint">Espace disque, hôte, et rôle de connexion</p>
+        <h2 id="plus-status-title">État <span class="badge" id="hq-uptime">—</span></h2>
+        <p class="sec-hint">Session, disque et attention <span class="scope">ce PC</span></p>
       </div>
-      <dl class="hq-status" id="hq-status">
-        <dt>Espace libre</dt><dd id="hq-disk">…</dd>
-        <dt>Hôte</dt><dd id="hq-host">…</dd>
-        <dt>Max upload</dt><dd id="hq-max">…</dd>
-        <dt>Session</dt><dd id="hq-role">…</dd>
-      </dl>
+      <div class="sys-tiles" id="hq-status">
+        <div class="sys-tile"><span class="sys-tile-k">Disque</span><span id="hq-disk">…</span></div>
+        <div class="sys-tile"><span class="sys-tile-k">Session</span><span id="hq-role">…</span></div>
+        <div class="sys-tile"><span class="sys-tile-k">Attention</span><span id="hq-attn-count">0</span></div>
+        <div class="sys-tile"><span class="sys-tile-k">Build</span><span id="hq-build">{_BOOT_REVISION}</span></div>
+      </div>
+      <span id="hq-health" class="visually-hidden"></span>
+      <div id="hq-spark-host" class="spark-host"></div>
+    </section>
+
+    <section class="hq" id="system-access" aria-labelledby="system-access-title">
+      <div class="sec-head">
+        <h2 id="system-access-title">Accès</h2>
+        <p class="sec-hint">Wallboard, QR et PWA <span class="scope">ce PC</span></p>
+      </div>
       <details class="access-share">
         <summary>Partager l'accès</summary>
         <p class="sec-hint">Écran TV / présence / QR → <a href="/wallboard?theme=oled&kiosk=1" style="color:var(--accent)">Wallboard</a>
@@ -11027,10 +11616,8 @@ def render_app() -> bytes:
           {qr_lan}
           {qr_ts}
         </div>
-        <p class="hint">QR = adresse du pont seulement (pas de PIN ni de session).</p>
+        <p class="hint">QR = adresse du pont seulement (pas de PIN ni de session). PWA : iPhone → Partager → Sur l'écran d'accueil.</p>
       </details>
-      <span id="hq-health" class="visually-hidden"></span>
-      <div id="hq-spark-host" class="spark-host"></div>
     </section>
 
     <section class="hq admin-only" id="system-security" aria-labelledby="sec-users-title">
@@ -11043,19 +11630,13 @@ def render_app() -> bytes:
       </div>
     </section>
 
-    <section class="hq" id="system-brief" aria-labelledby="brief-title">
-      <div class="sec-head">
-        <h2 id="brief-title">Brief du jour</h2>
-        <p class="sec-hint">Résumé déterministe, sans service externe</p>
-      </div>
-      <div id="hq-brief" class="brief"><p class="hint">Chargement…</p></div>
-    </section>
-
     <section class="hq" id="system-backups" aria-labelledby="backup-title">
       <div class="sec-head">
         <h2 id="backup-title">Sauvegardes</h2>
         <p class="sec-hint">Catalogue local. La restauration écrase le dossier choisi.</p>
       </div>
+      <p id="hq-backup-summary" class="hint">Chargement…</p>
+      <button data-help="Créer une sauvegarde maintenant." type="button" class="secondary" id="btn-backup-now">Sauvegarder maintenant</button>
       <ul class="hq-list" id="hq-backups"><li class="hint">Chargement…</li></ul>
     </section>
 
@@ -11100,18 +11681,7 @@ def render_app() -> bytes:
       <button data-help="Recevoir les notifications sur cet appareil." type="button" class="secondary" id="btn-push">Activer sur cet appareil</button>
     </section>
 
-    <details class="hq mode-complet-only" id="system-tasks">
-      <summary>
-        <div class="sec-head">
-          <span class="summary-title" style="font-size:1.12rem;font-weight:800;color:var(--text)">Tâches</span>
-          <p class="sec-hint">Le tableau des tâches vit maintenant dans Projets</p>
-        </div>
-      </summary>
-      <p class="hint">Les cartes sans projet (et celles créées depuis le Carnet) sont dans Projets › Tâches libres.</p>
-      <button data-help="Aller à la page Projets." type="button" class="secondary" onclick="setView('projets')">Ouvrir Projets</button>
-    </details>
-
-    <details class="hq" id="system-journal">
+    <details class="hq" id="system-journal" data-open-key="system-journal">
       <summary>
         <div class="sec-head">
           <span class="summary-title" id="events-title" style="font-size:1.12rem;font-weight:800;color:var(--text)">Journal technique</span>
@@ -11152,18 +11722,26 @@ def render_app() -> bytes:
 
     <section class="hq" id="system-info">
       <div class="sec-head">
-        <h2>Infos</h2>
-        <p class="sec-hint">Réglages de base du pont</p>
+        <h2>Pont</h2>
+        <p class="sec-hint">Dossiers et limites <span class="scope">le pont</span></p>
       </div>
       <dl class="hq-status">
         <dt>Dossier PC</dt><dd>C:\\Transfert\\{{Inbox,Uni,Print}}</dd>
+        <dt>Hôte</dt><dd id="hq-host">…</dd>
+        <dt>Max upload</dt><dd id="hq-max">…</dd>
         <dt>PIN</dt><dd>{"activé" if pin_enabled() else "désactivé"}</dd>
         <dt>Gros fichiers</dt><dd>jusqu'à {html.escape(human_size(max_upload_bytes()))} (stream)</dd>
         <dt>Discord</dt><dd>{"activé" if str(CONFIG.get("discord_webhook_url") or "").strip() else "off"}</dd>
-        <dt>PWA</dt><dd>iPhone: Partager → Sur l'écran d'accueil</dd>
       </dl>
       <div class="field" style="margin-top:12px">
         <label><input type="checkbox" id="hq-polish-sound"/> Sons discrets lors des succès ( très faible )</label>
+      </div>
+    </section>
+
+    <section class="hq" id="system-transferania" aria-labelledby="transferania-settings-title">
+      <div class="sec-head">
+        <h2 id="transferania-settings-title">Transferania</h2>
+        <p class="sec-hint">Bulle, voix et mémoire <span class="scope">ce navigateur</span> <span class="scope">admin</span></p>
       </div>
       <div class="field">
         <label><input type="checkbox" id="hq-companion-on" checked/> Transferania — bulle flottante (commentaires + chat)</label>
@@ -11232,8 +11810,8 @@ def render_app() -> bytes:
           <p class="hint">Identifiant du modèle affiché sur build.nvidia.com ; il peut changer côté NVIDIA.</p>
         </div>
         <div class="field" style="display:flex;gap:8px;flex-wrap:wrap">
-          <button type="submit" class="secondary" id="nvidia-save">Enregistrer</button>
-          <button type="button" class="secondary" id="nvidia-clear-key">Effacer la clé</button>
+          <button data-help="Enregistrer la clé et le modèle NIM de repli." type="submit" class="secondary" id="nvidia-save">Enregistrer</button>
+          <button data-help="Effacer la clé NVIDIA enregistrée." type="button" class="secondary" id="nvidia-clear-key">Effacer la clé</button>
         </div>
         <p class="hint" id="nvidia-settings-status" role="status" aria-live="polite"></p>
         <p class="hint" id="nvidia-visit-telemetry" role="status" aria-live="polite">Chargement…</p>
@@ -11270,6 +11848,7 @@ def render_app() -> bytes:
 <script src="/assets/hq-home-fx.js"></script>
 <script src="/assets/hq-theme.js"></script>
 <script src="/assets/hq-nav-order.js"></script>
+<script src="/assets/hq-nav-plus.js"></script>
 <script src="/assets/hq-companion-sfx-bus.js"></script>
 <script src="/assets/hq-companion-reaction-audio.js"></script>
 <script src="/assets/hq-dangle-audio.js"></script>
@@ -11281,6 +11860,7 @@ def render_app() -> bytes:
 <script src="/assets/hq-nvidia-settings.js"></script>
 <script src="/assets/hq-polish.js"></script>
 <script src="/assets/hq-lecteur.js"></script>
+<script src="/assets/hq-lecteur-plus.js" defer></script>
 <script src="/assets/hq-dessiner-motion.js"></script>
 <script src="/assets/hq-ai.js"></script>
 {lewd_script}
@@ -11290,10 +11870,15 @@ def render_app() -> bytes:
 {reaction_hot_preload_link_tags()}
 <script src="/assets/hq-sister.js"></script>
 <script src="/assets/hq-voice-studio.js"></script>
+<script src="/assets/hq-companion-gaze.js"></script>
 <script src="/assets/hq-companion.js"></script>
 <script src="/assets/hq-image-chip-scale.js"></script>
 <script src="/assets/hq-else-chip.js"></script>
+<script src="/assets/hq-inventoria-i18n.js"></script>
 <script src="/assets/hq-inventoria-chip.js"></script>
+<script src="/assets/hq-inventoria-suivi.js"></script>
+<script src="/assets/hq-now-playing.js"></script>
+<script src="/assets/hq-musica-beat.js"></script>
 <script src="/assets/hq-musica-chip.js"></script>
 <script src="/assets/hq-musica-moments.js" defer></script>
 <script src="/assets/hq-engine.js"></script>
@@ -11311,6 +11896,7 @@ def render_app() -> bytes:
 <script src="/assets/hq-radial.js"></script>
 <script src="/assets/hq-ink.js"></script>
 <script src="/assets/hq-sketch-paint.js"></script>
+<script src="/assets/hq-sketch-palette.js"></script>
 <script src="/assets/hq-sketch-float.js"></script>
 <script src="/assets/hq-sketch-input.js"></script>
 <script src="/assets/hq-shape-snap.js"></script>
@@ -12085,13 +12671,16 @@ class Handler(BaseHTTPRequestHandler):
         self._json(403, {"error": "Réservé admin"})
         return False
 
-    def _security_headers(self, *, frame_self: bool = False) -> None:
+    def _security_headers(self, *, frame_self: bool = False, csp_override: str | None = None) -> None:
         """``frame_self`` (Stage 05, inline PDFs served by /files/ only): the Carnet source viewer embeds
         the confined local PDF in a same-origin frame. Every other response keeps ``frame-ancestors 'none'``."""
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "SAMEORIGIN" if frame_self else "DENY")
         # same-origin: keep Referer for CSRF on same-host GETs (logout); never leak off-origin
         self.send_header("Referrer-Policy", "same-origin")
+        if csp_override:
+            self.send_header("Content-Security-Policy", csp_override)
+            return
         import hq_forge_lifecycle_listener as _lifecycle_listener
         policy = _lifecycle_listener.content_security_policy(
             self.headers.get("Host") or "",
@@ -12207,11 +12796,15 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
+        # A caller that names its own Cache-Control replaces the default instead of stacking a second
+        # header on it: with two, the stricter one wins and no-store silenced the thumbnail lifetime.
+        override_cache = [v for k, v in (headers or ()) if k.lower() == "cache-control"]
+        self.send_header("Cache-Control", override_cache[0] if override_cache else "no-store")
         self._security_headers()
         if headers:
             for k, v in headers:
-                self.send_header(k, v)
+                if k.lower() != "cache-control":
+                    self.send_header(k, v)
         self.end_headers()
         self.wfile.write(body)
         try:
@@ -12746,11 +13339,14 @@ class Handler(BaseHTTPRequestHandler):
             return False
         return True
 
-    def _send_file(self, path: Path, as_download: bool = False) -> None:
+    def _send_file(self, path: Path, as_download: bool = False, content_type: str | None = None) -> bool:
+        """Stream a file. Returns False when the client disconnects before the body finishes."""
         size = path.stat().st_size
         ext = path.suffix.lower()
         force_attach = as_download or ext in FORCE_ATTACHMENT_EXTS
-        if force_attach and ext in FORCE_ATTACHMENT_EXTS:
+        if content_type:
+            ctype = content_type
+        elif force_attach and ext in FORCE_ATTACHMENT_EXTS:
             ctype = "application/octet-stream"
         else:
             ctype = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
@@ -12768,12 +13364,16 @@ class Handler(BaseHTTPRequestHandler):
         disp = "attachment" if force_attach else "inline"
         self.send_header("Content-Disposition", content_disposition(disp, path.name))
         self.end_headers()
-        with path.open("rb") as f:
-            while True:
-                chunk = f.read(CHUNK)
-                if not chunk:
-                    break
-                self.wfile.write(chunk)
+        try:
+            with path.open("rb") as f:
+                while True:
+                    chunk = f.read(CHUNK)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError):
+            return False
+        return True
 
     def _send_media(self, path: Path) -> None:
         """Lecteur stream: allow-listed type, inline, one byte range (206/416), chunked.
@@ -12834,6 +13434,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def _drawings_get(self, raw: str, parsed) -> bool:
         """Dessiner: list / reopen / fetch saved files. Admin-only (not in UPLOAD_* allowlists)."""
+        if raw == "/api/drawings/live":
+            code, payload = hq_drawings_live.serve_get(parse_qs(parsed.query))
+            self._json(code, payload)
+            return True
         if raw.startswith("/api/drawings/usdz/") and raw.endswith(".usdz"):
             import hq_usdz
             data = hq_usdz.fetch(raw[len("/api/drawings/usdz/"):-len(".usdz")])
@@ -12864,7 +13468,10 @@ class Handler(BaseHTTPRequestHandler):
         return True
 
     def _drawings_post(self, raw: str) -> bool:
-        if raw not in ("/api/drawings", "/api/drawings/mesh", "/api/drawings/usdz", "/api/drawings/step"):
+        if raw not in (
+            "/api/drawings", "/api/drawings/mesh", "/api/drawings/usdz", "/api/drawings/step",
+            "/api/drawings/live", "/api/drawings/delete", "/api/drawings/draft", "/api/drawings/duplicate",
+        ):
             return False
         try:
             length = int(self.headers.get("Content-Length", "0") or 0)
@@ -12881,12 +13488,28 @@ class Handler(BaseHTTPRequestHandler):
         except (UnicodeDecodeError, json.JSONDecodeError):
             self._json(400, {"error": "JSON invalide"})
             return True
+        if not isinstance(data, dict):
+            self._json(400, {"error": "JSON invalide"})
+            return True
         try:
+            if raw == "/api/drawings/live":
+                code, payload = hq_drawings_live.serve_post(data)
+                self._json(code, payload)
+                return True
             if raw == "/api/drawings/step":
                 body, name = hq_drawings.step_file(data)
                 self._send(200, body, "model/step", [("Content-Disposition", f'attachment; filename="{name}"')])
                 return True
-            if raw == "/api/drawings/mesh":
+            if raw == "/api/drawings/delete":
+                result = hq_drawings.delete_drawing(ROOT, data.get("stem"))
+            elif raw == "/api/drawings/draft":
+                if data.get("clear") is True:
+                    result = hq_drawings.clear_draft(ROOT, data.get("key"))
+                else:
+                    result = hq_drawings.write_draft(ROOT, data)
+            elif raw == "/api/drawings/duplicate":
+                result = hq_drawings.duplicate_drawing(ROOT, data.get("stem"), data.get("name"))
+            elif raw == "/api/drawings/mesh":
                 result = hq_drawings.preview_mesh(data)
             elif raw == "/api/drawings/usdz":
                 result = hq_drawings.ar_model(data)
@@ -12911,6 +13534,46 @@ class Handler(BaseHTTPRequestHandler):
             if sep and tail and hq_forge_vault.registry.VID_RE.fullmatch(vid):
                 return vid, "/" + tail
         return None, None
+
+    def _forge_gallery_restore(self, raw: str) -> bool:
+        """Stream a gallery ZIP to a private temp file, then verify or import it."""
+        try:
+            length = int(self.headers.get("Content-Length", "0") or 0)
+        except ValueError:
+            self._json(400, {"error": "Requête invalide"})
+            return True
+        if length <= 0 or length > hq_forge_gallery.IMPORT_MAX:
+            self._json(413, {"error": "Requête trop grande."})
+            return True
+        base = ROOT / ".hq-forge"
+        base.mkdir(parents=True, exist_ok=True)
+        fd, name = tempfile.mkstemp(prefix="restore-", suffix=".zip", dir=str(base))
+        path = Path(name)
+        try:
+            remaining = length
+            with os.fdopen(fd, "wb") as handle:
+                while remaining > 0:
+                    chunk = self.rfile.read(min(CHUNK, remaining))
+                    if not chunk:
+                        raise ValueError("corps tronqué")
+                    handle.write(chunk)
+                    remaining -= len(chunk)
+            plan = None
+            if not raw.endswith("/verify"):
+                plan = hq_forge_gallery.restore_plan_path(ROOT, path)
+            result = hq_forge_gallery.import_zip_path(ROOT, path, verify=raw.endswith("/verify"))
+            self._json(200, result)
+        except hq_forge_gallery.GalleryError as exc:
+            status = {"bad_zip": 400, "quota": 409, "too_large": 413, "bad_image": 400}.get(exc.code, 400)
+            payload = {"error": "Archive refusée", "code": exc.code}
+            if plan is not None:
+                payload["plan"] = plan
+            self._json(status, payload)
+        except ValueError:
+            self._json(400, {"error": "Archive refusée", "code": "bad_zip"})
+        finally:
+            path.unlink(missing_ok=True)
+        return True
 
     def _forge_vault_binary(self, raw: str, token: str | None, vid: str | None = None) -> bool:
         try:
@@ -13180,10 +13843,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(sketch[0], sketch[1])
             return True
         if raw == "/api/forge/status":
-            self._json(200, hq_forge.status())
+            fresh = (parse_qs(parsed.query).get("fresh") or [""])[0] == "1"
+            payload = _forge_call_status(fresh=fresh)
+            self._json(200, payload)
             return True
         if raw == "/api/forge/catalog":
-            self._json(200, hq_forge.catalog())
+            fresh = (parse_qs(parsed.query).get("fresh") or [""])[0] == "1"
+            payload = _forge_call_catalog(fresh=fresh)
+            self._json(200, payload)
             return True
         presets = hq_forge_presets.serve_get(ROOT, raw)
         if presets is not None:
@@ -13229,6 +13896,26 @@ class Handler(BaseHTTPRequestHandler):
             except hq_forge_gallery.GalleryError:
                 self._json(400, {"error": "Introuvable"})
             return True
+        if raw in ("/api/forge/gallery/export", "/api/forge/gallery/export/plan"):
+            qs = parse_qs(parsed.query)
+            raw_ids = (qs.get("ids") or [""])[0]
+            ids = [part for part in raw_ids.split(",") if part] if raw_ids else None
+            try:
+                if raw.endswith("/plan"):
+                    self._json(200, hq_forge_gallery.export_plan(ROOT, ids))
+                    return True
+                plan = hq_forge_gallery.export_plan(ROOT, ids)
+                path = hq_forge_gallery.export_archive(ROOT, ids)
+            except hq_forge_gallery.GalleryError as exc:
+                status = {"empty": 404, "bad_id": 400, "too_large": 413, "busy": 429, "disk": 507}.get(exc.code, 400)
+                self._json(status, {"error": "Archive indisponible", "code": exc.code})
+                return True
+            try:
+                if self._send_file(path, as_download=True, content_type="application/zip"):
+                    hq_forge_gallery.mark_backup(ROOT, plan)
+            finally:
+                path.unlink(missing_ok=True)
+            return True
         prefix = "/api/forge/gallery/"
         if raw.startswith(prefix) and "/" not in raw[len(prefix):]:
             try:
@@ -13261,6 +13948,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._forge_vault_binary(raw, token, vault_vid)
         if raw == "/api/forge/vaults/restore":
             return self._forge_vault_binary(raw, token)
+        if raw == "/api/forge/gallery/trash/empty":
+            self._json(200, hq_forge_gallery.empty_trash(ROOT))
+            return True
+        if raw in ("/api/forge/gallery/import", "/api/forge/gallery/restore/verify"):
+            return self._forge_gallery_restore(raw)
         hq_forge_jobs.recover(ROOT)
         try:
             length = int(self.headers.get("Content-Length", "0") or 0)
@@ -13345,6 +14037,8 @@ class Handler(BaseHTTPRequestHandler):
         return True
 
     def _hq_get(self, raw: str, parsed) -> bool:
+        if raw.startswith("/api/print3d/"):
+            return self._print3d_get(raw, parsed)
         if raw.startswith(hq_robotics.PREFIX):
             self._robotics(raw, "GET")
             return True
@@ -13515,7 +14209,7 @@ class Handler(BaseHTTPRequestHandler):
             return True
         if raw == "/api/ai":  # the assistant: usage and whether a key is set (admin: not in the upload allowlist)
             ip = self.client_address[0] if self.client_address else ""
-            code, payload = hq_ai.http_get(parse_qs(parsed.query), client_ip=ip, role=self._role(), owner_id=(session_info(self._token()) or {}).get("user", "admin"))
+            code, payload = hq_ai.http_get(parse_qs(parsed.query), client_ip=ip, role=self._role(), owner_id=session_memory_owner(session_info(self._token())))
             self._json(code, payload)
             return True
         if raw == "/api/assistant-visits":  # latest visit between two assistants (admin only)
@@ -13524,7 +14218,7 @@ class Handler(BaseHTTPRequestHandler):
                 return True
             code, payload = hq_assistant_visits.http_get(
                 parse_qs(parsed.query),
-                owner_id=(session_info(self._token()) or {}).get("user", "admin"),
+                owner_id=session_memory_owner(session_info(self._token())),
             )
             self._json(code, payload)
             return True
@@ -13534,7 +14228,7 @@ class Handler(BaseHTTPRequestHandler):
                 return True
             code, payload = hq_personhood.http_get(
                 parse_qs(parsed.query, keep_blank_values=True),
-                owner_id=(session_info(self._token()) or {}).get("user", "admin"),
+                owner_id=session_memory_owner(session_info(self._token())),
             )
             self._json(code, payload)
             return True
@@ -13543,7 +14237,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(403, {"error": "Réservé admin", "code": "forbidden"})
                 return True
             qs = parse_qs(parsed.query)
-            owner = (session_info(self._token()) or {}).get("user", "admin")
+            owner = session_memory_owner(session_info(self._token()))
             path = hq_ai.transferania_chat_image(raw.rsplit("/", 1)[-1], hq_ai.device_id_from(None, qs), owner_id=owner)
             if path:
                 self._send_file(path)
@@ -14020,7 +14714,7 @@ class Handler(BaseHTTPRequestHandler):
             owner = ""
             if assistant_action or (action == "move" and data.get("kind") == "reviewed_script"):
                 session = self._session_info() or {}
-                owner = str(session.get("user_id") or "legacy-admin")
+                owner = session_memory_owner(session) if session else "legacy-admin"
             if assistant_action:
                 import hq_robotics_assistant
                 result = hq_robotics_assistant.dispatch(
@@ -14073,7 +14767,297 @@ class Handler(BaseHTTPRequestHandler):
             if failed and sent:
                 _diag_record_5xx(self, 502, {"code": "robotics_camera_interrupted"})
 
+    def _print3d_ctl(self):
+        return hq_print3d.controller(ROOT, lambda: ROOT / "Print")
+
+    def _print3d_camera(self, ctl, pid: str, fps: float = 5.0) -> None:
+        hub = ctl.camera_hub(pid)
+        hub.acquire()
+        seq = 0
+        min_gap = (1.0 / float(fps)) if fps and float(fps) > 0 else 0.0
+        last_sent = -1e9
+        next_auth = 0.0
+        try:
+            self.close_connection = True
+            self.connection.settimeout(3)
+            self.send_response(200)
+            self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
+            self.send_header("Cache-Control", "no-store, no-transform")
+            self.send_header("Connection", "close")
+            self._security_headers()
+            self.end_headers()
+            while True:
+                now = time.monotonic()
+                if now >= next_auth:
+                    tok = self._token()
+                    if session_role(tok) != "admin" or hq_security.is_locked_down(CONFIG):
+                        break
+                    next_auth = now + 1.0
+                seq, frame, err = hub.wait_frame(seq, timeout=2.0)
+                if err:
+                    break
+                if not frame:
+                    continue
+                now = time.monotonic()
+                if min_gap and (now - last_sent) < (min_gap - 1e-9):
+                    continue
+                last_sent = now
+                part = (
+                    b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: "
+                    + str(len(frame)).encode("ascii")
+                    + b"\r\n\r\n"
+                    + frame
+                    + b"\r\n"
+                )
+                self.wfile.write(part)
+        except OSError:
+            pass
+        finally:
+            hub.release()
+
+    def _print3d_snapshot(self, ctl, pid: str) -> None:
+        frame = ctl.camera_hub(pid).snapshot()
+        self.send_response(200)
+        self.send_header("Content-Type", "image/jpeg")
+        self.send_header("Content-Length", str(len(frame)))
+        self.send_header("Cache-Control", "no-store")
+        self._security_headers()
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(frame)
+
+    def _print3d_events(self, ctl) -> None:
+        q = ctl.subscribe_events()
+        try:
+            self.close_connection = True
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache, no-transform")
+            self.send_header("Connection", "close")
+            self._security_headers()
+            self.end_headers()
+            while True:
+                if hq_security.is_locked_down(CONFIG) or session_role(self._token()) != "admin":
+                    break
+                try:
+                    ev = q.get(timeout=15.0)
+                except queue.Empty:
+                    self.wfile.write(b": ping\n\n")
+                    continue
+                if ev is None:
+                    break
+                line = f"data: {json.dumps(ev, ensure_ascii=False)}\n\n".encode("utf-8")
+                self.wfile.write(line)
+        except OSError:
+            pass
+        finally:
+            ctl.unsubscribe_events(q)
+
+    def _print3d_get(self, raw: str, parsed) -> bool:
+        if not raw.startswith("/api/print3d/"):
+            return False
+        if not self._require_admin():
+            return True
+        qs = parse_qs(parsed.query)
+        flat = {k: v[0] for k, v in qs.items() if v}
+        ctl = self._print3d_ctl()
+        try:
+            if raw.startswith("/api/print3d/camera/"):
+                pid = raw[len("/api/print3d/camera/"):]
+                try:
+                    fps = float(flat.get("fps") or 5.0)
+                except ValueError:
+                    fps = 5.0
+                self._print3d_camera(ctl, pid, fps)
+                return True
+            if raw.startswith("/api/print3d/snapshot/"):
+                pid = raw[len("/api/print3d/snapshot/"):]
+                self._print3d_snapshot(ctl, pid)
+                return True
+            if raw == "/api/print3d/events":
+                self._print3d_events(ctl)
+                return True
+            if raw.startswith("/api/print3d/timelapse/"):
+                jid = raw[len("/api/print3d/timelapse/"):].removesuffix(".mp4")
+                self._send_media(ctl.timelapse_path(jid))
+                return True
+            if raw == "/api/print3d/models/thumb":
+                data = ctl.library.thumbnail(flat.get("id", ""))
+                etag = f'"{hashlib.sha256(data).hexdigest()[:32]}"'
+                common = [("ETag", etag), ("Cache-Control", "private, max-age=300")]
+                sent = [t.strip() for t in (self.headers.get("If-None-Match") or "").split(",") if t.strip()]
+                if etag in sent or "*" in sent:
+                    self.send_response(304)
+                    for k, v in common:
+                        self.send_header(k, v)
+                    self._security_headers()
+                    self.end_headers()
+                    return True
+                self.send_response(200)
+                self.send_header("Content-Type", "image/png")
+                self.send_header("Content-Length", str(len(data)))
+                for k, v in common:
+                    self.send_header(k, v)
+                self._security_headers()
+                self.end_headers()
+                if self.command != "HEAD":
+                    self.wfile.write(data)
+                return True
+            if raw == "/api/print3d/models/file":
+                fh, size, name, source_sha = ctl.library.open_file_with_sha(flat.get("id", ""))
+                with fh:
+                    rng = parse_byte_range(self.headers.get("Range"), size) if self.headers.get("Range") else None
+                    if rng == "unsatisfiable":
+                        self.send_response(416)
+                        self.send_header("Content-Range", f"bytes */{size}")
+                        self.send_header("Content-Length", "0")
+                        self.send_header("Accept-Ranges", "bytes")
+                        self.send_header("Cache-Control", "private, no-store")
+                        if source_sha:
+                            self.send_header("X-Model-Sha256", source_sha)
+                            self.send_header("ETag", f'"{source_sha}"')
+                        self._security_headers()
+                        self.end_headers()
+                        return True
+                    start, end = rng if isinstance(rng, tuple) else (0, size - 1)
+                    length = max(0, end - start + 1)
+                    self.send_response(206 if isinstance(rng, tuple) else 200)
+                    self.send_header("Content-Type", "application/octet-stream")
+                    self.send_header("Content-Length", str(length))
+                    self.send_header("Accept-Ranges", "bytes")
+                    self.send_header("Cache-Control", "private, no-store")
+                    if source_sha:
+                        self.send_header("X-Model-Sha256", source_sha)
+                        self.send_header("ETag", f'"{source_sha}"')
+                    if isinstance(rng, tuple):
+                        self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+                    self.send_header("Content-Disposition", f'inline; filename="{safe_leaf_name(name) or "model"}"')
+                    self._security_headers()
+                    self.end_headers()
+                    if self.command != "HEAD":
+                        fh.seek(start)
+                        remaining = length
+                        while remaining > 0:
+                            chunk = fh.read(min(ASSET_STREAM_CHUNK, remaining))
+                            if not chunk:
+                                break
+                            self.wfile.write(chunk)
+                            remaining -= len(chunk)
+                return True
+            if raw == "/api/print3d/models/gcode":
+                raw_plate = (flat.get("plate") or "1").strip()
+                try:
+                    plate = int(raw_plate) if raw_plate else 1
+                except ValueError:
+                    raise hq_print3d_models.ModelError("Numéro de plateau invalide", 400, "validation_error") from None
+                with ctl.library.open_gcode(flat.get("id", ""), plate) as stream:
+                    etag = stream.etag
+                    sent = [t.strip() for t in (self.headers.get("If-None-Match") or "").split(",") if t.strip()]
+                    if (etag in sent or "*" in sent) and not (stream.range_ok and self.headers.get("Range")):
+                        self.send_response(304)
+                        self.send_header("ETag", etag)
+                        self.send_header("Cache-Control", "private, no-cache")
+                        self._security_headers(csp_override="default-src 'none'; sandbox; frame-ancestors 'none'")
+                        self.end_headers()
+                        return True
+                    size = stream.size
+                    rng = parse_byte_range(self.headers.get("Range"), size) if (stream.range_ok and self.headers.get("Range")) else None
+                    if rng == "unsatisfiable":
+                        self.send_response(416)
+                        self.send_header("Content-Range", f"bytes */{size}")
+                        self.send_header("Content-Length", "0")
+                        self.send_header("Accept-Ranges", "bytes")
+                        self._security_headers(csp_override="default-src 'none'; sandbox; frame-ancestors 'none'")
+                        self.end_headers()
+                        return True
+                    start, end = rng if isinstance(rng, tuple) else (0, max(-1, size - 1))
+                    length = max(0, end - start + 1) if size > 0 else 0
+                    self.send_response(206 if isinstance(rng, tuple) else 200)
+                    self.send_header("Content-Type", "text/plain; charset=utf-8")
+                    self.send_header("Content-Length", str(length))
+                    self.send_header("Accept-Ranges", "bytes" if stream.range_ok else "none")
+                    self.send_header("ETag", etag)
+                    self.send_header("Cache-Control", "private, no-cache")
+                    self.send_header("X-Gcode-Source-Kind", stream.source_kind)
+                    self.send_header("X-Gcode-Plate", str(stream.plate))
+                    if isinstance(rng, tuple):
+                        self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+                    self.send_header("Content-Disposition", f'inline; filename="{safe_leaf_name(stream.name) or "plate.gcode"}"')
+                    self._security_headers(csp_override="default-src 'none'; sandbox; frame-ancestors 'none'")
+                    self.end_headers()
+                    if self.command != "HEAD" and length > 0:
+                        if isinstance(rng, tuple):
+                            stream.seek(start)
+                        remaining = length
+                        while remaining > 0:
+                            try:
+                                chunk = stream.read(min(ASSET_STREAM_CHUNK, remaining))
+                            except (hq_print3d_models.ModelError, zlib.error, EOFError, OSError):
+                                self.close_connection = True
+                                break
+                            if not chunk:
+                                break
+                            try:
+                                self.wfile.write(chunk)
+                            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError):
+                                self.close_connection = True
+                                break
+                            remaining -= len(chunk)
+                return True
+            code, payload = ctl.http_get(raw, flat)
+            print3d_no_store = ("Cache-Control", "private, no-store")
+            if raw == "/api/print3d/state" and code == 200:
+                digest = hashlib.sha256(
+                    json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+                ).hexdigest()[:32]
+                etag = f'"{digest}"'
+                sent = [t.strip() for t in (self.headers.get("If-None-Match") or "").split(",") if t.strip()]
+                if etag in sent or "*" in sent:
+                    self.send_response(304)
+                    self.send_header("ETag", etag)
+                    self.send_header(*print3d_no_store)
+                    self._security_headers()
+                    self.end_headers()
+                    return True
+                payload = dict(payload, etag=etag)
+                self._json(200, payload, headers=[("ETag", etag), print3d_no_store])
+                return True
+            self._json(code, payload)
+            return True
+        except (hq_print3d.Print3dError, hq_print3d_models.ModelError) as exc:
+            self._json(exc.status, {"ok": False, "code": exc.code, "error": str(exc)})
+            return True
+
+    def _print3d_post(self, raw: str) -> bool:
+        if not raw.startswith("/api/print3d/"):
+            return False
+        if not self._require_admin():
+            return True
+        try:
+            length = int(self.headers.get("Content-Length", "0") or 0)
+        except ValueError:
+            self.close_connection = True
+            self._json(400, {"error": "longueur invalide", "code": "validation_error"})
+            return True
+        if length < 0 or length > 262144:
+            self.close_connection = True
+            self._json(413, {"error": "corps trop volumineux", "code": "validation_error"})
+            return True
+        try:
+            data = self._read_json() if length else {}
+        except ValueError as exc:
+            self._json(400, {"error": str(exc)[:200], "code": "validation_error"})
+            return True
+        try:
+            code, payload = self._print3d_ctl().http_post(raw, data if isinstance(data, dict) else {})
+            self._json(code, payload)
+        except (hq_print3d.Print3dError, hq_print3d_models.ModelError) as exc:
+            self._json(exc.status, {"ok": False, "code": exc.code, "error": str(exc)})
+        return True
+
     def _hq_post(self, raw: str) -> bool:
+        if self._print3d_post(raw):
+            return True
         if raw.startswith(hq_robotics.PREFIX):
             self._robotics(raw, "POST")
             return True
@@ -14258,6 +15242,21 @@ class Handler(BaseHTTPRequestHandler):
             code, payload = hq_files.http_post(data)
             self._json(code, payload)
             return True
+        if raw == "/api/files/zip":  # Fichiers: archive d'une sélection
+            try:
+                data = self._read_json()
+            except ValueError as e:
+                self._json(400, {"error": str(e)[:200], "code": "validation_error"})
+                return True
+            rels = data.get("rels") if isinstance(data, dict) else None
+            try:
+                _code, payload = hq_files.make_zip(rels)
+            except hq_files.FilesError as e:
+                self._json(e.status, {"error": str(e), "code": e.code})
+                return True
+            self._send(200, payload, "application/zip",
+                       [("Content-Disposition", content_disposition("attachment", "fichiers.zip"))])
+            return True
         if raw == "/api/ai":  # the assistant: ask / capture / apply (CSRF checked before routing)
             try:
                 data = self._read_json()
@@ -14265,7 +15264,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(400, {"error": str(e)[:200], "code": "validation_error"})
                 return True
             ip = self.client_address[0] if self.client_address else ""
-            code, payload = hq_ai.http_post(data, client_ip=ip, role=self._role(), owner_id=(session_info(self._token()) or {}).get("user", "admin"))
+            code, payload = hq_ai.http_post(data, client_ip=ip, role=self._role(), owner_id=session_memory_owner(session_info(self._token())))
             self._json(code, payload)
             return True
         if raw == "/api/assistant-visit-banter":  # one live-generated ambient exchange (admin + CSRF)
@@ -14289,7 +15288,7 @@ class Handler(BaseHTTPRequestHandler):
                 return True
             code, payload = hq_assistant_visits.banter(
                 data,
-                owner_id=(session_info(self._token()) or {}).get("user", "admin"),
+                owner_id=session_memory_owner(session_info(self._token())),
             )
             self._json(code, payload)
             return True
@@ -14314,7 +15313,7 @@ class Handler(BaseHTTPRequestHandler):
                 return True
             code, payload = hq_assistant_visits.http_post(
                 data,
-                owner_id=(session_info(self._token()) or {}).get("user", "admin"),
+                owner_id=session_memory_owner(session_info(self._token())),
             )
             self._json(code, payload)
             return True
@@ -14339,7 +15338,7 @@ class Handler(BaseHTTPRequestHandler):
                 return True
             code, payload = hq_personhood.http_post(
                 data,
-                owner_id=(session_info(self._token()) or {}).get("user", "admin"),
+                owner_id=session_memory_owner(session_info(self._token())),
             )
             self._json(code, payload)
             return True
@@ -14397,6 +15396,29 @@ class Handler(BaseHTTPRequestHandler):
                 return True
             code, payload = hq_music.http_post(raw, data)
             self._json(code, payload)
+            return True
+        if raw in ("/api/lecteur/state", "/api/media/meta"):  # Lecteur: shared state ops / tag batch (admin + CSRF)
+            if self._role() != "admin":
+                self._json(403, {"error": "Accès admin requis"})
+                return True
+            try:
+                data = self._read_json()
+                if raw == "/api/lecteur/state":
+                    self._json(200, {"ok": True, "state": hq_lecteur.apply_op(data)})
+                else:
+                    rels = data.get("rels") if isinstance(data, dict) else None
+                    if not isinstance(rels, list):
+                        raise hq_lecteur.LecteurError("rels manquant")
+                    out = {}
+                    for rel in rels[:hq_lecteur.MAX_META_BATCH]:
+                        path = safe_rel_path(rel) if isinstance(rel, str) and rel else None
+                        if path and path.suffix.lower() in MEDIA_CONTENT_TYPES:
+                            out[rel] = hq_lecteur.read_tags(path)
+                    self._json(200, {"ok": True, "tags": out})
+            except ValueError as e:
+                self._json(400, {"error": str(e)[:200], "code": "validation_error"})
+            except hq_lecteur.LecteurError as exc:
+                self._json(exc.status, {"ok": False, "code": exc.code, "error": str(exc)})
             return True
         if raw == "/api/musica" or raw.startswith("/api/musica/"):  # Musica steward chat/tools (CSRF checked before routing)
             try:
@@ -15201,7 +16223,47 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if raw == "/api/media/library":
-            self._json(200, media_library())
+            try:
+                limit = int((parse_qs(parsed.query).get("limit", [""])[0]) or MEDIA_LIBRARY_MAX)
+            except ValueError:
+                limit = MEDIA_LIBRARY_MAX
+            self._json(200, media_library(max(1, min(limit, MEDIA_LIBRARY_HARD_MAX))))
+            return
+
+        if raw == "/api/lecteur/state":
+            try:
+                self._json(200, {"ok": True, "state": hq_lecteur.get_state()})
+            except hq_lecteur.LecteurError as exc:
+                self._json(exc.status, {"ok": False, "code": exc.code, "error": str(exc)})
+            return
+
+        if raw in ("/api/media/subs", "/api/media/sub", "/api/media/meta", "/api/media/art"):
+            # Lecteur companions of /media/: same confinement (safe_rel_path), same media allow-list.
+            rel = (parse_qs(parsed.query).get("rel", [""])[0] or "").strip()
+            path = safe_rel_path(rel) if rel else None
+            if not path:
+                self._json(404, {"error": "Fichier introuvable"})
+                return
+            ext = path.suffix.lower()
+            try:
+                if raw == "/api/media/sub":
+                    vtt = hq_lecteur.subtitle_vtt(path)
+                    self._send(200, vtt.encode("utf-8"), "text/vtt; charset=utf-8", [("Cache-Control", "no-store")])
+                elif ext not in MEDIA_CONTENT_TYPES:
+                    self._json(415, {"error": "Format non lisible dans le lecteur"})
+                elif raw == "/api/media/subs":
+                    self._json(200, {"ok": True, "tracks": hq_lecteur.find_subtitles(path) if MEDIA_CONTENT_TYPES[ext].startswith("video/") else []})
+                elif raw == "/api/media/meta":
+                    self._json(200, {"ok": True, "rel": rel, "tags": hq_lecteur.read_tags(path)})
+                else:
+                    art = hq_lecteur.read_art(path)
+                    if not art:
+                        self._json(404, {"error": "Pas de pochette"})
+                    else:
+                        self._send(200, art[1], art[0], [("Cache-Control", "private, max-age=3600"),
+                                                         ("X-Content-Type-Options", "nosniff")])
+            except hq_lecteur.LecteurError as exc:
+                self._json(exc.status, {"ok": False, "code": exc.code, "error": str(exc)})
             return
 
         if raw.startswith("/media/"):
@@ -15430,7 +16492,7 @@ class Handler(BaseHTTPRequestHandler):
                         reason="invalid_pin",
                     )
                     host = self.headers.get("Host") or "localhost"
-                    proto = "https" if self.headers.get("X-Forwarded-Proto") == "https" else "http"
+                    proto = "https" if (self._is_trusted_proxy() and self.headers.get("X-Forwarded-Proto") == "https") else "http"
                     base_url = f"{proto}://{host}"
                     alert = hq_security.record_failed_attempt(
                         self.client_address[0],
@@ -16516,11 +17578,13 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def already_running() -> bool:
-    try:
-        with socket.create_connection(("127.0.0.1", PORT), timeout=0.4):
-            return True
-    except OSError:
-        return False
+    for host in _bridge_probe_hosts():
+        try:
+            with socket.create_connection((host, PORT), timeout=0.4):
+                return True
+        except OSError:
+            continue
+    return False
 
 
 def _main_production_owner() -> None:
@@ -16534,10 +17598,10 @@ def _main_production_owner() -> None:
     CONFIG = load_config(write=False)
     load_sessions()
     if already_running():
-        release_state_lock()
+        _startup_release()
         raise SystemExit(f"FATAL: Cannot bind {configured_bind_host()}:{PORT}: address already in use")
     if not pin_enabled():
-        release_state_lock()
+        _startup_release()
         raise SystemExit(
             "FATAL: PIN required. Set pin (or users[].pin) in bridge_config.json.\n"
             "Refusing to start without authentication (Tailscale Serve/Funnel safety)."
@@ -16548,19 +17612,19 @@ def _main_production_owner() -> None:
         planner_port = effective_planner_port()
         side_by_side_ports_ok(PORT, planner_port)
     except SystemExit:
-        release_state_lock()
+        _startup_release()
         raise
     try:
         server = HQServer((BIND_HOST, PORT), Handler)
     except OSError as exc:
-        release_state_lock()
+        _startup_release()
         raise SystemExit(f"Cannot bind {BIND_HOST}:{PORT}: {exc}") from exc
     server.timeout = 30
     try:
         planner_httpd = hq_planner.start(ROOT, port=planner_port)
     except (RuntimeError, OSError) as exc:
         server.server_close()
-        release_state_lock()
+        _startup_release()
         raise SystemExit(f"FATAL: planner loopback refused ({exc})") from exc
     try:
         CONFIG = load_config(write=True)
@@ -16572,6 +17636,7 @@ def _main_production_owner() -> None:
         _seed = cc_ext.seed_last_backup_from_index()
         cleanup_stale_uploads()
         write_pid()
+        write_boot_facts()
         lan = lan_ipv4()
         ts = tailscale_ipv4()
         try:
@@ -16596,11 +17661,7 @@ def _main_production_owner() -> None:
             planner_httpd.server_close()
         except Exception:
             pass
-        try:
-            PID_PATH.unlink(missing_ok=True)
-        except OSError:
-            pass
-        release_state_lock()
+        _startup_release(clear_boot=True)
         raise
 
     def _hq_background() -> None:
@@ -16700,6 +17761,7 @@ def _main_production_owner() -> None:
         hq_robotics.shutdown()
         planner_httpd.shutdown()
         planner_httpd.server_close()
+        clear_boot_facts()
         try:
             PID_PATH.unlink(missing_ok=True)
         except OSError:
@@ -16711,6 +17773,17 @@ def main() -> None:
     global CONFIG, LOOPBACK_ONLY, BIND_HOST
     if production_owner_mode():
         _main_production_owner()
+        return
+    # Refuse a duplicate and take bridge.lock *before* touching this state root: migrations and
+    # reconcile_orphans rewrite files and must not run for a process that never serves.
+    ensure_startup_lock()
+    if already_running():
+        _startup_release()
+        if STATE_ROOT_EXPLICIT:
+            # Side-by-side / explicit state root: fail closed so scripts cannot silently no-op.
+            raise SystemExit(f"FATAL: Cannot bind {configured_bind_host()}:{PORT}: address already in use")
+        # Live checkout on the default port: a second hidden start is usually accidental — exit 0 with a line in logs.
+        print(f"Transfert Bridge already running on port {PORT}")
         return
     CONFIG = load_config()
     load_sessions()
@@ -16727,16 +17800,10 @@ def main() -> None:
     # of the last backup (same backup_dir) makes no new backup. Reads the index only.
     _seed = cc_ext.seed_last_backup_from_index()
     cleanup_stale_uploads()
-    if already_running():
-        release_state_lock()
-        if STATE_ROOT_EXPLICIT:
-            raise SystemExit(f"FATAL: Cannot bind {configured_bind_host()}:{PORT}: address already in use")
-        print(f"Transfert Bridge already running on port {PORT}")
-        return
 
     # Fail closed: PIN is mandatory. No-PIN + Tailscale Serve/Funnel must never yield unauthenticated admin.
     if not pin_enabled():
-        release_state_lock()
+        _startup_release()
         raise SystemExit(
             "FATAL: PIN required. Set pin (or users[].pin) in bridge_config.json.\n"
             "Refusing to start without authentication (Tailscale Serve/Funnel safety)."
@@ -16744,7 +17811,6 @@ def main() -> None:
     LOOPBACK_ONLY = False
     BIND_HOST = configured_bind_host()
 
-    write_pid()
     lan = lan_ipv4()
     ts = tailscale_ipv4()
     try:
@@ -16807,18 +17873,20 @@ def main() -> None:
     try:
         planner_port = effective_planner_port()
     except SystemExit:
-        release_state_lock()
+        _startup_release()
         raise
-    if STATE_ROOT_EXPLICIT:
-        try:
-            side_by_side_ports_ok(PORT, planner_port)
-        except SystemExit:
-            release_state_lock()
-            raise
+    # The rule runs in both modes. The live checkout is the production owner by construction; an explicit state root
+    # (a side-by-side release) is not, so it must never take 8765/8766 without HQ_PRODUCTION_OWNER=1.
+    live_checkout = not STATE_ROOT_EXPLICIT and ROOT == Path(__file__).resolve().parent
+    try:
+        side_by_side_ports_ok(PORT, planner_port, production_owner=production_owner_mode() or live_checkout)
+    except SystemExit:
+        _startup_release()
+        raise
     try:
         server = HQServer((BIND_HOST, PORT), Handler)
     except OSError as e:
-        release_state_lock()
+        _startup_release()
         raise SystemExit(f"Cannot bind {BIND_HOST}:{PORT}: {e}") from e
     # Mild DoS mitigation for stdlib server
     server.timeout = 30
@@ -16827,8 +17895,10 @@ def main() -> None:
         planner_httpd = hq_planner.start(ROOT, port=planner_port)
     except (RuntimeError, OSError) as exc:
         server.server_close()
-        release_state_lock()
+        _startup_release()
         raise SystemExit(f"FATAL: planner loopback refused ({exc})") from exc
+    write_pid()
+    write_boot_facts()
     print("=" * 56)
     print(" Transfert HQ v7.0 — Mission Control")
     print("=" * 56)
@@ -16885,6 +17955,7 @@ def main() -> None:
         if planner_httpd is not None:
             planner_httpd.shutdown()
             planner_httpd.server_close()
+        clear_boot_facts()
         try:
             PID_PATH.unlink(missing_ok=True)
         except OSError:

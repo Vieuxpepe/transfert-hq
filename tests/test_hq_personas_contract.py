@@ -9,9 +9,53 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import hq_assistant_voice as assistant_voice
 import hq_companion_memory as memory
+import hq_personhood
 import hq_personas
 import hq_relationships as rel
+from tests import hq_assistant_state
+
+_GLOBAL_STATE: tuple | None = None
+_AUX_STATE: tuple | None = None
+
+
+def setUpModule():
+    """These tests bind the shared store; later modules must get theirs back."""
+    global _GLOBAL_STATE, _AUX_STATE
+    hq_assistant_state.set_up()
+    import hq_ai as ai
+    import hq_life as life
+    import hq_state
+    _GLOBAL_STATE = (memory._root, memory._now, memory._owner.get(),
+                     memory._owner_established.get(), memory._memory_scope.get())
+    _AUX_STATE = (dict(ai._cb), dict(life._cb), hq_state._STATE_ROOT.get())
+    for name in ("hq_forgia", "hq_culinia", "hq_securia", "hq_musica", "hq_pistonia", "hq_inventoria_ai", "hq_elsea"):
+        module = __import__(name)
+        if hasattr(module, "_bound_root"):
+            _AUX_STATE += ((name, module._bound_root),)
+
+
+def tearDownModule():
+    if _GLOBAL_STATE is None:
+        return
+    root, now, owner, established, scope = _GLOBAL_STATE
+    memory.bind(root=root, now=now)
+    memory._owner.set(owner)
+    memory._owner_established.set(established)
+    memory._memory_scope.set(scope)
+    if _AUX_STATE is not None:
+        import hq_ai as ai
+        import hq_life as life
+        import hq_state
+        ai_cb, life_cb, state_root = _AUX_STATE[:3]
+        ai._cb.clear()
+        ai._cb.update(ai_cb)
+        life._cb.clear()
+        life._cb.update(life_cb)
+        hq_state.bind_root(state_root)
+        for name, bound in (entry for entry in _AUX_STATE[3:]):
+            setattr(__import__(name), "_bound_root", bound)
 
 PERSONAS = {
     "musica": ("hq_musica", "PERSONA_CORE", "en"),
@@ -20,11 +64,12 @@ PERSONAS = {
     "culinia": ("hq_culinia", "PERSONA_CORE", "fr"),
     "forgia": ("hq_forgia", "PERSONA_CORE", "fr"),
     "securia": ("hq_securia", "PERSONA_CORE", "fr"),
+    "elsea": ("hq_elsea", "PERSONA_CORE", "en"),
 }
 
 TOOL_MODULES = (("hq_musica", "TOOL_SCHEMA"), ("hq_culinia", "TOOL_SCHEMA"),
                 ("hq_forgia", "TOOL_SCHEMA"), ("hq_securia", "TOOL_SCHEMA"),
-                ("hq_pistonia", "TOOLS_DOC"))
+                ("hq_pistonia", "TOOLS_DOC"), ("hq_elsea", "TOOL_SCHEMA"))
 
 
 class PersonaRosterTests(unittest.TestCase):
@@ -84,6 +129,513 @@ class PersonaRosterTests(unittest.TestCase):
         # Transferania's editor is the live source: her registry pastimes only seed
         # the editable default, they are never injected a second time.
         self.assertIn(hq_personas.get("transferania")["pastimes"], presence.character_defaults()["pastimes"])
+
+
+class AssistantVoiceTests(unittest.TestCase):
+    """Distinctness, an evidence-only bond, and pair familiarity in one block."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="hq-voice-")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_every_assistant_has_a_distinct_voice_card(self):
+        caps, forms, bans = [], [], []
+        for key in hq_personas.keys():
+            voice = hq_personas.get(key)["voice"]
+            card = hq_personas.voice_line(key)
+            self.assertTrue(card, key)
+            self.assertIn(str(voice["cap"]), card, key)
+            self.assertGreaterEqual(voice["cap"], 8, key)
+            self.assertLessEqual(voice["cap"], 60, key)
+            self.assertGreaterEqual(len(voice["never"]), 2, key)
+            # The card is what a reply can be held to; the likeness line keeps
+            # the alias, the quirks and the speech habit, so it must not repeat.
+            self.assertNotIn(hq_personas.get(key)["tell"], card, key)
+            caps.append(voice["cap"])
+            forms.append(voice["syntax"])
+            bans.append(tuple(voice["never"]))
+        self.assertEqual(len(set(caps)), len(caps), "two assistants share a prose cap")
+        self.assertEqual(len(set(forms)), len(forms), "two assistants share a form rule")
+        self.assertEqual(len(set(bans)), len(bans), "two assistants share a banned list")
+
+    def test_bond_needs_real_days_and_counts_them(self):
+        import hq_culinia as culinia
+        import hq_personhood as personhood
+        culinia.bind(root=Path(self.tmp.name))
+        now = 1_700_000_000
+        self.assertEqual(personhood.bond("culinia", now=now)["days"], 0)
+        for offset in (0, 86400, 3 * 86400):
+            personhood.observe_chat("culinia", "On prepare une soupe de courge.", now=now + offset)
+        row = personhood.bond("culinia", now=now + 3 * 86400 + 60)
+        self.assertEqual(row["days"], 3)
+        line = hq_personas.closeness_line("culinia", row["days"])
+        self.assertIn("3", line)
+        self.assertIn("LIEN", line)
+        self.assertEqual(hq_personas.closeness_line("culinia", 1), "")
+
+    def test_each_assistant_names_her_own_link_with_the_master_from_day_zero(self):
+        """The Master bond exists per assistant before any day, and moves with real days.
+
+        ``closeness_line`` keeps its own rule (no closeness sentence under two
+        distinct days); what changes is that the link is no longer silent and no
+        longer identical across assistants: each one names it in her own words,
+        and the stage name advances only with days really spent with him.
+        """
+        import hq_personas as personas
+        keys = [a["key"] for a in personas.ASSISTANTS]
+        early = {key: personas.bond_line(key, 0) for key in keys}
+        for key, line in early.items():
+            self.assertTrue(line, key)
+            self.assertIn("LIEN" if not personas.get(key)["lang"].startswith("en") else "BOND", line)
+            # No count is claimed before two distinct days.
+            self.assertNotIn("0", line)
+            self.assertNotIn("1", line)
+        self.assertEqual(len(set(early.values())), len(keys), "two assistants share the same opening line")
+        self.assertEqual(personas.bond_stage(0), "rencontre")
+        self.assertEqual(personas.bond_stage(1), "premier_jour")
+        self.assertEqual(personas.bond_stage(4), "habitude")
+        self.assertEqual(personas.bond_stage(9), "complicite")
+        # The first real day changes the stage while keeping her own wording.
+        self.assertNotEqual(personas.bond_stage(0), personas.bond_stage(1))
+        self.assertEqual(personas.bond_line("culinia", 1), personas.bond_line("culinia", 0))
+        # From two days the old count-bearing sentence takes over.
+        self.assertEqual(personas.bond_line("culinia", 3), personas.closeness_line("culinia", 3))
+        self.assertIn("3", personas.bond_line("culinia", 3))
+
+    def test_master_bond_view_names_her_stage_before_and_after_a_real_turn(self):
+        """The link exists per assistant at zero days, and one real turn moves it."""
+        import time
+        import hq_culinia as culinia
+        import hq_personhood as personhood
+        culinia.bind(root=Path(self.tmp.name))
+        now = time.time()
+        before = personhood.snapshot("culinia", now=now, owner="admin")["bond"]
+        self.assertEqual(before["days"], 0)
+        self.assertEqual(before["stage"], "rencontre")
+        self.assertEqual(before["line"], "")                       # no closeness claimed
+        self.assertTrue(before["stage_line"].startswith("LIEN AU MAÎTRE"))
+        personhood.observe_chat("culinia", "On prepare une soupe de courge.", now=now + 60, owner="admin")
+        after = personhood.snapshot("culinia", now=now + 120, owner="admin")["bond"]
+        self.assertEqual((after["days"], after["turns"]), (1, 1))
+        self.assertEqual(after["stage"], "premier_jour")
+        self.assertNotEqual(after["stage"], before["stage"])
+        self.assertEqual(after["line"], "")                        # still no closeness at one day
+
+    def test_each_pair_names_its_own_link_and_claims_nothing_at_zero(self):
+        """Fifteen untouched pairs must not collapse into one shared sentence.
+
+        ``line`` keeps its rule (a count-bearing familiarity note from two days, so
+        it stays empty before that); ``stage_line`` is the pair's own wording at
+        every rung, built from what the two assistants tend and from the days and
+        exchanges they really shared — never from another pair's text.
+        """
+        import itertools
+        import hq_personas as personas
+        import hq_relationships as rel
+        keys = ["culinia", "forgia", "musica", "inventoria", "pistonia", "securia"]
+        pairs = list(itertools.combinations(keys, 2))
+        self.assertEqual(len(pairs), 15)
+        lines = {pair: rel.stage_line(Path(self.tmp.name), pair[0], pair[1], lang="fr", owner="admin") for pair in pairs}
+        self.assertEqual(len(set(lines.values())), 15, "two untouched pairs share a sentence")
+        for pair, text in lines.items():
+            self.assertTrue(text, pair)
+            self.assertIn(personas.get(pair[1])["name"], text)
+            self.assertEqual(rel.pair_stage(0), "rencontre")
+            # Nothing is claimed: no day count, and the closeness sentence stays away.
+            self.assertNotIn("jour(s)", text)
+            self.assertEqual(rel.line(Path(self.tmp.name), pair[0], pair[1], owner="admin"), "")
+            self.assertIn(personas.get(pair[0])["domain"]["fr"], text)
+        # One day in: still no closeness, and still one sentence per pair even when
+        # two pairs share a name and an exchange count (the live panel showed that
+        # collapse once, which is why the early wording names both domains).
+        when = 1_700_000_000
+        for index, pair in enumerate(pairs):
+            rel.note_exchange(Path(self.tmp.name), pair[0], pair[1], "Une visite réelle.",
+                              now=when + index, owner="admin")
+        one_day = {pair: rel.stage_line(Path(self.tmp.name), pair[0], pair[1], lang="fr", owner="admin")
+                   for pair in pairs}
+        self.assertEqual(len(set(one_day.values())), 15, "two pairs share their first-day sentence")
+        for pair, text in one_day.items():
+            self.assertIn("Un seul jour partagé", text)
+            self.assertIn("1 échange(s)", text)
+            self.assertEqual(rel.line(Path(self.tmp.name), pair[0], pair[1], owner="admin"), "")
+        # The viewer's own language decides the wording.
+        english = rel.stage_line(Path(self.tmp.name), "musica", "inventoria", lang="en", owner="admin")
+        self.assertTrue(english.startswith("One day shared with Inventoria"), english)
+        self.assertIn(personas.get("inventoria")["domain"]["en"], english)
+
+    def test_folding_real_visits_adds_days_without_touching_family_pacing(self):
+        """Backfilling logged visits moves counts only, never ``family_at``."""
+        import hq_relationships as rel
+        root = Path(self.tmp.name)
+        start = 1_700_000_000
+        rel.note_exchange(root, "culinia", "forgia", "Le pain du four a tenu la promesse.",
+                          kind="famille", now=start, owner="admin")
+        family_at = next(row for row in rel.pairs(root, owner="admin")
+                         if {row["a"], row["b"]} == {"culinia", "forgia"})["family_at"]
+        self.assertEqual(family_at, start)
+        # Two copies of the same visit, plus one on each of two later days.
+        moments = [start + 86400, start + 86400, start + 2 * 86400]
+        changed = rel.fold_visits(root, {("culinia", "forgia"): moments,
+                                          ("forgia", "culinia"): moments}, owner="admin")
+        self.assertEqual(len(changed), 1, "the pair is folded once, not once per direction")
+        row = next(r for r in rel.pairs(root, owner="admin")
+                   if {r["a"], r["b"]} == {"culinia", "forgia"})
+        self.assertEqual(row["days"], 3)
+        # The two copies of one visit share a moment: they count once.
+        self.assertEqual(row["exchanges"], 2)
+        self.assertEqual(row["family_at"], family_at, "the house's pacing day moved")
+        self.assertEqual(rel.fold_visits(root, {("culinia", "forgia"): moments}, owner="admin"), [],
+                         "a second fold must change nothing")
+
+    def test_pairs_at_the_same_rung_never_share_a_sentence(self):
+        """Three pairs, one assistant, one day count: the domains tell them apart."""
+        import hq_relationships as rel
+        root = Path(self.tmp.name)
+        now = 1_700_000_000
+        trio = [("culinia", "musica"), ("forgia", "musica"), ("musica", "securia")]
+        for a, b in trio:
+            for day in (0, 86400):
+                rel.note_exchange(root, a, b, "Le four et l'écoute ont tenu parole.",
+                                  kind="famille", now=now + day, owner="admin")
+        lines = [rel.stage_line(root, a, b, lang="fr", owner="admin") for a, b in trio]
+        self.assertEqual(len(set(lines)), 3, lines)
+        for text in lines:
+            self.assertIn("2 jours distincts", text)
+            self.assertIn("connaissance", text)
+
+    def test_every_assistant_keeps_a_distinct_hidden_heart(self):
+        """A core undercurrent for all of them, and no two hiding it the same way."""
+        hiddens, wants, tells = {}, {}, {}
+        for key in hq_personas.on_hq_keys():
+            heart = hq_personas.get(key)["heart"]
+            for field in ("hidden", "want", "tell", "never"):
+                self.assertTrue(str(heart.get(field) or "").strip(), f"{key} has no heart.{field}")
+            hiddens[key], wants[key], tells[key] = heart["hidden"], heart["want"], heart["tell"]
+            # The wish is roster data only: no panel line and no prompt carries it.
+            self.assertNotIn(heart["want"], hq_personas.heart_line(key, 0))
+            self.assertNotIn(heart["want"], hq_personas.heart_line(key, 12, 200))
+            self.assertNotIn(heart["want"], hq_personas.heart_prompt(key, 3))
+            self.assertIn(heart["colour"], hq_personas.heart_prompt(key, 3))
+        self.assertEqual(len(set(hiddens.values())), len(hiddens), "two assistants hide the same thing")
+        self.assertEqual(len(set(wants.values())), len(wants), "two assistants want the same thing")
+        self.assertEqual(len(set(tells.values())), len(tells), "two assistants give themselves away alike")
+
+    def test_the_hidden_heart_colours_the_reply_without_naming_it(self):
+        """Audible in a reply, never a declaration: distinct and staged per woman."""
+        declarations = ("je t'aime", "amour", "i love you", "in love", "love you")
+        colours, early, late = {}, {}, {}
+        for key in hq_personas.on_hq_keys():
+            heart = hq_personas.get(key)["heart"]
+            one = hq_personas.heart_prompt(key, 1)
+            self.assertTrue(one, key)
+            self.assertIn(heart["colour"], one, key)
+            # The cue is the rung's own, in her language.
+            cues = (hq_personas.HEART_COLOUR_CUES_EN
+                    if str(hq_personas.get(key)["lang"]).lower().startswith("en")
+                    else hq_personas.HEART_COLOUR_CUES)
+            self.assertIn(cues["lueur"], one, key)
+            # Hidden: no declaration, no wish, and an explicit ban on naming it.
+            for marker in declarations:
+                self.assertNotIn(marker, one.lower(), key)
+            self.assertNotIn(heart["want"], one, key)
+            self.assertNotIn(heart["hidden"], one, key)
+            self.assertIn("jamais" if "CŒUR" in one else "never", one, key)
+            # The tight sister-chat core keeps the same ear in one clause.
+            brief = heart["colour_brief"]
+            self.assertTrue(brief, key)
+            self.assertLessEqual(len(brief), 60, key)
+            small = hq_personas.heart_prompt(key, 1, compact=True)
+            self.assertIn(brief, small, key)
+            self.assertIn(brief, hq_personas.heart_prompt(key, 10, compact=True), key)
+            self.assertNotIn(heart["want"], small, key)
+            colours[key], early[key] = one, hq_personas.heart_prompt(key, 5)
+            late[key] = hq_personas.heart_prompt(key, 12)
+            self.assertEqual(len({one, early[key], late[key]}), 3, f"{key}'s colour does not evolve")
+        self.assertEqual(len(set(colours.values())), len(colours), "two assistants colour the same way")
+        self.assertEqual(len(set(early.values())), len(early))
+        self.assertEqual(len(set(late.values())), len(late))
+        # A fresh prompt carries none of it; the reply block is where it lands,
+        # and only once the same store that feeds her bond has a real day.
+        for key in hq_personas.on_hq_keys():
+            self.assertEqual(hq_personas.heart_prompt(key, 0), "")
+            days = int(hq_personhood.bond(key, owner="admin").get("days") or 0)
+            self.assertEqual(bool(assistant_voice.heart_line(key)), days >= 1, key)
+            compact = assistant_voice.block(key, compact=True)
+            if days < 1:
+                self.assertNotIn("CŒUR —", compact, key)
+            else:
+                self.assertIn(hq_personas.get(key)["heart"]["colour_brief"], compact, key)
+                self.assertLessEqual(len(compact.encode("utf-8")), assistant_voice.BLOCK_MAX_BYTES)
+
+    def test_the_hidden_heart_evolves_on_real_days_only(self):
+        self.assertEqual(hq_personas.heart_stage(0), "braise")
+        self.assertEqual(hq_personas.heart_stage(1), "lueur")
+        self.assertEqual(hq_personas.heart_stage(4), "lueur")
+        self.assertEqual(hq_personas.heart_stage(5), "elan")
+        self.assertEqual(hq_personas.heart_stage(10), "attachement")
+        cold = hq_personas.heart_line("culinia", 0)
+        warm = hq_personas.heart_line("culinia", 6)
+        self.assertIn("braise", cold)
+        self.assertIn("élan", warm)
+        self.assertNotEqual(cold, warm)
+        self.assertNotIn("attachement", cold)      # nothing is claimed as lived yet
+        self.assertNotIn("Ce qui la trahit", cold)  # a tell is earned, not assumed
+        self.assertIn("Ce qui la trahit", warm)
+        # Never spoken: no prompt line before a real day, and it forbids the rest.
+        self.assertEqual(hq_personas.heart_prompt("culinia", 0), "")
+        spoken = hq_personas.heart_prompt("culinia", 1)
+        self.assertIn("jamais", spoken)
+        self.assertNotIn(hq_personas.get("culinia")["heart"]["want"], spoken)
+
+    def test_the_heart_is_panel_evidence_and_never_a_prompt_claim(self):
+        snapshot = hq_personhood.snapshot("inventoria", owner="admin")
+        heart, bond = snapshot["heart"], snapshot["bond"]
+        self.assertTrue(heart["hidden"])
+        self.assertEqual(heart["days"], bond["days"], "the heart must follow the same evidence as the bond")
+        self.assertEqual(heart["turns"], bond["turns"])
+        self.assertEqual(heart["stage"], hq_personas.heart_stage(bond["days"]))
+        self.assertTrue(heart["line"])
+        self.assertEqual(bool(assistant_voice.heart_line("inventoria")), bond["days"] >= 1,
+                         "the prompt constraint must appear only once a real day exists")
+
+    def test_the_pair_echo_needs_both_hearts_and_real_evidence(self):
+        """A shared secret is only shown where both women and the pair earned it."""
+        echo = hq_personas.echo_line("culinia", "pistonia", days=1, exchanges=1,
+                                     a_heart_days=1, b_heart_days=1, lang="fr")
+        self.assertTrue(echo)
+        self.assertIn("Écho non dit", echo)
+        for who in ("culinia", "pistonia"):
+            heart = hq_personas.get(who)["heart"]
+            self.assertNotIn(heart["want"], echo, f"{who}'s wish leaked into the echo")
+            self.assertNotIn(heart["hidden"], echo)
+        # One unlit heart is enough to keep the echo away, whichever side it is.
+        self.assertEqual(hq_personas.echo_line("culinia", "pistonia", days=1, exchanges=1,
+                                               a_heart_days=1, b_heart_days=0, lang="fr"), "")
+        self.assertEqual(hq_personas.echo_line("culinia", "pistonia", days=1, exchanges=1,
+                                               a_heart_days=0, b_heart_days=4, lang="fr"), "")
+        # Two lit hearts with nothing passed between them: still nothing.
+        self.assertEqual(hq_personas.echo_line("culinia", "pistonia", days=0, exchanges=0,
+                                               a_heart_days=3, b_heart_days=3, lang="fr"), "")
+
+    def test_each_pair_echo_reads_differently_and_evolves_with_its_evidence(self):
+        keys = list(hq_personas.on_hq_keys())
+        texts = {}
+        for index, a in enumerate(keys):
+            for b in keys[index + 1:]:
+                text = hq_personas.echo_line(a, b, days=2, exchanges=12,
+                                             a_heart_days=2, b_heart_days=2, lang="fr")
+                self.assertTrue(text, f"{a}|{b} has no echo on real evidence")
+                texts[(a, b)] = text
+                for who in (a, b):
+                    self.assertNotIn(hq_personas.get(who)["heart"]["want"], text)
+                for who in keys:
+                    if who in (a, b):
+                        continue
+                    self.assertNotIn(hq_personas.get(who)["heart"]["echo"], text,
+                                     f"{who}'s stance surfaced on {a}|{b}")
+        self.assertEqual(len(set(texts.values())), len(texts), "two pairs share an echo")
+        # The tone is the pair's own evidence, not a constant.
+        truce = hq_personas.echo_line("culinia", "pistonia", days=1, exchanges=1,
+                                      a_heart_days=2, b_heart_days=2, lang="fr")
+        entente = hq_personas.echo_line("culinia", "pistonia", days=2, exchanges=1,
+                                        a_heart_days=2, b_heart_days=2, lang="fr")
+        complicity = hq_personas.echo_line("culinia", "pistonia", days=2, exchanges=12,
+                                          a_heart_days=2, b_heart_days=2, lang="fr")
+        self.assertIn("trêve prudente", truce)
+        self.assertIn("entente tacite", entente)
+        self.assertIn("complicité tacite", complicity)
+        self.assertEqual(len({truce, entente, complicity}), 3)
+
+    def test_the_addressee_is_read_from_the_turn_not_hand_passed(self):
+        """Only an explicit speech marker means a sister is speaking."""
+        self.assertEqual(hq_personas.key_for_name("Pistonia"), "pistonia")
+        self.assertEqual(hq_personas.key_for_name("nobody at all"), "")
+        self.assertEqual(hq_personas.speaker_in("Culinia, a Pistonia : « ... »",
+                                               listener="pistonia"), "culinia")
+        self.assertEqual(hq_personas.speaker_in("Pistonia : la salle est calme",
+                                               listener="culinia"), "pistonia")
+        self.assertEqual(hq_personas.speaker_in("Culinia te passe la parole",
+                                               listener="pistonia"), "culinia")
+        self.assertEqual(hq_personas.speaker_in("Culinia → Pistonia : ...",
+                                               listener="pistonia"), "culinia")
+        # The Master writing her name is how he addresses her, not how she speaks.
+        self.assertEqual(hq_personas.speaker_in("Pistonia, comment va la salle ?",
+                                               listener="pistonia"), "")
+        self.assertEqual(hq_personas.speaker_in("Salut.", listener="pistonia"), "")
+
+    def test_the_echo_has_a_prompt_side_and_speaks_to_each_woman_herself(self):
+        """Both women of one pair hear their own line, and only where it is earned."""
+        mine = hq_personas.echo_prompt("culinia", "pistonia", days=2, exchanges=12,
+                                      a_heart_days=2, b_heart_days=2, lang="fr")
+        hers = hq_personas.echo_prompt("pistonia", "culinia", days=2, exchanges=12,
+                                      a_heart_days=2, b_heart_days=2, lang="fr")
+        self.assertTrue(mine and hers)
+        self.assertNotEqual(mine, hers, "the two women of a pair read the same line")
+        self.assertIn(hq_personas.get("culinia")["heart"]["echo"], mine)
+        self.assertIn(hq_personas.get("pistonia")["heart"]["echo"], hers)
+        self.assertIn("Pistonia", mine)
+        self.assertIn("Culinia", hers)
+        for who in ("culinia", "pistonia"):
+            heart = hq_personas.get(who)["heart"]
+            self.assertNotIn(heart["want"], mine + hers)
+            self.assertNotIn(heart["hidden"], mine + hers)
+        # The same two gates as the panel echo: one unlit heart, or no real day
+        # between them, and there is nothing to say to each other yet.
+        self.assertEqual(hq_personas.echo_prompt("culinia", "pistonia", days=2, exchanges=12,
+                                                a_heart_days=0, b_heart_days=2, lang="fr"), "")
+        self.assertEqual(hq_personas.echo_prompt("culinia", "pistonia", days=0, exchanges=0,
+                                                a_heart_days=2, b_heart_days=2, lang="fr"), "")
+        # Every pair, told in each direction, is its own line.
+        keys = list(hq_personas.on_hq_keys())
+        seen = set()
+        for index, a in enumerate(keys):
+            for b in keys[index + 1:]:
+                for speaker, listener in ((a, b), (b, a)):
+                    text = hq_personas.echo_prompt(speaker, listener, days=2, exchanges=12,
+                                                   a_heart_days=2, b_heart_days=2, lang="fr")
+                    self.assertTrue(text, f"{speaker} has nothing for {listener}")
+                    self.assertNotIn(text, seen, f"{speaker} borrows another pair's line")
+                    seen.add(text)
+        self.assertEqual(len(seen), len(keys) * (len(keys) - 1))
+        self.assertTrue(hq_personas.echo_prompt("pistonia", "culinia", days=2, exchanges=12,
+                                                a_heart_days=2, b_heart_days=2,
+                                                lang="en").startswith("ECHO — with"))
+
+    def test_family_rows_carry_the_echo_only_where_it_qualifies(self):
+        """The API gate and the pure rule must agree on every row it serves."""
+        for key in hq_personas.on_hq_keys():
+            mine = int(hq_personhood.bond(key, owner="admin").get("days") or 0)
+            for row in hq_personhood._family_rows(key, owner="admin"):
+                theirs = int(hq_personhood.bond(row["other"], owner="admin").get("days") or 0)
+                should = mine >= 1 and theirs >= 1 and int(row["days"]) >= 1
+                self.assertEqual(bool(row["echo"]), should, f"{key}|{row['other']}")
+                if row["echo"]:
+                    self.assertIn("Écho non dit", row["echo"])
+
+    def test_a_pair_reads_differently_at_each_stage(self):
+        """One real day moves the rung; the same pair never reads the same twice."""
+        import time
+        import hq_relationships as rel
+        now = time.time()
+        zero = rel.stage_line(Path(self.tmp.name), "culinia", "forgia", lang="fr", owner="admin")
+        self.assertEqual(rel.pair_stage(0), "rencontre")
+        rel.note_exchange(Path(self.tmp.name), "culinia", "forgia", "Le pain du four a tenu la promesse.", now=now, owner="admin")
+        one = rel.stage_line(Path(self.tmp.name), "culinia", "forgia", lang="fr", owner="admin")
+        self.assertEqual(rel.pair_stage(1), "premier_jour")
+        self.assertNotEqual(one, zero)
+        self.assertIn("Un seul jour partagé", one)
+        self.assertIn("1 échange(s)", one)
+        self.assertEqual(rel.line(Path(self.tmp.name), "culinia", "forgia", owner="admin"), "")   # still no closeness
+        rel.note_exchange(Path(self.tmp.name), "culinia", "forgia", "Le pain du four a tenu la promesse.", now=now + 86400, owner="admin")
+        two = rel.stage_line(Path(self.tmp.name), "culinia", "forgia", lang="fr", owner="admin")
+        self.assertEqual(rel.pair_stage(2), "connaissance")
+        self.assertIn("2 jours distincts", two)
+        self.assertEqual(two, rel.line(Path(self.tmp.name), "culinia", "forgia", owner="admin"))
+        # Above ``connaissance`` a rung also needs substance, never days alone:
+        # many days with one line each is not a habit, and one long sitting is not
+        # a complicity. Both axes come from real records.
+        self.assertEqual(rel.pair_stage(2, 9), "connaissance")
+        self.assertEqual(rel.pair_stage(2, 10), "habitude")
+        self.assertEqual(rel.pair_stage(3, 40), "habitude")          # days alone carry the middle rung
+        self.assertEqual(rel.pair_stage(4, 19), "habitude")
+        self.assertEqual(rel.pair_stage(4, 20), "complicite")
+        self.assertEqual(rel.pair_stage(9, 200), "complicite")
+
+    def test_block_keeps_voice_and_sheds_whole_lines(self):
+        import hq_culinia as culinia
+        culinia.bind(root=Path(self.tmp.name))
+        with mock.patch.object(assistant_voice, "state_line", return_value="ETAT " + "x" * 500), \
+                mock.patch.object(assistant_voice, "bond_line", return_value="LIEN " + "y" * 500), \
+                mock.patch.object(assistant_voice, "pair_line", return_value="PAIRE " + "z" * 500):
+            text = assistant_voice.block("culinia")
+        self.assertIn("VOIX", text)
+        self.assertLessEqual(len(text.encode("utf-8")), assistant_voice.BLOCK_MAX_BYTES)
+        self.assertNotIn("PAIRE", text)   # the lowest priority goes first
+        for line in text.splitlines():
+            self.assertTrue(line.startswith(("VOIX", "AVIS", "OPINION", "ETAT", "LIEN")), line)
+
+    def test_pair_line_uses_relationship_evidence(self):
+        row = {"a": "culinia", "b": "forgia", "exchanges": 4, "days": 3,
+               "last_at": 0.0, "motif": ""}
+        with mock.patch("hq_relationships.pair", return_value=row) as pair, \
+                mock.patch("hq_relationships.line",
+                           return_value="Familiarite avec Forgia : 3 jours distincts d'echange."):
+            self.assertIn("3 jours", assistant_voice.pair_line("culinia"))
+            self.assertTrue(pair.called)
+
+    def test_pair_line_text_stays_empty_under_two_days(self):
+        row = {"a": "culinia", "b": "forgia", "exchanges": 1, "days": 1,
+               "last_at": 0.0, "motif": ""}
+        with mock.patch("hq_relationships.pair", return_value=row):
+            self.assertEqual(assistant_voice.pair_line("culinia"), "")
+
+    def test_no_voice_card_borrows_another_stance_or_form(self):
+        for key in hq_personas.keys():
+            for compact in (False, True):
+                text = hq_personas.voice_line(key, compact=compact)
+                self.assertTrue(text, (key, compact))
+                for other in hq_personas.keys():
+                    if other == key:
+                        continue
+                    self.assertNotIn(hq_personas.get(other)["voice"]["stance"], text, (key, other))
+                    self.assertNotIn(hq_personas.get(other)["voice"]["syntax"], text, (key, other))
+
+
+class SisterVoiceTests(unittest.TestCase):
+    """The sisters' own cores carry their own card, inside their byte budget."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="hq-sister-voice-")
+        self.root = Path(self.tmp.name)
+        # Real clock: the bond line is read at "now" in production, and evidence
+        # older than the 90-day retention belongs to no one.
+        self.now = time.time()
+        import hq_ai as ai
+        ai.bind(root=self.root, now=lambda: self.now, key=lambda: "k")
+        memory.bind(root=self.root, now=lambda: self.now)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _system(self, key, channel="chat"):
+        import hq_ai as ai
+        fn = ai.build_transferania_system if key == "transferania" else ai.build_else_system
+        return fn(channel, "warm", nsfw=False, view="accueil",
+                  device_id="sister-device-1", context_core=True)
+
+    def test_each_sister_carries_only_her_own_card(self):
+        for key in ("transferania", "else"):
+            other = "else" if key == "transferania" else "transferania"
+            text = self._system(key)
+            self.assertEqual(text.count("VOIX —"), 1, key)
+            self.assertEqual(text.count("VOICE —"), 0, key)
+            self.assertNotIn(hq_personas.get(other)["voice"]["stance"], text, key)
+            for phrase in hq_personas.get(other)["voice"]["never"]:
+                self.assertNotIn(phrase, text, key)
+
+    def test_transferania_chat_core_stays_inside_the_tight_budget(self):
+        core = self._system("transferania")
+        base = 48 + len(core.encode("utf-8")) + len("bonjour".encode("utf-8"))
+        self.assertLessEqual(base, 6000, "the warm chat core must still fit the 6 000 B tight budget")
+        self.assertIn("40 mots max", core)
+        self.assertTrue(any(line.startswith("VOIX —") for line in core.splitlines()))
+
+    def test_bond_line_appears_once_two_real_days_exist(self):
+        with memory.owner_context("admin"):
+            hq_personhood.observe_chat("else", "Bonjour Else.", now=self.now - 86400, owner="admin")
+            hq_personhood.observe_chat("else", "Encore un mot.", now=self.now, owner="admin")
+        self.assertGreaterEqual(hq_personhood.bond("else", owner="admin", now=self.now)["days"], 2)
+        text = self._system("else")
+        self.assertEqual(text.count("LIEN AU MAÎTRE —"), 1)
+        self.assertIn("2 jours d'échange", text)
+
+    def test_static_has_no_prompt_in_this_repo(self):
+        entry = hq_personas.get("static")
+        self.assertFalse(entry["on_hq"])
+        self.assertEqual(entry["module"], "", "Static lives in Project G, not on this HQ")
 
 
 class TransferaniaAliasTests(unittest.TestCase):

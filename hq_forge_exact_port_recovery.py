@@ -18,7 +18,7 @@ from pathlib import Path
 import hq_forge_source_identity as source_identity
 
 MAX_AGE_SEC = 7200
-PRODUCTION_HEAD = "17831623039814a7a010537848efa5424294cea8"
+PRODUCTION_HEAD = "a3a83012d4d2d85e108efd8378d0c92f84a6ac0d"
 WORKTREE_HEAD = source_identity.APPROVED_TREE
 PRODUCTION_ROOT = Path(r"C:\Transfert")
 PYTHON_EXE = r"C:\Python313\python.exe"

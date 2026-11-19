@@ -6,6 +6,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -17,6 +18,7 @@ import hq_pistonia as pis  # noqa: E402
 
 sys.path.insert(0, str(ROOT / "tests"))
 from test_hq_engine import FakeHealth, free_port  # noqa: E402
+from tests import hq_assistant_state  # noqa: E402
 
 
 def script(*outputs):
@@ -34,6 +36,61 @@ def script(*outputs):
 
 def J(reply="", tools=()):
     return json.dumps({"reply": reply, "tools": list(tools)})
+
+
+class AddresseeTests(unittest.TestCase):
+    """A sister can open the turn: she must know who is speaking to her."""
+
+    def setUp(self):
+        import shutil
+        self.root = Path(tempfile.mkdtemp(prefix="hq-addressee-"))
+        self.addCleanup(shutil.rmtree, self.root, True)
+        hq_ai.bind(root=self.root, now=lambda: time.time(), key=lambda: "", extra_keys=lambda: [])
+        # Her heart days and her pair record live beside the engine state: bind
+        # that root too, or the echo gate reads an unbound store and this module
+        # only passes after another one happened to bind it.
+        import hq_engine as engine
+        engine.bind(self.root)
+        import hq_companion_memory as memory
+        import hq_personhood as ph
+        import hq_relationships as rel
+        memory.bind(root=self.root, now=time.time())
+        hq_assistant_state.guard(self)  # a store left unbound would write the checkout
+        self.memory = memory
+        owner = "admin"
+        with memory.owner_context(owner):
+            ph.observe_chat("pistonia", "Le pont tient.", now=time.time() - 86400, owner=owner)
+            ph.observe_chat("culinia", "Le four tient.", now=time.time() - 86400, owner=owner)
+            rel.note_exchange(None, "culinia", "pistonia", "Le four et la salle se sont parlé.",
+                              now=time.time(), owner=owner)
+
+    def test_a_sister_who_opens_the_turn_is_named_in_her_system(self):
+        gen = script(J("Culinia, the room holds at 31 percent."))
+        with self.memory.owner_context("admin"):
+            reply, _ = pis.respond("Culinia, a Pistonia: reponds-moi a moi.", generate=gen)
+        self.assertEqual(reply, "Culinia, the room holds at 31 percent.")
+        system = gen.seen[0][0]
+        self.assertIn("INTERLOCUTRICE : Culinia", system)
+        self.assertIn("Réponds à Culinia", system)
+        self.assertIn("pas au Maître", system)
+
+    def test_an_explicit_addressee_still_works(self):
+        gen = script(J("Culinia, stable."))
+        with self.memory.owner_context("admin"):
+            pis.respond("Reponds-moi a moi.", generate=gen, addressee="Culinia")
+        self.assertIn("INTERLOCUTRICE : Culinia", gen.seen[0][0])
+
+    def test_the_master_naming_her_is_not_a_sister_speaking(self):
+        gen = script(J("System load is 20 percent."))
+        with self.memory.owner_context("admin"):
+            pis.respond("Pistonia, comment va la salle ?", generate=gen)
+        self.assertNotIn("INTERLOCUTRICE", gen.seen[0][0])
+
+    def test_a_pair_without_a_shared_secret_is_not_told_to_keep_one(self):
+        gen = script(J("Forgia, the room is steady."))
+        with self.memory.owner_context("admin"):
+            pis.respond("Forgia : la salle tient ?", generate=gen)
+        self.assertNotIn("INTERLOCUTRICE", gen.seen[0][0])
 
 
 class Base(unittest.TestCase):
@@ -326,11 +383,11 @@ class RouteTests(Base):
         self.assertEqual(code, 200)
         self.assertIn("line", out)
         old = pis.message
-        pis.message = lambda data: {"ok": True, "reply": "hi", "proposals": [], "mood": "speaking"}
+        pis.message = lambda data, **kw: {"ok": True, "reply": "hi", "proposals": [], "mood": "speaking"}
         self.addCleanup(lambda: setattr(pis, "message", old))
         self.assertEqual(eng.http_post("/api/engine/pistonia/message", {"text": "x"})[1]["reply"], "hi")
 
-        def boom(data):
+        def boom(data, **kw):
             raise pis.PistoniaError("Message vide", 400)
 
         pis.message = boom
@@ -352,3 +409,54 @@ class RouteTests(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OwnerThreadingTests(unittest.TestCase):
+    """The engine route's owner reaches the sister note, not just the prompt block."""
+
+    def setUp(self) -> None:
+        import hq_pistonia_store as store
+
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        hq_ai.bind(root=self.root, now=lambda: 1_700_000_000.0, key=lambda: "k")
+        store.bind(self.root)
+        hq_assistant_state.guard(self)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_respond_carries_the_session_owner(self) -> None:
+        seen = []
+
+        def fake_line(key, other, *, owner=None):
+            seen.append((key, other, owner))
+            return ""
+
+        def gen(system, contents):
+            return '{"reply": "Le four tourne encore.", "tools": [], "remember": []}'
+
+        with patch("hq_assistant_voice.addressee_line", side_effect=fake_line):
+            reply, _ = pis.respond("Culinia: la cuisine est propre ?", generate=gen,
+                                   owner="Administrateur")
+        self.assertIn("four", reply)
+        self.assertEqual(seen, [("pistonia", "culinia", "Administrateur")])
+
+    def test_message_route_passes_the_owner_down(self) -> None:
+        seen = []
+
+        def fake_line(key, other, *, owner=None):
+            seen.append((key, other, owner))
+            return ""
+
+        calls = []
+
+        def gen(system, contents):
+            calls.append(system)
+            return '{"reply": "Le four tourne encore.", "tools": [], "remember": []}'
+
+        with patch("hq_assistant_voice.addressee_line", side_effect=fake_line):
+            out = pis.message({"text": "Culinia: la cuisine est propre ?"}, generate=gen,
+                              owner="Administrateur")
+        self.assertTrue(out.get("ok"), out)
+        self.assertEqual(seen, [("pistonia", "culinia", "Administrateur")])

@@ -1,0 +1,17 @@
+{
+  "assistant": "musica",
+  "samples": {
+    "open": [
+      {
+        "url": "/assets/assistant-sfx/musica/open.e8c01404.ogg",
+        "duration_ms": 280
+      }
+    ],
+    "reply": [
+      {
+        "url": "/assets/assistant-sfx/musica/reply.a5bafed9.ogg",
+        "duration_ms": 960
+      }
+    ]
+  }
+}

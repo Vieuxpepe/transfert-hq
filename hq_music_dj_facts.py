@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from datetime import date
 from typing import Any
 
@@ -15,6 +16,7 @@ import hq_music as music
 
 STATE_FILE = "dj-facts.json"
 DAILY_CAP = 40
+DEADLINE_SEC = 12  # a grounded search that is late is dropped: her own lines are already good
 MAX_LINE = 260
 _TAG_RE = re.compile(r"\[(?:neutral|warm|hype|playful|tender|mysterious)\]", re.I)
 
@@ -90,7 +92,7 @@ def enrich(seg: dict[str, Any], *, language: str, intro: bool) -> dict[str, Any]
         _spend()
         raw, _model = hq_ai.generate(hq_ai.SEARCH_CHAIN, system, [{"role": "user", "parts": [{"text": user}]}],
                                      temperature=0.5, max_tokens=1400, background=True, search=True,
-                                     grounding=grounding)
+                                     grounding=grounding, deadline=time.monotonic() + DEADLINE_SEC)
     except Exception:  # noqa: BLE001 — no search today: her own lines are still good
         return out
     data = _parse(raw)

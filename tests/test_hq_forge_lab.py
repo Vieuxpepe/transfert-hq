@@ -57,7 +57,7 @@ class Lab(unittest.TestCase):
         flags = {r["image_id"]: ("keep" if i < 12 else "favorite" if i < 15 else "reject" if i < 22 else "none") for i, r in enumerate(rows)}
         item = L.keep_rate(rows, flags)[0]["rows"][0]
         self.assertEqual((item["samples"], item["kept"], item["favorite"], item["rejected"], item["enough"]), (22, 15, 3, 7, True))
-        few = L.keep_rate(rows[:10], flags)[0]["rows"][0]
+        few = L.keep_rate(rows[: L.MIN_SAMPLES - 1], flags)[0]["rows"][0]
         self.assertFalse(few["enough"])
 
     def test_confounded_settings_are_named(self):
@@ -96,7 +96,7 @@ class Lab(unittest.TestCase):
             data = L.summary(root)
             self.assertEqual(data["records"], 3)
             self.assertTrue(data["vault_excluded"])
-            self.assertEqual(data["min_samples"], 20)
+            self.assertEqual(data["min_samples"], L.MIN_SAMPLES)
             self.assertNotIn("zq-lab", json.dumps(data))
             self.assertEqual(L.summary(Path(tmp) / "missing")["speed"], [])
 

@@ -100,6 +100,70 @@
     return items.filter((i) => words.every((w) => fold(i.name).includes(w)));
   }
 
+  function matchPill(it, filterId) {
+    if (!filterId) return true;
+    if (it.type === "dir") return false;
+    const kd = kindOf(it.name);
+    if (filterId === "image") return kd.family === "image";
+    if (filterId === "doc_pdf") return kd.family === "pdf" || kd.family === "doc" || kd.family === "sheet" || kd.family === "slides" || kd.family === "text";
+    if (filterId === "audio") return kd.family === "audio";
+    if (filterId === "video") return kd.family === "video";
+    if (filterId === "model") return kd.family === "model";
+    if (filterId === "code") return kd.family === "code";
+    return kd.family === filterId;
+  }
+
+  function countPillMatches(items, filterId) {
+    if (!filterId) return items.length;
+    let n = 0;
+    for (const it of items) if (matchPill(it, filterId)) n += 1;
+    return n;
+  }
+
+  function isLensMatch(it, lens, now, dupRels) {
+    if (!lens || lens === "none" || !it || it.type === "dir") return false;
+    if (lens === "heavy") return (it.size || 0) >= 50 * 1048576;
+    if (lens === "zero") return (it.size || 0) === 0;
+    if (lens === "recent") return (now - (it.mtime || 0)) <= 7200;
+    if (lens === "duplicates") {
+      if (dupRels && (dupRels.has ? dupRels.has(it.rel) : dupRels.includes(it.rel))) return true;
+      if (typeof S !== "undefined" && S.dupRels && S.dupRels.has(it.rel)) return true;
+    }
+    return false;
+  }
+
+  function computeBatchRenames(names, mode, opts) {
+    opts = opts || {};
+    return (names || []).map((name, i) => {
+      const extDot = name.lastIndexOf(".");
+      const stem = extDot > 0 ? name.slice(0, extDot) : name;
+      const ext = extDot > 0 ? name.slice(extDot) : "";
+      let newStem = stem;
+
+      if (mode === "prefix_suffix") {
+        newStem = (opts.prefix || "") + stem + (opts.suffix || "");
+      } else if (mode === "find_replace") {
+        if (opts.find) {
+          newStem = stem.split(opts.find).join(opts.replace || "");
+        }
+      } else if (mode === "sequence") {
+        const start = Number(opts.start) || 1;
+        const pad = Math.max(1, Number(opts.pad) || 2);
+        const base = (opts.stem || "fichier").trim();
+        newStem = base + "_" + String(start + i).padStart(pad, "0");
+      } else if (mode === "case") {
+        if (opts.target === "kebab") {
+          newStem = stem.replace(/[\s_]+/g, "-").toLowerCase();
+        } else if (opts.target === "snake") {
+          newStem = stem.replace(/[\s-]+/g, "_").toLowerCase();
+        } else {
+          newStem = stem.toLowerCase();
+        }
+      }
+      return { oldName: name, newName: (newStem || stem) + ext };
+    });
+  }
+
   /** Shift-click: every rel between the anchor and the target, in display order. */
   function rangeSelect(order, anchor, target) {
     const a = order.indexOf(anchor);
@@ -199,15 +263,18 @@
     return Math.max(0, Math.min(1, (now - job.last_run_at) / (EVERY_SEC[job.every] || EVERY_SEC.day)));
   }
 
-  const pure = { untilText, bkStatus, nextTimes, ringFrac, EVERY_LABEL, extOf, kindOf, rootHue, parentOf, joinRel, within, sortItems, filterItems, rangeSelect, validName, fmtBytes, when, uploadTarget, fileUrl, dlUrl, mediaUrl, TRASH };
+  const pure = { untilText, bkStatus, nextTimes, ringFrac, EVERY_LABEL, extOf, kindOf, matchPill, isLensMatch, computeBatchRenames, rootHue, parentOf, joinRel, within, sortItems, filterItems, rangeSelect, validName, fmtBytes, when, uploadTarget, fileUrl, dlUrl, mediaUrl, TRASH };
 
   // ------------------------------------------------------------------ browser layer
 
   const S = {
     started: false, win: null, doc: null, app: null, rel: "", items: [], crumbs: [], loading: false, error: "",
-    view: "grid", sort: "name", q: "", sel: new Set(), anchor: "", selecting: false, peeks: new Map(), trash: null,
+    view: "grid", sort: "name", q: "", familyFilter: "", lens: "none", sel: new Set(), anchor: "", selecting: false, peeks: new Map(), trash: null,
+    pins: new Set(), tags: new Map(), dupRels: new Set(),
+    history: [""], histIdx: 0, dualMode: false, dualActive: "left", relLeft: "", relRight: "Inbox",
+    stash: new Set(), stashDockEl: null, stashBadgeEl: null, zeroCelebrated: false,
     enter: true, spillFrom: null, landed: new Set(), sheet: null, uploads: [], drag: null, toastEl: null, toastTimer: 0,
-    listEl: null, barEl: null, trayEl: null, dropEl: null, focusRel: "", ql: null, peekToken: 0,
+    listEl: null, barEl: null, trayEl: null, dropEl: null, pillsEl: null, telemetryEl: null, lensBarEl: null, marqueeEl: null, lensBtn: null, focusRel: "", ql: null, peekToken: 0,
   };
 
   const SVG_NS = "http://www.w3.org/2000/svg";
@@ -237,6 +304,18 @@
     pause: "M8 5v14M16 5v14",
     minus: "M6 12h12",
     plus: "M12 6v12M6 12h12",
+    zip: "M4 5h16v4H4zM5 9v10h14V9M10 13h4M12 11v4",
+    cube: "M12 3l8 4.5v9L12 21l-8-4.5v-9zM4 7.5l8 4.5 8-4.5M12 12v9",
+    book: "M4 19.5A2.5 2.5 0 0 1 6.5 17H20M4 19.5A2.5 2.5 0 0 0 6.5 22H20V2H6.5A2.5 2.5 0 0 0 4 4.5z",
+    sparkles: "M12 3l1.9 4.6L18.5 9.5l-4.6 1.9L12 16l-1.9-4.6L5.5 9.5l4.6-1.9zM19 16l.9 2.1 2.1.9-2.1.9L19 22l-.9-2.1-2.1-.9 2.1-.9z",
+    pin: "M16 3l5 5-3 3-1-1-4 4v4l-2 2-2-2 4-4-1-1-4 4-2-2 3-3-1-1 4-4z",
+    columns: "M4 4h7v16H4zm9 0h7v16h-7z",
+    copy: "M8 4h10a2 2 0 0 1 2 2v10M4 8h10a2 2 0 0 1 2 2v10H4z",
+    clock: "M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm1 10.4 3.5 2.1-.8 1.3-4.2-2.5V7h1.5z",
+    mic: "M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3zm5 9a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.9V21h2v-3.1A7 7 0 0 0 19 11z",
+    camera: "M4 7h4l2-3h4l2 3h4a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2zm8 11a5 5 0 1 0 0-10 5 5 0 0 0 0 10z",
+    link: "M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71",
+    stash: "M4 4h16v4H4zm2 5h12v11H6zM9 12h6",
   };
   const FAMILY_ICON = {
     image: "M5 5h14v14H5zM9 10a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3zM5 17l4.5-4.5 3.5 3.5 2.5-2.5L19 17",
@@ -282,7 +361,7 @@
     s.appendChild(p);
     return s;
   }
-  const icon = (name, cls) => svgPath(ICON[name] || FAMILY_ICON.file, cls);
+  const icon = (name, cls) => svgPath(ICON[name] || FAMILY_ICON[name] || FAMILY_ICON.file, cls);
 
   function btn(label, o) {
     o = o || {};
@@ -318,14 +397,328 @@
   const EASE = "cubic-bezier(.2,.8,.2,1)";
   const SPRING = "cubic-bezier(.2,1.35,.35,1)";
 
+  let audioCtx = null;
+  function getAudioCtx() {
+    if (!audioCtx && S.win) {
+      const AC = S.win.AudioContext || S.win.webkitAudioContext;
+      if (AC) {
+        try {
+          audioCtx = new AC();
+        } catch (_) {}
+      }
+    }
+    if (audioCtx && audioCtx.state === "suspended") {
+      audioCtx.resume().catch(() => {});
+    }
+    return audioCtx;
+  }
+
+  function mechSound(type) {
+    if (calm()) return;
+    try {
+      const ctx = getAudioCtx();
+      if (!ctx) return;
+      const t = ctx.currentTime;
+      if (type === "click" || type === "tick") {
+        const osc = ctx.createOscillator();
+        const g = ctx.createGain();
+        osc.type = "triangle";
+        osc.frequency.setValueAtTime(1400, t);
+        osc.frequency.exponentialRampToValueAtTime(300, t + 0.018);
+        g.gain.setValueAtTime(0.04, t);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + 0.018);
+        osc.connect(g);
+        g.connect(ctx.destination);
+        osc.start(t);
+        osc.stop(t + 0.02);
+      } else if (type === "switch") {
+        const osc = ctx.createOscillator();
+        const g = ctx.createGain();
+        osc.type = "sine";
+        osc.frequency.setValueAtTime(1100, t);
+        osc.frequency.exponentialRampToValueAtTime(260, t + 0.022);
+        g.gain.setValueAtTime(0.06, t);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + 0.022);
+        osc.connect(g);
+        g.connect(ctx.destination);
+        osc.start(t);
+        osc.stop(t + 0.025);
+      } else if (type === "pop") {
+        const osc = ctx.createOscillator();
+        const g = ctx.createGain();
+        osc.type = "sine";
+        osc.frequency.setValueAtTime(420, t);
+        osc.frequency.exponentialRampToValueAtTime(1550, t + 0.032);
+        g.gain.setValueAtTime(0.055, t);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + 0.032);
+        osc.connect(g);
+        g.connect(ctx.destination);
+        osc.start(t);
+        osc.stop(t + 0.035);
+      } else if (type === "latch") {
+        const osc1 = ctx.createOscillator();
+        const osc2 = ctx.createOscillator();
+        const g = ctx.createGain();
+        osc1.type = "sine";
+        osc2.type = "triangle";
+        osc1.frequency.setValueAtTime(880, t);
+        osc1.frequency.exponentialRampToValueAtTime(220, t + 0.05);
+        osc2.frequency.setValueAtTime(440, t);
+        osc2.frequency.exponentialRampToValueAtTime(110, t + 0.05);
+        g.gain.setValueAtTime(0.06, t);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + 0.05);
+        osc1.connect(g);
+        osc2.connect(g);
+        g.connect(ctx.destination);
+        osc1.start(t);
+        osc2.start(t);
+        osc1.stop(t + 0.055);
+        osc2.stop(t + 0.055);
+      } else if (type === "burst") {
+        const freqs = [110, 164.8, 220, 277.2];
+        const g = ctx.createGain();
+        g.gain.setValueAtTime(0.08, t);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + 0.45);
+        g.connect(ctx.destination);
+        freqs.forEach((f) => {
+          const osc = ctx.createOscillator();
+          osc.type = "sine";
+          osc.frequency.setValueAtTime(f, t);
+          osc.connect(g);
+          osc.start(t);
+          osc.stop(t + 0.46);
+        });
+      } else if (type === "snap" || type === "select") {
+        const osc = ctx.createOscillator();
+        const g = ctx.createGain();
+        osc.type = "sine";
+        osc.frequency.setValueAtTime(950, t);
+        osc.frequency.exponentialRampToValueAtTime(120, t + 0.028);
+        g.gain.setValueAtTime(0.05, t);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + 0.028);
+        osc.connect(g);
+        g.connect(ctx.destination);
+        osc.start(t);
+        osc.stop(t + 0.03);
+      } else if (type === "drop" || type === "thud") {
+        const osc = ctx.createOscillator();
+        const g = ctx.createGain();
+        osc.type = "sine";
+        osc.frequency.setValueAtTime(160, t);
+        osc.frequency.exponentialRampToValueAtTime(45, t + 0.07);
+        g.gain.setValueAtTime(0.07, t);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + 0.07);
+        osc.connect(g);
+        g.connect(ctx.destination);
+        osc.start(t);
+        osc.stop(t + 0.075);
+      } else if (type === "lens" || type === "telemetry") {
+        const osc = ctx.createOscillator();
+        const g = ctx.createGain();
+        osc.type = "sine";
+        osc.frequency.setValueAtTime(440, t);
+        osc.frequency.exponentialRampToValueAtTime(880, t + 0.04);
+        g.gain.setValueAtTime(0.03, t);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + 0.04);
+        osc.connect(g);
+        g.connect(ctx.destination);
+        osc.start(t);
+        osc.stop(t + 0.045);
+      }
+    } catch (_) {}
+  }
+
   function buzz(ms) {
     try {
+      if (Array.isArray(ms)) {
+        mechSound("burst");
+      } else {
+        mechSound(ms >= 12 ? "drop" : "click");
+      }
       if (typeof S.win.hqPolishHaptic === "function") {
         S.win.hqPolishHaptic(Array.isArray(ms) ? "stock" : ms >= 12 ? "drop" : "tick");
         return;
       }
       if (S.win.navigator.vibrate) S.win.navigator.vibrate(ms);
     } catch (_) {}
+  }
+
+  function dopamineSurge(rel) {
+    if (calm()) return;
+    mechSound("burst");
+    buzz([20, 60, 25, 45, 30]);
+    if (S.doc && S.doc.body) {
+      const wave = el("div", { class: "fx-shockwave", "aria-hidden": "true" });
+      S.doc.body.appendChild(wave);
+      S.win.setTimeout(() => wave.remove(), 1200);
+    }
+    toast("« Répertoire anéanti, Maître. Le disque respire sous votre coupe. »");
+    if (typeof S.win.hqPolishBurst === "function" && S.listEl) {
+      S.win.hqPolishBurst(S.listEl);
+    }
+  }
+
+  function loadStash() {
+    try {
+      const raw = S.win.localStorage.getItem("hq_files_stash_v1");
+      if (raw) S.stash = new Set(JSON.parse(raw));
+    } catch (_) {}
+  }
+
+  function saveStash() {
+    try {
+      S.win.localStorage.setItem("hq_files_stash_v1", JSON.stringify(Array.from(S.stash)));
+    } catch (_) {}
+    paintStashBadge();
+  }
+
+  function paintStashBadge() {
+    if (!S.stashBadgeEl) return;
+    const c = S.stash.size;
+    S.stashBadgeEl.textContent = String(c);
+    S.stashBadgeEl.hidden = !c;
+  }
+
+  function wireStashDrop(dockEl) {
+    dockEl.addEventListener("dragover", (ev) => {
+      if (!S.drag && (!ev.dataTransfer || !ev.dataTransfer.types || !Array.prototype.includes.call(ev.dataTransfer.types, "Files"))) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      dockEl.classList.add("is-drop-active");
+    });
+    dockEl.addEventListener("dragleave", (ev) => {
+      if (!dockEl.contains(ev.relatedTarget)) {
+        dockEl.classList.remove("is-drop-active");
+      }
+    });
+    dockEl.addEventListener("drop", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      dockEl.classList.remove("is-drop-active");
+      if (S.drag && S.drag.rels && S.drag.rels.length) {
+        for (const r of S.drag.rels) S.stash.add(r);
+        saveStash();
+        mechSound("latch");
+        buzz([12, 35, 12]);
+        toast(S.drag.rels.length > 1 ? S.drag.rels.length + " éléments accrochés à l'établi" : "Élément accroché à l'établi");
+        S.drag = null;
+      }
+    });
+  }
+
+  function openStashDrawer() {
+    const items = Array.from(S.stash);
+    const body = el("div", { class: "fx-stash-body" });
+    if (!items.length) {
+      body.appendChild(el("p", { class: "fx-hint", style: "padding:24px 12px;text-align:center", text: "L'établi est vide. Glissez n'importe quels fichiers ou dossiers sur l'établi pour les collecter et les déplacer en un clin d'œil." }));
+    } else {
+      const list = el("div", { class: "fx-stash-list" });
+      items.forEach((rel) => {
+        const row = el("div", { class: "fx-stash-item" });
+        const kd = kindOf(rel);
+        const name = rel.split("/").pop();
+        const parent = parentOf(rel) || "Racine";
+        const removeBtn = btn("", { cls: "fx-btn is-round", icon: "close", title: "Retirer de l'établi", on: () => {
+          S.stash.delete(rel);
+          saveStash();
+          row.remove();
+          if (S.stash.size === 0) closeSheet();
+        } });
+        row.append(
+          svgPath(FAMILY_ICON[kd.family] || FAMILY_ICON.file, "fx-stash-item-ico"),
+          el("div", { class: "fx-stash-item-meta" }, [
+            el("span", { class: "fx-stash-item-name", text: name }),
+            el("span", { class: "fx-stash-item-path", text: parent })
+          ]),
+          removeBtn
+        );
+        list.appendChild(row);
+      });
+      body.appendChild(list);
+    }
+
+    const actions = [];
+    if (items.length) {
+      if (S.rel && S.rel !== TRASH) {
+        actions.push(btn("Déposer tout ici (" + items.length + ")", {
+          cls: "fx-btn is-primary",
+          icon: "move",
+          on: async () => {
+            closeSheet();
+            const target = S.rel;
+            toast("Déplacement vers « " + (target.split("/").pop() || "Racine") + " »…");
+            try {
+              await moveTo(items, target);
+              S.stash.clear();
+              saveStash();
+              mechSound("thud");
+              buzz([15, 45, 15]);
+            } catch (e) {
+              toast((e && e.message) || "Erreur de transfert", null, null, true);
+            }
+          }
+        }));
+      }
+      actions.push(btn("Vider l'établi", {
+        cls: "fx-btn is-danger",
+        icon: "trash",
+        on: () => {
+          S.stash.clear();
+          saveStash();
+          closeSheet();
+          toast("Établi vidé");
+        }
+      }));
+    }
+    actions.push(btn("Fermer", { on: () => closeSheet() }));
+    openSheet("Établi Magnétique Escamotable (" + items.length + ")", body, actions);
+  }
+
+  let peepTimer = 0;
+  let peepGlassEl = null;
+
+  function hidePeep() {
+    if (peepTimer) {
+      S.win.clearTimeout(peepTimer);
+      peepTimer = 0;
+    }
+    if (peepGlassEl) {
+      peepGlassEl.remove();
+      peepGlassEl = null;
+    }
+  }
+
+  function wireQuickPeep(tile, it) {
+    if (calm() || !fine() || it.type === "dir") return;
+    if (!EDITABLE.test(it.name) && !(/\.(pdf|doc|docx|csv|tsv|json|py|js|css|html|md|txt)$/i.test(it.name))) return;
+
+    tile.addEventListener("mouseenter", () => {
+      hidePeep();
+      peepTimer = S.win.setTimeout(async () => {
+        try {
+          const d = await postJson("/api/read", { rel: it.rel });
+          const raw = String(d.content || "");
+          const lines = raw.split("\n").slice(0, 8).join("\n");
+          if (!lines.trim()) return;
+          peepGlassEl = el("div", { class: "fx-peep-glass" }, [
+            el("div", { class: "fx-peep-head" }, [
+              el("span", { class: "fx-peep-title", text: it.name }),
+              el("span", { class: "fx-peep-meta", text: it.size_h })
+            ]),
+            el("pre", { class: "fx-peep-body", text: lines + (raw.split("\n").length > 8 ? "\n…" : "") })
+          ]);
+          S.doc.body.appendChild(peepGlassEl);
+          const rect = tile.getBoundingClientRect();
+          const top = Math.max(12, rect.top - 130);
+          const left = Math.min(S.win.innerWidth - 330, Math.max(12, rect.left));
+          peepGlassEl.style.top = top + "px";
+          peepGlassEl.style.left = left + "px";
+          mechSound("tick");
+        } catch (_) {}
+      }, 380);
+    });
+    tile.addEventListener("mouseleave", hidePeep);
+    tile.addEventListener("pointerdown", hidePeep);
   }
 
   // ---------------------------------------------------------------- network
@@ -359,11 +752,15 @@
   async function load(rel, opts) {
     const o = opts || {};
     const target = rel === undefined ? S.rel : rel;
+    const prevCount = S.items.length;
+    const prevRel = S.rel;
     if (target !== S.rel) {
       S.enter = true;
       S.sel.clear();
       S.selecting = false;
       S.q = "";
+      S.familyFilter = "";
+      S.lens = "none";
       if (S.searchEl) S.searchEl.value = "";
     }
     S.loading = true;
@@ -376,6 +773,7 @@
         S.rel = TRASH;
         S.items = [];
         S.crumbs = [{ name: "Racine", rel: "" }, { name: "Corbeille", rel: TRASH }];
+        S.zeroCelebrated = false;
       } else {
         const qs = target ? "?path=" + encodeURIComponent(target) : "";
         const data = await call("/api/list" + qs);
@@ -384,6 +782,12 @@
         S.rel = data.rel || "";
         S.items = data.items || [];
         S.crumbs = data.breadcrumb || [{ name: "Racine", rel: "" }];
+        if (target && target !== TRASH && prevRel === target && prevCount > 0 && S.items.length === 0) {
+          S.zeroCelebrated = true;
+          dopamineSurge(target);
+        } else if (target !== prevRel) {
+          S.zeroCelebrated = false;
+        }
         if (!S.trash) call("/api/files/trash").then((t) => {
           S.trash = t;
           paintTrashCount();
@@ -1355,21 +1759,99 @@
       if (!S.selecting) S.sel.clear();
       render();
     } });
+    S.lensBtn = btn("Lentille", { cls: "fx-btn", icon: "sparkles", title: "Lentille intelligente (Lourds, Vides, Récents, Doublons)", on: () => cycleLens() });
+    S.recentBtn = btn("Récents", { cls: "fx-btn", icon: "clock", title: "Fichiers récents transversaux", on: () => openOmniRecent() });
+    S.captureBtn = btn("Capture", { cls: "fx-btn", icon: "camera", title: "Capture directe (Photo / Note vocale)", on: () => openDirectCapture() });
+    S.dualBtn = btn("Double volet", { cls: "fx-btn", icon: "columns", title: "Mode double-panneau (Norton Commander)", on: () => toggleDualMode() });
     S.bkBtn = btn("Sauvegarde auto", { cls: "fx-btn fx-bk-btn", icon: "shield", on: () => openBackups() });
     S.bkBtn.appendChild(el("span", { class: "fx-n", hidden: true }));
     S.bkBtn.hidden = true;
     S.trashBtn = btn("Corbeille", { cls: "fx-btn fx-trash-btn", icon: "trash", on: () => go(TRASH) });
     S.trashBtn.appendChild(el("span", { class: "fx-n", hidden: true }));
-    const top = el("div", { class: "fx-top" }, [S.crumbEl, el("div", { class: "fx-top-right" }, [viewSeg, S.sortEl])]);
-    const tools = el("div", { class: "fx-tools" }, [search, S.uploadBtn, S.mkdirBtn, S.selectBtn, S.bkBtn, S.trashBtn]);
+    S.inboxZeroBtn = btn("Tri Inbox", { cls: "fx-btn fx-inbox-btn", icon: "sparkles", title: "Ranger automatiquement avec Inbox-Zero", on: () => runInboxZero() });
+    S.inboxZeroBtn.hidden = true;
+    const navHistory = el("div", { class: "fx-nav-history" }, [
+      btn("", { cls: "fx-btn", icon: "left", title: "Dossier précédent (Alt+←)", aria: "Précédent", on: () => goBack() }),
+      btn("", { cls: "fx-btn", icon: "right", title: "Dossier suivant (Alt+→)", aria: "Suivant", on: () => goForward() }),
+    ]);
+    const top = el("div", { class: "fx-top" }, [navHistory, S.crumbEl, el("div", { class: "fx-top-right" }, [viewSeg, S.sortEl])]);
+    const tools = el("div", { class: "fx-tools" }, [search, S.uploadBtn, S.mkdirBtn, S.selectBtn, S.lensBtn, S.recentBtn, S.captureBtn, S.dualBtn, S.inboxZeroBtn, S.bkBtn, S.trashBtn]);
+    S.pillsEl = el("div", { class: "fx-pills", role: "toolbar", "aria-label": "Filtres par type" });
+    S.telemetryEl = el("div", { class: "fx-telemetry", role: "region", "aria-label": "Télémétrie du dossier" });
+    S.lensBarEl = el("div", { class: "fx-lens-bar", role: "region", "aria-label": "Lentille active", hidden: true });
     S.listEl = el("div", { class: "fx-list", role: "listbox", "aria-label": "Contenu du dossier", "aria-multiselectable": "true" });
     S.barEl = el("div", { class: "fx-selbar", role: "region", "aria-label": "Sélection", hidden: true });
     S.trayEl = el("div", { class: "fx-tray", "aria-live": "polite", hidden: true });
     S.dropEl = el("div", { class: "fx-drop", "aria-hidden": "true", hidden: true }, [el("div", { class: "fx-drop-card" }, [icon("upload", "fx-drop-ico"), el("strong", { class: "fx-drop-title" }), el("span", { class: "fx-drop-sub", text: "Lâche pour envoyer" })])]);
     S.toastEl = el("div", { class: "fx-toast", role: "status", hidden: true });
-    app.append(top, tools, S.listEl, S.barEl, S.trayEl, S.dropEl, S.toastEl);
+    S.marqueeEl = el("div", { class: "fx-marquee", "aria-hidden": "true", hidden: true });
+
+    loadStash();
+    S.stashBadgeEl = el("span", { class: "fx-stash-badge", hidden: true });
+    S.stashDockEl = el("button", {
+      class: "fx-stash-dock",
+      title: "Établi Magnétique (Glissez des fichiers ici pour les déplacer)",
+      "aria-label": "Établi Pocket",
+      type: "button"
+    }, [
+      svgPath(ICON.stash, "fx-stash-ico"),
+      el("span", { class: "fx-stash-label", text: "Établi" }),
+      S.stashBadgeEl
+    ]);
+    S.stashDockEl.addEventListener("click", () => openStashDrawer());
+    wireStashDrop(S.stashDockEl);
+    paintStashBadge();
+
+    app.append(top, tools, S.pillsEl, S.telemetryEl, S.lensBarEl, S.listEl, S.barEl, S.trayEl, S.dropEl, S.toastEl, S.marqueeEl, S.stashDockEl);
+    bindMarquee();
     bindDrop();
     bindKeys();
+
+    // Pull-to-refresh (touch)
+    let pullStartY = 0;
+    let pullIndicator = null;
+    S.listEl.addEventListener("touchstart", (ev) => {
+      if (ev.touches.length === 1 && (S.win.scrollY || S.doc.documentElement.scrollTop || 0) <= 0) {
+        pullStartY = ev.touches[0].clientY;
+      } else {
+        pullStartY = 0;
+      }
+    }, { passive: true });
+    S.listEl.addEventListener("touchmove", (ev) => {
+      if (!pullStartY) return;
+      const dy = ev.touches[0].clientY - pullStartY;
+      if (dy > 40) {
+        if (!pullIndicator) {
+          pullIndicator = el("div", { class: "fx-pull-indicator", text: "Tirer pour actualiser" });
+          S.app.appendChild(pullIndicator);
+        }
+        if (dy > 80) pullIndicator.textContent = "Relâcher pour actualiser";
+      }
+    }, { passive: true });
+    S.listEl.addEventListener("touchend", async (ev) => {
+      if (pullIndicator) {
+        pullIndicator.remove();
+        pullIndicator = null;
+        if (pullStartY && ev.changedTouches[0].clientY - pullStartY > 80) {
+          buzz(15);
+          toast("Actualisation…");
+          await load(S.rel);
+        }
+      }
+      pullStartY = 0;
+    }, { passive: true });
+  }
+
+  async function runInboxZero() {
+    toast("Tri Inbox-Zero en cours…");
+    try {
+      const res = await postJson("/api/inbox-zero", { action: "sort" });
+      const moved = (res && res.moved) || 0;
+      toast(moved ? (moved === 1 ? "1 fichier rangé" : moved + " fichiers rangés") : "Inbox déjà triée");
+      await load(S.rel);
+    } catch (e) {
+      toast((e && e.message) || "Erreur Inbox-Zero", null, null, true);
+    }
   }
 
   function setView(v) {
@@ -1391,8 +1873,248 @@
 
   // ---------------------------------------------------------------- render
 
+  const PILL_FILTERS = [
+    { id: "", label: "Tous", icon: "select" },
+    { id: "image", label: "Images", icon: "image" },
+    { id: "doc_pdf", label: "Docs", icon: "doc" },
+    { id: "audio", label: "Audio", icon: "audio" },
+    { id: "video", label: "Vidéos", icon: "video" },
+    { id: "model", label: "3D", icon: "cube" },
+    { id: "code", label: "Code", icon: "code" },
+  ];
+
   function shown() {
-    return sortItems(filterItems(S.items, S.q), S.sort);
+    const matched = S.familyFilter ? filterItems(S.items, S.q).filter((it) => matchPill(it, S.familyFilter)) : filterItems(S.items, S.q);
+    const sorted = sortItems(matched, S.sort);
+    if (!S.pins || !S.pins.size) return sorted;
+    const pinned = [];
+    const rest = [];
+    for (const it of sorted) {
+      if (S.pins.has(it.rel)) pinned.push(it);
+      else rest.push(it);
+    }
+    return pinned.concat(rest);
+  }
+
+  function renderPills() {
+    if (!S.pillsEl) return;
+    S.pillsEl.textContent = "";
+    if (S.rel === TRASH) {
+      S.pillsEl.hidden = true;
+      return;
+    }
+    S.pillsEl.hidden = false;
+    const items = filterItems(S.items, S.q);
+    PILL_FILTERS.forEach((p) => {
+      const count = countPillMatches(items, p.id);
+      if (p.id && count === 0) return;
+      const active = S.familyFilter === p.id;
+      const b = el("button", {
+        type: "button",
+        class: "fx-pill",
+        "aria-pressed": String(active),
+        on: {
+          click: () => {
+            S.familyFilter = active && p.id ? "" : p.id;
+            render();
+          },
+        },
+      }, [
+        icon(p.icon || "file"),
+        el("span", { text: p.label }),
+        el("span", { class: "fx-pill-n", text: String(count) }),
+      ]);
+      S.pillsEl.appendChild(b);
+    });
+  }
+
+  function renderTelemetry() {
+    if (!S.telemetryEl) return;
+    if (S.rel === TRASH || !S.items.length) {
+      S.telemetryEl.hidden = true;
+      return;
+    }
+    S.telemetryEl.hidden = false;
+    S.telemetryEl.textContent = "";
+
+    let totalBytes = 0;
+    let fileCount = 0;
+    let dirCount = 0;
+    const catBytes = {
+      image: 0,
+      doc: 0,
+      audio: 0,
+      video: 0,
+      model: 0,
+      code: 0,
+      other: 0,
+    };
+
+    for (const it of S.items) {
+      if (it.type === "dir") {
+        dirCount += 1;
+      } else {
+        fileCount += 1;
+        const b = it.size || 0;
+        totalBytes += b;
+        const kd = kindOf(it.name);
+        if (kd.family === "image") catBytes.image += b;
+        else if (kd.family === "pdf" || kd.family === "doc" || kd.family === "sheet" || kd.family === "slides" || kd.family === "text") catBytes.doc += b;
+        else if (kd.family === "audio") catBytes.audio += b;
+        else if (kd.family === "video") catBytes.video += b;
+        else if (kd.family === "model") catBytes.model += b;
+        else if (kd.family === "code") catBytes.code += b;
+        else catBytes.other += b;
+      }
+    }
+
+    const head = el("div", { class: "fx-telem-head" }, [
+      el("span", {}, [
+        el("strong", { text: fmtBytes(totalBytes) }),
+        el("span", { text: " occupés" }),
+      ]),
+      el("span", {
+        text: (fileCount ? fileCount + " fichier" + (fileCount > 1 ? "s" : "") : "") +
+              (fileCount && dirCount ? " · " : "") +
+              (dirCount ? dirCount + " dossier" + (dirCount > 1 ? "s" : "") : ""),
+      }),
+    ]);
+
+    const bar = el("div", { class: "fx-telem-bar" });
+    if (totalBytes > 0) {
+      const segColors = {
+        image: "hsl(150 65% 50%)",
+        doc: "hsl(214 65% 55%)",
+        audio: "hsl(330 75% 60%)",
+        video: "hsl(18 80% 55%)",
+        model: "hsl(190 70% 50%)",
+        code: "hsl(280 65% 60%)",
+        other: "hsl(220 15% 50%)",
+      };
+      for (const [k, bytes] of Object.entries(catBytes)) {
+        if (!bytes) continue;
+        const pct = ((bytes / totalBytes) * 100).toFixed(1);
+        const seg = el("div", { class: "fx-telem-seg", title: k + ": " + fmtBytes(bytes) + " (" + pct + "%)" });
+        seg.style.width = pct + "%";
+        seg.style.backgroundColor = segColors[k] || segColors.other;
+        bar.appendChild(seg);
+      }
+    }
+
+    S.telemetryEl.append(head, bar);
+  }
+
+  async function cycleLens() {
+    const order = ["none", "heavy", "zero", "recent", "duplicates"];
+    const idx = order.indexOf(S.lens);
+    S.lens = order[(idx + 1) % order.length];
+    mechSound("lens");
+    if (S.lens === "duplicates") {
+      try {
+        toast("Recherche des doublons…");
+        const data = await getJson("/api/files/duplicates?rel=" + encodeURIComponent(S.rel || ""));
+        S.dupRels = new Set(data.duplicate_rels || []);
+        if (!S.dupRels.size) {
+          toast("Aucun doublon trouvé dans ce dossier");
+        } else {
+          toast(S.dupRels.size + " doublon" + (S.dupRels.size > 1 ? "s" : "") + " détecté" + (S.dupRels.size > 1 ? "s" : ""));
+        }
+      } catch (e) {
+        toast((e && e.message) || "Erreur de scan", null, null, true);
+        S.dupRels = new Set();
+      }
+    } else {
+      S.dupRels.clear();
+    }
+    render();
+  }
+
+  function renderLensBar() {
+    if (!S.lensBarEl) return;
+    if (S.lens === "none" || S.rel === TRASH || !S.items.length) {
+      S.lensBarEl.hidden = true;
+      S.app.classList.remove("has-lens");
+      return;
+    }
+    S.lensBarEl.hidden = false;
+    S.app.classList.add("has-lens");
+    S.lensBarEl.textContent = "";
+
+    const now = Date.now() / 1000;
+    const matches = S.items.filter((it) => isLensMatch(it, S.lens, now, S.dupRels));
+    const matchRels = matches.map((it) => it.rel);
+
+    const labels = {
+      heavy: "Lentille : Fichiers lourds (> 50 Mo)",
+      zero: "Lentille : Fichiers vides (0 o)",
+      recent: "Lentille : Récents (< 2 heures)",
+      duplicates: "Lentille : Doublons (SHA-256 identiques)",
+    };
+
+    const info = el("div", { class: "fx-lens-info" }, [
+      icon("sparkles"),
+      el("strong", { text: labels[S.lens] || "Lentille" }),
+      el("span", { text: "· " + matches.length + " élément" + (matches.length > 1 ? "s" : "") }),
+    ]);
+
+    const acts = el("div", { class: "fx-lens-acts" });
+
+    if (matches.length > 0) {
+      if (S.lens === "zero") {
+        acts.appendChild(btn("Purger les " + matches.length + " fichiers vides", {
+          cls: "fx-btn is-danger",
+          icon: "trash",
+          on: async () => {
+            await trash(matchRels);
+            S.lens = "none";
+            render();
+          },
+        }));
+      } else if (S.lens === "duplicates") {
+        acts.appendChild(btn("Purger les " + matches.length + " doublons", {
+          cls: "fx-btn is-danger",
+          icon: "trash",
+          on: async () => {
+            await trash(matchRels);
+            S.lens = "none";
+            S.dupRels.clear();
+            render();
+          },
+        }));
+        acts.appendChild(btn("Sélectionner", {
+          cls: "fx-btn is-primary",
+          icon: "check",
+          on: () => {
+            matches.forEach((m) => S.sel.add(m.rel));
+            S.selecting = true;
+            render();
+          },
+        }));
+      } else {
+        acts.appendChild(btn("Sélectionner tout", {
+          cls: "fx-btn is-primary",
+          icon: "check",
+          on: () => {
+            matches.forEach((m) => S.sel.add(m.rel));
+            S.selecting = true;
+            render();
+          },
+        }));
+      }
+    }
+
+    acts.appendChild(btn("", {
+      cls: "fx-btn fx-x",
+      icon: "close",
+      title: "Désactiver la lentille",
+      aria: "Désactiver la lentille",
+      on: () => {
+        S.lens = "none";
+        render();
+      },
+    }));
+
+    S.lensBarEl.append(info, acts);
   }
 
   function render() {
@@ -1407,18 +2129,79 @@
     S.mkdirBtn.hidden = S.rel === TRASH || !S.rel;
     S.selectBtn.hidden = S.rel === TRASH || !S.rel;
     S.selectBtn.setAttribute("aria-pressed", String(S.selecting));
+    if (S.lensBtn) {
+      S.lensBtn.hidden = S.rel === TRASH || !S.rel;
+      S.lensBtn.setAttribute("aria-pressed", String(S.lens !== "none"));
+    }
+    if (S.dualBtn) {
+      S.dualBtn.hidden = S.rel === TRASH;
+      S.dualBtn.setAttribute("aria-pressed", String(S.dualMode));
+    }
+    S.inboxZeroBtn.hidden = !S.rel || (!S.rel.startsWith("Inbox") && S.rel !== "Inbox");
     S.trashBtn.hidden = S.rel === TRASH;
     paintTrashCount();
     renderCrumbs();
+    renderPills();
+    renderTelemetry();
+    renderLensBar();
     const L = S.listEl;
     L.textContent = "";
     L.classList.toggle("is-enter", !!S.enter && !calm());
-    if (S.rel === TRASH) renderTrash(L);
-    else {
+    if (S.rel === TRASH) {
+      L.classList.remove("fx-dual-wrap");
+      renderTrash(L);
+    } else if (S.dualMode) {
+      L.classList.add("fx-dual-wrap");
+      const leftCol = el("div", {
+        class: "fx-pane is-left" + (S.dualActive === "left" ? " is-active" : ""),
+        on: {
+          click: () => {
+            if (S.dualActive !== "left") {
+              S.dualActive = "left";
+              S.rel = S.relLeft;
+              render();
+            }
+          },
+        },
+      });
+      const rightCol = el("div", {
+        class: "fx-pane is-right" + (S.dualActive === "right" ? " is-active" : ""),
+        on: {
+          click: () => {
+            if (S.dualActive !== "right") {
+              S.dualActive = "right";
+              S.rel = S.relRight;
+              render();
+            }
+          },
+        },
+      });
+
+      const leftHead = el("div", { class: "fx-pane-head" }, [
+        el("span", {}, [icon("folder"), el("strong", { text: " " + (S.relLeft || "Racine") })]),
+        el("span", { class: "fx-hint", text: S.dualActive === "left" ? "Actif (Tab pour basculer)" : "Cliquer pour activer" }),
+      ]);
+      const rightHead = el("div", { class: "fx-pane-head" }, [
+        el("span", {}, [icon("folder"), el("strong", { text: " " + (S.relRight || "Racine") })]),
+        el("span", { class: "fx-hint", text: S.dualActive === "right" ? "Actif (Tab pour basculer)" : "Cliquer pour activer" }),
+      ]);
+      dropTarget(leftCol, S.relLeft || "Inbox");
+      dropTarget(rightCol, S.relRight || "Inbox");
+
+      const items = shown();
+      const leftList = el("div", { class: "fx-list" });
+      if (!items.length) leftList.appendChild(empty());
+      items.forEach((it, k) => leftList.appendChild(it.type === "dir" ? folderTile(it, k) : fileTile(it, k)));
+
+      leftCol.append(leftHead, leftList);
+      rightCol.append(rightHead, el("p", { class: "fx-hint", style: "padding:24px 12px;text-align:center", text: "Volet miroir : " + (S.relRight || "Racine") + ". Glissez des fichiers ici ou cliquez pour y naviguer." }));
+
+      L.append(leftCol, rightCol);
+    } else {
+      L.classList.remove("fx-dual-wrap");
       const items = shown();
       if (!items.length) L.appendChild(empty());
       items.forEach((it, k) => L.appendChild(it.type === "dir" ? folderTile(it, k) : fileTile(it, k)));
-      // one card is reachable with Tab; the arrows move from there
       const first = (S.focusRel && L.querySelector('.fx-item[data-rel="' + cssEsc(S.focusRel) + '"]')) || L.querySelector(".fx-item[data-rel]");
       if (first) first.tabIndex = 0;
     }
@@ -1441,17 +2224,74 @@
       if (!here) {
         tab.addEventListener("click", () => go(c.rel));
         dropTarget(tab, c.rel);
+        let press = 0;
+        tab.addEventListener("pointerdown", () => {
+          press = S.win.setTimeout(() => {
+            crumbJump(c.rel, c.name || "Racine");
+          }, 450);
+        });
+        const cancel = () => {
+          if (press) {
+            S.win.clearTimeout(press);
+            press = 0;
+          }
+        };
+        tab.addEventListener("pointerup", cancel);
+        tab.addEventListener("pointercancel", cancel);
+        tab.addEventListener("pointermove", cancel);
+        tab.addEventListener("contextmenu", (ev) => {
+          ev.preventDefault();
+          crumbJump(c.rel, c.name || "Racine");
+        });
       }
       nav.appendChild(tab);
     });
   }
 
+  async function crumbJump(rel, label) {
+    try {
+      const qs = rel ? "?path=" + encodeURIComponent(rel) : "";
+      const data = await call("/api/list" + qs);
+      const dirs = (data.items || []).filter((it) => it.type === "dir");
+      const list = el("div", { class: "fx-crumb-jump-list" });
+      const jumpTo = (targetRel) => {
+        closeSheet();
+        go(targetRel);
+      };
+      const hereBtn = btn("Aller dans " + (label || "ce dossier"), {
+        cls: "fx-btn is-primary",
+        icon: "folder",
+        on: () => jumpTo(rel),
+      });
+      list.appendChild(hereBtn);
+      if (dirs.length) {
+        const subHead = el("h4", { class: "fx-sheet-subhead", text: "Sous-dossiers (" + dirs.length + ")" });
+        const subGrid = el("div", { class: "fx-sheet-subgrid" });
+        dirs.forEach((d) => {
+          const b = btn(d.name, {
+            cls: "fx-btn",
+            icon: "folder",
+            on: () => jumpTo(d.rel),
+          });
+          subGrid.appendChild(b);
+        });
+        list.append(subHead, subGrid);
+      } else {
+        list.appendChild(el("p", { class: "fx-hint", text: "Aucun sous-dossier direct." }));
+      }
+      openSheet("Naviguer : " + (label || "Fichiers"), list, [btn("Fermer", { on: () => closeSheet() })]);
+    } catch (e) {
+      toast((e && e.message) || "Erreur de chargement", null, null, true);
+    }
+  }
+
   function empty() {
     if (S.q.trim()) return el("div", { class: "fx-empty" }, [el("p", { text: "Rien ne s'appelle « " + S.q.trim() + " » ici." })]);
-    const box = el("div", { class: "fx-empty is-drop" }, [
+    const isZeroDopamine = S.rel && S.rel !== TRASH && S.zeroCelebrated;
+    const box = el("div", { class: "fx-empty is-drop" + (isZeroDopamine ? " is-dopamine-zero" : "") }, [
       emptyArt(),
-      el("h3", { text: "Ce dossier est vide" }),
-      el("p", { text: fine() ? "Glisse des fichiers ici depuis ton ordinateur, ou envoie-les avec le bouton." : "Envoie des photos ou des fichiers depuis ton téléphone." }),
+      el("h3", { text: isZeroDopamine ? "Zéro Fichier · Maîtrise Totale" : "Ce dossier est vide" }),
+      el("p", { text: isZeroDopamine ? "« Répertoire anéanti, Maître. Le disque respire sous votre coupe. »" : (fine() ? "Glisse des fichiers ici depuis ton ordinateur, ou envoie-les avec le bouton." : "Envoie des photos ou des fichiers depuis ton téléphone.") }),
       btn("Envoyer ici", { cls: "fx-btn is-primary", icon: "upload", on: () => pickUpload() }),
     ]);
     return box;
@@ -1495,8 +2335,18 @@
     const name = el("span", { class: "fx-name", text: it.name });
     const meta = el("span", { class: "fx-meta", text: when(it.mtime, Date.now() / 1000) });
     t.append(art, el("span", { class: "fx-text" }, [name, meta]), checkMark());
+    if (S.pins.has(it.rel)) {
+      t.appendChild(el("span", { class: "fx-pin-badge", title: "Épinglé", "aria-hidden": "true" }, [icon("pin")]));
+    }
+    if (S.tags.has(it.rel)) {
+      const c = S.tags.get(it.rel);
+      t.appendChild(el("span", { class: "fx-tag-dots", "aria-hidden": "true" }, [
+        el("span", { class: "fx-tag-dot is-" + c })
+      ]));
+    }
     paintPeek(t);
     paintShield(t);
+    wireFolderFan(t, it);
     wireItem(t, it);
     dropTarget(t, it.rel);
     return t;
@@ -1552,6 +2402,50 @@
       face.appendChild(svgPath(FAMILY_ICON[kd.family] || FAMILY_ICON.file, "fx-face-ico"));
       if (kd.family === "text" || kd.family === "code" || kd.family === "doc" || kd.family === "pdf") face.appendChild(el("span", { class: "fx-lines" }));
     }
+    if (kd.family === "audio") {
+      face.appendChild(el("span", { class: "fx-card-wave", "aria-hidden": "true" }, [
+        el("span"), el("span"), el("span"), el("span"), el("span"),
+      ]));
+    } else if (kd.family === "video" && PLAYABLE.test(it.name)) {
+      const v = el("video", { class: "fx-video-scrub", preload: "metadata", muted: "true", playsinline: "true" });
+      v.src = mediaUrl(it.rel);
+      v.addEventListener("error", () => v.remove());
+      face.appendChild(v);
+      face.classList.add("has-thumb");
+      t.addEventListener("mousemove", (ev) => {
+        if (!v.duration || calm()) return;
+        const r = t.getBoundingClientRect();
+        const pct = Math.max(0, Math.min(1, (ev.clientX - r.left) / r.width));
+        v.currentTime = pct * v.duration;
+      });
+    } else if (kd.family === "model") {
+      face.appendChild(el("span", { class: "fx-card-badge-3d", title: "Modèle 3D", "aria-hidden": "true" }, [
+        icon("cube"),
+      ]));
+      wireTurntable(face);
+    }
+    if (it.size && it.size >= 50 * 1024 * 1024) {
+      t.classList.add("is-heavy-weight");
+      t.appendChild(el("span", { class: "fx-weight-badge", title: "Masse tactile (>50 Mo)", "aria-hidden": "true" }, [
+        icon("cube"),
+        el("span", { text: it.size_h })
+      ]));
+    }
+    if (S.lens !== "none") {
+      const now = Date.now() / 1000;
+      if (isLensMatch(it, S.lens, now, S.dupRels)) {
+        t.classList.add("is-lens-match", "is-lens-" + S.lens);
+      }
+    }
+    if (S.pins.has(it.rel)) {
+      t.appendChild(el("span", { class: "fx-pin-badge", title: "Épinglé", "aria-hidden": "true" }, [icon("pin")]));
+    }
+    if (S.tags.has(it.rel)) {
+      const c = S.tags.get(it.rel);
+      t.appendChild(el("span", { class: "fx-tag-dots", "aria-hidden": "true" }, [
+        el("span", { class: "fx-tag-dot is-" + c })
+      ]));
+    }
     face.appendChild(el("span", { class: "fx-stamp", text: (kd.ext || "?").toUpperCase().slice(0, 5) }));
     face.appendChild(el("span", { class: "fx-dogear" }));
     // the extension never disappears behind an ellipsis: « un-tres-long-nom….pdf »
@@ -1560,6 +2454,7 @@
     const meta = el("span", { class: "fx-meta", text: it.size_h + " · " + when(it.mtime, Date.now() / 1000) });
     t.append(face, el("span", { class: "fx-text" }, [name, meta]), checkMark());
     wireItem(t, it);
+    wireQuickPeep(t, it);
     return t;
   }
 
@@ -1658,7 +2553,39 @@
   function go(rel, opts) {
     const o = opts || {};
     if (o.from && !calm()) S.spillFrom = o.from;
+    if (!o.isNav && S.rel !== rel) {
+      if (S.histIdx < S.history.length - 1) {
+        S.history = S.history.slice(0, S.histIdx + 1);
+      }
+      S.history.push(rel);
+      if (S.history.length > 50) {
+        S.history.shift();
+      }
+      S.histIdx = S.history.length - 1;
+    }
+    if (S.dualMode) {
+      if (S.dualActive === "left") S.relLeft = rel;
+      else S.relRight = rel;
+    }
     return load(rel);
+  }
+
+  function goBack() {
+    if (S.histIdx > 0) {
+      S.histIdx -= 1;
+      return go(S.history[S.histIdx], { isNav: true });
+    } else {
+      toast("Début de l'historique");
+    }
+  }
+
+  function goForward() {
+    if (S.histIdx < S.history.length - 1) {
+      S.histIdx += 1;
+      return go(S.history[S.histIdx], { isNav: true });
+    } else {
+      toast("Fin de l'historique");
+    }
   }
 
   function openFolder(tile, rel) {
@@ -1677,6 +2604,7 @@
     if (on === undefined ? !S.sel.has(rel) : on) S.sel.add(rel);
     else S.sel.delete(rel);
     S.anchor = rel;
+    mechSound("pop");
     const n = S.listEl.querySelector('[data-rel="' + cssEsc(rel) + '"]');
     if (n) {
       n.setAttribute("aria-selected", String(S.sel.has(rel)));
@@ -1696,7 +2624,246 @@
     if (typeof S.win.hqPolishLecteurHint === "function") S.win.hqPolishLecteurHint(true);
   }
 
+  function wireParallax(t) {
+    if (calm() || !fine()) return;
+    const glare = el("span", { class: "fx-glare", "aria-hidden": "true" });
+    t.appendChild(glare);
+
+    t.addEventListener("pointermove", (ev) => {
+      const r = t.getBoundingClientRect();
+      const x = (ev.clientX - r.left) / r.width;
+      const y = (ev.clientY - r.top) / r.height;
+      const tiltX = ((y - 0.5) * -12).toFixed(2);
+      const tiltY = ((x - 0.5) * 12).toFixed(2);
+      t.style.setProperty("--tilt-x", tiltX + "deg");
+      t.style.setProperty("--tilt-y", tiltY + "deg");
+      t.style.setProperty("--glare-x", (x * 100).toFixed(1) + "%");
+      t.style.setProperty("--glare-y", (y * 100).toFixed(1) + "%");
+      t.style.setProperty("--mx", (ev.clientX - r.left) + "px");
+      t.style.setProperty("--my", (ev.clientY - r.top) + "px");
+    });
+
+    t.addEventListener("pointerleave", () => {
+      t.style.setProperty("--tilt-x", "0deg");
+      t.style.setProperty("--tilt-y", "0deg");
+    });
+  }
+
+  function wireTurntable(face) {
+    if (calm() || !fine()) return;
+    let canvas = null;
+    let animId = 0;
+    let rotX = 0.5;
+    let rotY = 0;
+
+    const renderFrame = () => {
+      if (!canvas) return;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+      const w = canvas.width;
+      const h = canvas.height;
+      ctx.clearRect(0, 0, w, h);
+
+      rotY += 0.024;
+      const cx = w / 2;
+      const cy = h / 2;
+      const s = Math.min(w, h) * 0.28;
+
+      const nodes = [
+        [-1, -1, -1], [1, -1, -1], [1, 1, -1], [-1, 1, -1],
+        [-1, -1, 1], [1, -1, 1], [1, 1, 1], [-1, 1, 1],
+        [0, -1.6, 0], [0, 1.6, 0],
+      ];
+      const edges = [
+        [0, 1], [1, 2], [2, 3], [3, 0],
+        [4, 5], [5, 6], [6, 7], [7, 4],
+        [0, 4], [1, 5], [2, 6], [3, 7],
+        [8, 0], [8, 1], [8, 4], [8, 5],
+        [9, 2], [9, 3], [9, 6], [9, 7],
+      ];
+
+      const cosY = Math.cos(rotY);
+      const sinY = Math.sin(rotY);
+      const cosX = Math.cos(rotX);
+      const sinX = Math.sin(rotX);
+
+      const proj = nodes.map(([x, y, z]) => {
+        const x1 = x * cosY - z * sinY;
+        const z1 = x * sinY + z * cosY;
+        const y2 = y * cosX - z1 * sinX;
+        const z2 = y * sinX + z1 * cosX;
+        const scale = 300 / (300 + z2 * 40);
+        return [cx + x1 * s * scale, cy + y2 * s * scale];
+      });
+
+      ctx.strokeStyle = "rgba(79, 209, 197, 0.75)";
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      edges.forEach(([i, j]) => {
+        ctx.moveTo(proj[i][0], proj[i][1]);
+        ctx.lineTo(proj[j][0], proj[j][1]);
+      });
+      ctx.stroke();
+
+      ctx.fillStyle = "#fff";
+      proj.forEach(([px, py]) => {
+        ctx.beginPath();
+        ctx.arc(px, py, 1.8, 0, Math.PI * 2);
+        ctx.fill();
+      });
+
+      animId = S.win.requestAnimationFrame(renderFrame);
+    };
+
+    face.addEventListener("pointerenter", () => {
+      if (!canvas) {
+        canvas = el("canvas", { class: "fx-turntable-canvas", width: "128", height: "112" });
+        face.appendChild(canvas);
+      }
+      if (!animId) animId = S.win.requestAnimationFrame(renderFrame);
+    });
+
+    face.addEventListener("pointerleave", () => {
+      if (animId) {
+        S.win.cancelAnimationFrame(animId);
+        animId = 0;
+      }
+    });
+
+    face.addEventListener("pointermove", (ev) => {
+      const rect = face.getBoundingClientRect();
+      const nx = (ev.clientX - rect.left) / rect.width;
+      rotY += (nx - 0.5) * 0.12;
+    });
+  }
+
+  function wireFolderFan(t, it) {
+    if (calm() || !fine()) return;
+    let fan = null;
+    let timer = 0;
+
+    const openFan = () => {
+      const pk = S.peeks.get(it.rel);
+      if (!pk || (!pk.pics.length && !pk.files)) return;
+      if (!fan) {
+        fan = el("div", { class: "fx-folder-fan", role: "region", "aria-label": "Aperçu de " + it.name });
+        const samplePics = pk.pics.slice(0, 4);
+        samplePics.forEach((p) => {
+          const stem = p.split("/").pop();
+          const chip = el("div", { class: "fx-fan-chip", title: stem, on: { click: (ev) => { ev.stopPropagation(); go(it.rel); } } }, [
+            el("img", { class: "fx-fan-thumb", src: fileUrl(p), alt: "" }),
+            el("span", { class: "fx-fan-name", text: stem }),
+          ]);
+          dropTarget(chip, it.rel);
+          fan.appendChild(chip);
+        });
+        t.appendChild(fan);
+      }
+      fan.classList.add("is-open");
+    };
+
+    const closeFan = () => {
+      if (timer) {
+        S.win.clearTimeout(timer);
+        timer = 0;
+      }
+      if (fan) fan.classList.remove("is-open");
+    };
+
+    t.addEventListener("pointerenter", () => {
+      timer = S.win.setTimeout(openFan, 350);
+    });
+    t.addEventListener("pointerleave", closeFan);
+    t.addEventListener("click", closeFan);
+  }
+
+  function bindMarquee() {
+    let startX = 0;
+    let startY = 0;
+    let active = false;
+    let initialSel = null;
+
+    S.listEl.addEventListener("pointerdown", (ev) => {
+      if (ev.button !== 0) return;
+      if (ev.target.closest && ev.target.closest(".fx-item, button, input, a, .fx-empty")) return;
+      startX = ev.clientX;
+      startY = ev.clientY;
+      active = false;
+      initialSel = new Set(ev.shiftKey ? S.sel : []);
+
+      const onPointerMove = (e) => {
+        const dx = e.clientX - startX;
+        const dy = e.clientY - startY;
+        if (!active) {
+          if (Math.hypot(dx, dy) < 6) return;
+          active = true;
+          S.marqueeEl.hidden = false;
+          S.app.classList.add("is-selecting");
+        }
+        const left = Math.min(startX, e.clientX);
+        const top = Math.min(startY, e.clientY);
+        const width = Math.abs(dx);
+        const height = Math.abs(dy);
+        S.marqueeEl.style.left = left + "px";
+        S.marqueeEl.style.top = top + "px";
+        S.marqueeEl.style.width = width + "px";
+        S.marqueeEl.style.height = height + "px";
+
+        const mRect = { left, top, right: left + width, bottom: top + height };
+        let newlySelected = false;
+
+        const tiles = S.listEl.querySelectorAll(".fx-item[data-rel]");
+        for (let i = 0; i < tiles.length; i++) {
+          const tile = tiles[i];
+          const r = tile.getBoundingClientRect();
+          const rel = tile.getAttribute("data-rel");
+          if (!rel) continue;
+          const overlaps = !(r.right < mRect.left || r.left > mRect.right || r.bottom < mRect.top || r.top > mRect.bottom);
+          const wasSelected = S.sel.has(rel);
+          if (overlaps) {
+            if (!wasSelected) {
+              S.sel.add(rel);
+              tile.setAttribute("aria-selected", "true");
+              newlySelected = true;
+            }
+          } else if (!initialSel.has(rel)) {
+            if (wasSelected) {
+              S.sel.delete(rel);
+              tile.setAttribute("aria-selected", "false");
+            }
+          }
+        }
+        if (newlySelected) {
+          mechSound("tick");
+          renderBar();
+        }
+      };
+
+      const onPointerUp = () => {
+        S.win.removeEventListener("pointermove", onPointerMove);
+        S.win.removeEventListener("pointerup", onPointerUp);
+        S.win.removeEventListener("pointercancel", onPointerUp);
+        if (active) {
+          active = false;
+          S.marqueeEl.hidden = true;
+          S.selecting = S.sel.size > 0;
+          renderBar();
+        }
+      };
+
+      S.win.addEventListener("pointermove", onPointerMove);
+      S.win.addEventListener("pointerup", onPointerUp);
+      S.win.addEventListener("pointercancel", onPointerUp);
+    });
+  }
+
   function wireItem(t, it) {
+    wireParallax(t);
+    t.addEventListener("pointermove", (ev) => {
+      const r = t.getBoundingClientRect();
+      t.style.setProperty("--mx", (ev.clientX - r.left) + "px");
+      t.style.setProperty("--my", (ev.clientY - r.top) + "px");
+    }, { passive: true });
     const rel = it.rel;
     let press = 0;
     let pressXY = null;
@@ -1733,9 +2900,13 @@
         }, DOUBLE_TAP_MS);
       } else quickLook(it, t);
     });
-    // touch: a long press starts selecting
+    // touch: a long press starts selecting, swipe right selects, swipe left opens actions
+    let touchStartX = 0;
+    let touchStartY = 0;
     t.addEventListener("pointerdown", (ev) => {
       if (ev.pointerType === "mouse") return;
+      touchStartX = ev.clientX;
+      touchStartY = ev.clientY;
       if (!S.rel) return; // the three top folders are not selectable
       pressXY = [ev.clientX, ev.clientY];
       press = S.win.setTimeout(() => {
@@ -1753,7 +2924,27 @@
       }
     };
     t.addEventListener("pointermove", cancel);
-    t.addEventListener("pointerup", cancel);
+    t.addEventListener("pointerup", (ev) => {
+      if (pressXY && ev.pointerType !== "mouse" && S.rel) {
+        const dx = ev.clientX - touchStartX;
+        const dy = ev.clientY - touchStartY;
+        if (Math.abs(dx) > 75 && Math.abs(dy) < 40) {
+          t.__longPressed = true;
+          if (dx > 0) {
+            toggleSel(rel);
+            buzz(10);
+          } else {
+            buzz(10);
+            openSheet("Actions : " + it.name, el("div", { style: "display:flex;flex-direction:column;gap:10px;padding:8px 0" }, [
+              btn("Déplacer", { cls: "fx-btn", icon: "move", on: () => { closeSheet(); movePicker([rel]); } }),
+              btn("Télécharger", { cls: "fx-btn", icon: "download", on: () => { closeSheet(); S.win.location.href = dlUrl(rel); } }),
+              btn("Corbeille", { cls: "fx-btn is-danger", icon: "trash", on: () => { closeSheet(); trash([rel]); } }),
+            ]), [btn("Annuler", { on: () => closeSheet() })]);
+          }
+        }
+      }
+      cancel(ev);
+    });
     t.addEventListener("pointercancel", cancel);
     t.addEventListener("contextmenu", (ev) => {
       if (!fine()) ev.preventDefault();
@@ -1781,6 +2972,9 @@
     });
   }
 
+  let springTimer = 0;
+  let springNode = null;
+
   function dropTarget(node, rel) {
     node.addEventListener("dragover", (ev) => {
       const files = ev.dataTransfer && Array.prototype.includes.call(ev.dataTransfer.types || [], "Files");
@@ -1791,15 +2985,53 @@
       ev.stopPropagation();
       node.classList.add("is-drop-over");
       if (files) showDrop(rel);
+      if (node.classList.contains("fx-folder")) {
+        node.classList.add("is-magnetic-snap");
+        if (S.drag && rel) {
+          if (springNode !== node) {
+            if (springTimer) S.win.clearTimeout(springTimer);
+            springNode = node;
+            springTimer = S.win.setTimeout(() => {
+              if (springNode === node && S.drag) {
+                node.classList.add("is-springing");
+                mechSound("snap");
+                go(rel);
+              }
+            }, 550);
+          }
+        }
+      }
     });
     node.addEventListener("dragleave", (ev) => {
-      if (!node.contains(ev.relatedTarget)) node.classList.remove("is-drop-over");
+      if (!node.contains(ev.relatedTarget)) {
+        node.classList.remove("is-drop-over", "is-magnetic-snap");
+        if (springNode === node) {
+          if (springTimer) S.win.clearTimeout(springTimer);
+          springTimer = 0;
+          node.classList.remove("is-springing");
+          springNode = null;
+        }
+      }
     });
     node.addEventListener("drop", async (ev) => {
       ev.preventDefault();
       ev.stopPropagation();
-      node.classList.remove("is-drop-over");
+      node.classList.remove("is-drop-over", "is-magnetic-snap");
+      if (springTimer) {
+        S.win.clearTimeout(springTimer);
+        springTimer = 0;
+      }
+      if (springNode) {
+        springNode.classList.remove("is-springing");
+        springNode = null;
+      }
       hideDrop();
+      if (!calm()) {
+        node.classList.add("is-landing");
+        S.win.setTimeout(() => node.classList.remove("is-landing"), 350);
+      }
+      mechSound("latch");
+      buzz([10, 30, 10]);
       if (S.drag) {
         const rels = S.drag.rels;
         S.drag = null;
@@ -1810,7 +3042,418 @@
     });
   }
 
+  async function downloadZip(rels) {
+    if (!rels || !rels.length) return;
+    toast("Création du ZIP (" + rels.length + " éléments)…");
+    try {
+      const res = await S.win.fetch("/api/files/zip", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rels }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || "Erreur de téléchargement ZIP (" + res.status + ")");
+      }
+      const blob = await res.blob();
+      const url = S.win.URL.createObjectURL(blob);
+      const a = el("a", { href: url, download: "fichiers-selection.zip" });
+      S.doc.body.appendChild(a);
+      a.click();
+      a.remove();
+      S.win.setTimeout(() => S.win.URL.revokeObjectURL(url), 10000);
+      toast("ZIP téléchargé");
+    } catch (e) {
+      toast((e && e.message) || "Échec du téléchargement", null, null, true);
+    }
+  }
+
+  async function unzipArchive(rel, destRel) {
+    if (!rel) return;
+    toast("Décompression en cours…");
+    try {
+      const res = await postJson("/api/files/unzip", { rel, dest_rel: destRel });
+      const n = (res && res.extracted) || 0;
+      toast(n ? n + " fichiers extraits" : "Archive extraite");
+      await load(S.rel);
+    } catch (e) {
+      toast((e && e.message) || "Échec de l'extraction", null, null, true);
+    }
+  }
+
+  function openBatchRenamer(rels) {
+    if (!rels || rels.length < 2) return;
+    const names = rels.map((r) => r.split("/").pop());
+    let currentMode = "prefix_suffix";
+    const opts = { prefix: "", suffix: "", find: "", replace: "", start: 1, pad: 2, stem: "fichier", target: "kebab" };
+
+    const modeWrap = el("div", { class: "fx-batch-modes" });
+    const modes = [
+      { id: "prefix_suffix", label: "Préfixe / Suffixe" },
+      { id: "find_replace", label: "Chercher & Remplacer" },
+      { id: "sequence", label: "Séquence numérotée" },
+      { id: "case", label: "Minuscules / Kebab" },
+    ];
+
+    const fieldsWrap = el("div", { class: "fx-batch-fields" });
+    const previewList = el("div", { class: "fx-batch-preview" });
+
+    const updatePreview = () => {
+      const renames = computeBatchRenames(names, currentMode, opts);
+      previewList.textContent = "";
+      renames.forEach((r) => {
+        const row = el("div", { class: "fx-batch-row" }, [
+          el("span", { class: "fx-batch-old", text: r.oldName }),
+          el("span", { text: "→" }),
+          el("span", { class: "fx-batch-new", text: r.newName }),
+        ]);
+        previewList.appendChild(row);
+      });
+    };
+
+    const renderFields = () => {
+      fieldsWrap.textContent = "";
+      if (currentMode === "prefix_suffix") {
+        const preIn = el("input", { type: "text", class: "fx-batch-input", placeholder: "Préfixe (ex: 2026-11-16_)", value: opts.prefix });
+        preIn.addEventListener("input", () => { opts.prefix = preIn.value; updatePreview(); });
+        const sufIn = el("input", { type: "text", class: "fx-batch-input", placeholder: "Suffixe", value: opts.suffix });
+        sufIn.addEventListener("input", () => { opts.suffix = sufIn.value; updatePreview(); });
+        fieldsWrap.append(preIn, sufIn);
+      } else if (currentMode === "find_replace") {
+        const findIn = el("input", { type: "text", class: "fx-batch-input", placeholder: "Rechercher…", value: opts.find });
+        findIn.addEventListener("input", () => { opts.find = findIn.value; updatePreview(); });
+        const repIn = el("input", { type: "text", class: "fx-batch-input", placeholder: "Remplacer par…", value: opts.replace });
+        repIn.addEventListener("input", () => { opts.replace = repIn.value; updatePreview(); });
+        fieldsWrap.append(findIn, repIn);
+      } else if (currentMode === "sequence") {
+        const stemIn = el("input", { type: "text", class: "fx-batch-input", placeholder: "Nom de base", value: opts.stem });
+        stemIn.addEventListener("input", () => { opts.stem = stemIn.value; updatePreview(); });
+        const startIn = el("input", { type: "number", class: "fx-batch-input", placeholder: "Début (1)", value: String(opts.start), min: "0" });
+        startIn.addEventListener("input", () => { opts.start = Number(startIn.value) || 1; updatePreview(); });
+        fieldsWrap.append(stemIn, startIn);
+      } else if (currentMode === "case") {
+        const kebabBtn = btn("kebab-case", { cls: "fx-btn" + (opts.target === "kebab" ? " is-primary" : ""), on: () => { opts.target = "kebab"; renderFields(); updatePreview(); } });
+        const snakeBtn = btn("snake_case", { cls: "fx-btn" + (opts.target === "snake" ? " is-primary" : ""), on: () => { opts.target = "snake"; renderFields(); updatePreview(); } });
+        const lowerBtn = btn("minuscules", { cls: "fx-btn" + (opts.target === "lower" ? " is-primary" : ""), on: () => { opts.target = "lower"; renderFields(); updatePreview(); } });
+        fieldsWrap.append(kebabBtn, snakeBtn, lowerBtn);
+      }
+    };
+
+    modes.forEach((m) => {
+      const b = btn(m.label, {
+        cls: "fx-btn" + (m.id === currentMode ? " is-primary" : ""),
+        on: () => {
+          currentMode = m.id;
+          for (let i = 0; i < modeWrap.children.length; i++) {
+            modeWrap.children[i].classList.toggle("is-primary", modes[i].id === currentMode);
+          }
+          renderFields();
+          updatePreview();
+        },
+      });
+      modeWrap.appendChild(b);
+    });
+
+    renderFields();
+    updatePreview();
+
+    const applyBtn = btn("Appliquer le renommage (" + rels.length + ")", {
+      cls: "fx-btn is-primary",
+      icon: "check",
+      on: async () => {
+        applyBtn.disabled = true;
+        toast("Renommage en cours…");
+        const renames = computeBatchRenames(names, currentMode, opts);
+        let success = 0;
+        for (let i = 0; i < rels.length; i++) {
+          const oldRel = rels[i];
+          const newName = renames[i].newName;
+          if (newName && newName !== names[i]) {
+            try {
+              const p = parentOf(oldRel);
+              const target = p ? p + "/" + newName : newName;
+              await postJson("/api/rename", { old_path: oldRel, new_path: target });
+              success += 1;
+            } catch (_) {}
+          }
+        }
+        closeSheet();
+        toast(success ? success + " fichiers renommés" : "Aucun changement");
+        S.sel.clear();
+        await load(S.rel);
+      },
+    });
+
+    const wrap = el("div", { class: "fx-batch-wrap" }, [modeWrap, fieldsWrap, previewList]);
+    openSheet("Renommer " + rels.length + " fichiers", wrap, [btn("Annuler", { on: () => closeSheet() }), applyBtn], "is-batch");
+  }
+
+  async function openComparator(rels) {
+    if (!rels || rels.length !== 2) return;
+    const it1 = S.items.find((x) => x.rel === rels[0]);
+    const it2 = S.items.find((x) => x.rel === rels[1]);
+    if (!it1 || !it2) return;
+    const kd1 = kindOf(it1.name);
+    const kd2 = kindOf(it2.name);
+
+    if (kd1.family === "image" && kd2.family === "image") {
+      const stage = el("div", { class: "fx-curtain-stage" });
+      stage.style.setProperty("--curtain", "50%");
+      const img1 = el("img", { class: "fx-curtain-img", src: fileUrl(it1.rel), alt: it1.name });
+      const img2 = el("img", { class: "fx-curtain-img fx-curtain-top", src: fileUrl(it2.rel), alt: it2.name });
+      const line = el("div", { class: "fx-curtain-line" }, [
+        el("div", { class: "fx-curtain-knob" }, [icon("columns")]),
+      ]);
+      stage.append(img1, img2, line);
+
+      let isDragging = false;
+      const updateCurtain = (clientX) => {
+        const rect = stage.getBoundingClientRect();
+        const pct = Math.max(0, Math.min(100, ((clientX - rect.left) / rect.width) * 100)).toFixed(1);
+        stage.style.setProperty("--curtain", pct + "%");
+      };
+
+      stage.addEventListener("pointerdown", (ev) => {
+        isDragging = true;
+        updateCurtain(ev.clientX);
+      });
+      S.win.addEventListener("pointermove", (ev) => {
+        if (isDragging) updateCurtain(ev.clientX);
+      });
+      S.win.addEventListener("pointerup", () => { isDragging = false; });
+
+      const labels = el("div", { class: "fx-curtain-labels" }, [
+        el("span", { text: "◀ " + it1.name + " (" + it1.size_h + ")" }),
+        el("span", { text: it2.name + " (" + it2.size_h + ") ▶" }),
+      ]);
+      const body = el("div", { style: "display:flex;flex-direction:column;gap:8px" }, [labels, stage]);
+      openSheet("Comparateur d'images", body, [btn("Fermer", { on: () => closeSheet() })], "is-compare");
+    } else {
+      toast("Chargement des contenus…");
+      try {
+        const [d1, d2] = await Promise.all([
+          postJson("/api/read", { rel: it1.rel }),
+          postJson("/api/read", { rel: it2.rel }),
+        ]);
+        const pre1 = el("pre", { class: "fx-diff-pre", text: d1.content || "(vide)" });
+        const pre2 = el("pre", { class: "fx-diff-pre", text: d2.content || "(vide)" });
+        pre1.addEventListener("scroll", () => { pre2.scrollTop = pre1.scrollTop; });
+        pre2.addEventListener("scroll", () => { pre1.scrollTop = pre2.scrollTop; });
+
+        const col1 = el("div", { class: "fx-diff-col" }, [el("span", { class: "fx-diff-head", text: it1.name }), pre1]);
+        const col2 = el("div", { class: "fx-diff-col" }, [el("span", { class: "fx-diff-head", text: it2.name }), pre2]);
+        const body = el("div", { class: "fx-diff-split" }, [col1, col2]);
+        openSheet("Comparateur de texte", body, [btn("Fermer", { on: () => closeSheet() })], "is-compare");
+      } catch (e) {
+        toast((e && e.message) || "Erreur de comparaison", null, null, true);
+      }
+    }
+  }
+
+  function toggleDualMode() {
+    S.dualMode = !S.dualMode;
+    if (S.dualMode) {
+      S.relLeft = S.rel || "";
+      if (S.relRight === S.relLeft) S.relRight = S.relLeft === "Inbox" ? "Uni" : "Inbox";
+      toast("Mode double-panneau activé (Tab pour basculer)");
+    } else {
+      toast("Mode volet unique");
+    }
+    render();
+  }
+
+  async function openOmniRecent() {
+    toast("Chargement des fichiers récents…");
+    try {
+      const data = await getJson("/api/files/recent?limit=15");
+      const files = data.files || [];
+      if (!files.length) {
+        toast("Aucun fichier récent");
+        return;
+      }
+      const list = el("div", { class: "fx-recent-list" });
+      files.forEach((f) => {
+        const item = el("button", {
+          type: "button",
+          class: "fx-recent-item",
+          on: {
+            click: () => {
+              closeSheet();
+              const dir = parentOf(f.rel);
+              go(dir).then(() => {
+                const target = S.items.find((x) => x.rel === f.rel);
+                if (target) quickLook(target);
+              });
+            },
+          },
+        }, [
+          el("div", { class: "fx-recent-main" }, [
+            el("span", { class: "fx-recent-name", text: f.name }),
+            el("span", { class: "fx-recent-path", text: f.rel }),
+          ]),
+          el("div", { class: "fx-recent-meta" }, [
+            el("span", { text: fmtBytes(f.size) }),
+            el("span", { text: "· " + when(f.mtime, Date.now() / 1000) }),
+          ]),
+        ]);
+        list.appendChild(item);
+      });
+      openSheet("Fichiers récents transversaux", list, [btn("Fermer", { on: () => closeSheet() })]);
+    } catch (e) {
+      toast((e && e.message) || "Erreur de chargement", null, null, true);
+    }
+  }
+
+  function openDirectCapture() {
+    const folder = uploadTarget(S.rel);
+    const photoInput = el("input", {
+      type: "file",
+      accept: "image/*",
+      capture: "environment",
+      style: "display:none",
+      on: {
+        change: async () => {
+          if (photoInput.files && photoInput.files.length) {
+            toast("Téléversement de la photo…");
+            await upload(photoInput.files, folder);
+            closeSheet();
+          }
+        },
+      },
+    });
+    S.app.appendChild(photoInput);
+
+    const photoBtn = btn("Prendre une photo", {
+      cls: "fx-btn is-primary",
+      icon: "camera",
+      on: () => {
+        photoInput.click();
+      },
+    });
+
+    const voiceBtn = btn("Enregistrer une note vocale", {
+      cls: "fx-btn",
+      icon: "mic",
+      on: () => {
+        closeSheet();
+        openVoiceRecorder(folder);
+      },
+    });
+
+    openSheet("Capture directe dans " + folder, el("div", { style: "display:flex;flex-direction:column;gap:14px;padding:12px 0" }, [
+      el("p", { class: "fx-hint", text: "Prendre un instantané ou enregistrer un mémorandum audio directement dans ce dossier :" }),
+      photoBtn,
+      voiceBtn,
+    ]), [btn("Fermer", { on: () => closeSheet() })]);
+  }
+
+  async function openVoiceRecorder(folder) {
+    if (!S.win.navigator.mediaDevices || !S.win.navigator.mediaDevices.getUserMedia) {
+      toast("Microphone non disponible sur cet appareil", null, null, true);
+      return;
+    }
+    let stream = null;
+    let recorder = null;
+    let chunks = [];
+    let sec = 0;
+    let timer = 0;
+
+    const dot = el("div", { class: "fx-rec-dot is-recording" });
+    const timeEl = el("div", { class: "fx-rec-timer", text: "00:00" });
+    const statusText = el("p", { class: "fx-hint", text: "Enregistrement en cours…" });
+
+    const stopStream = () => {
+      if (timer) { S.win.clearInterval(timer); timer = 0; }
+      if (stream) {
+        stream.getTracks().forEach((t) => t.stop());
+        stream = null;
+      }
+    };
+
+    try {
+      stream = await S.win.navigator.mediaDevices.getUserMedia({ audio: true });
+      const mime = typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported("audio/webm") ? "audio/webm" : "audio/ogg";
+      recorder = new MediaRecorder(stream);
+      recorder.ondataavailable = (ev) => {
+        if (ev.data && ev.data.size > 0) chunks.push(ev.data);
+      };
+      recorder.start(250);
+      timer = S.win.setInterval(() => {
+        sec += 1;
+        const m = String(Math.floor(sec / 60)).padStart(2, "0");
+        const s = String(sec % 60).padStart(2, "0");
+        timeEl.textContent = m + ":" + s;
+      }, 1000);
+    } catch (e) {
+      toast("Accès micro refusé ou impossible", null, null, true);
+      return;
+    }
+
+    const saveBtn = btn("Sauvegarder la note", {
+      cls: "fx-btn is-primary",
+      icon: "check",
+      on: () => {
+        saveBtn.disabled = true;
+        if (recorder && recorder.state !== "inactive") {
+          recorder.onstop = async () => {
+            stopStream();
+            const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
+            const d = new Date();
+            const stamp = d.getFullYear() + String(d.getMonth() + 1).padStart(2, "0") + String(d.getDate()).padStart(2, "0") + "_" + String(d.getHours()).padStart(2, "0") + String(d.getMinutes()).padStart(2, "0") + String(d.getSeconds()).padStart(2, "0");
+            const ext = blob.type.includes("ogg") ? ".ogg" : ".webm";
+            const file = new File([blob], "Note_" + stamp + ext, { type: blob.type });
+            toast("Sauvegarde de la note audio…");
+            closeSheet();
+            await upload([file], folder);
+          };
+          recorder.stop();
+        } else {
+          stopStream();
+          closeSheet();
+        }
+      },
+    });
+
+    const cancelBtn = btn("Annuler", {
+      on: () => {
+        stopStream();
+        if (recorder && recorder.state !== "inactive") recorder.stop();
+        closeSheet();
+      },
+    });
+
+    const body = el("div", { class: "fx-recorder-wrap" }, [dot, timeEl, statusText]);
+    openSheet("Note vocale", body, [cancelBtn, saveBtn]);
+  }
+
   // ---------------------------------------------------------------- selection bar
+
+  function persistPins() {
+    try {
+      if (S.win && S.win.localStorage) {
+        S.win.localStorage.setItem("hq_files_pins_v1", JSON.stringify(Array.from(S.pins)));
+      }
+    } catch (_) {}
+  }
+
+  function persistTags() {
+    try {
+      if (S.win && S.win.localStorage) {
+        const obj = {};
+        for (const [k, v] of S.tags.entries()) obj[k] = v;
+        S.win.localStorage.setItem("hq_files_tags_v1", JSON.stringify(obj));
+      }
+    } catch (_) {}
+  }
+
+  function togglePin(rel) {
+    if (!rel) return;
+    if (S.pins.has(rel)) S.pins.delete(rel);
+    else S.pins.add(rel);
+    persistPins();
+    render();
+  }
 
   function renderBar() {
     const bar = S.barEl;
@@ -1825,14 +3468,43 @@
     }
     const wasHidden = bar.hidden;
     bar.textContent = "";
+    const selRels = [...S.sel];
     bar.append(
       el("span", { class: "fx-selcount" }, [el("strong", { text: String(n) }), n > 1 ? " sélectionnés" : " sélectionné"]),
       btn("Tout", { cls: "fx-btn is-ghost", on: () => {
         for (const r of order()) S.sel.add(r);
         render();
       } }),
-      btn("Déplacer", { cls: "fx-btn", icon: "move", aria: "Déplacer", on: () => movePicker([...S.sel]) }),
-      btn("Corbeille", { cls: "fx-btn is-danger", icon: "trash", on: () => trash([...S.sel]) }),
+      btn("Déplacer", { cls: "fx-btn", icon: "move", aria: "Déplacer", on: () => movePicker(selRels) }),
+      btn("ZIP", { cls: "fx-btn", icon: "zip", aria: "Télécharger la sélection en zip", title: "Télécharger la sélection en .zip", on: () => downloadZip(selRels) }),
+    );
+    if (n > 1) {
+      bar.appendChild(btn("Renommer", { cls: "fx-btn", icon: "edit", title: "Renommer le lot", on: () => openBatchRenamer(selRels) }));
+    }
+    if (n === 2) {
+      bar.appendChild(btn("Comparer", { cls: "fx-btn", icon: "columns", title: "Comparer les 2 fichiers", on: () => openComparator(selRels) }));
+    }
+    if (n === 1) {
+      const one = selRels[0];
+      if (one.toLowerCase().endsWith(".zip")) {
+        bar.appendChild(btn("Extraire", { cls: "fx-btn", icon: "zip", title: "Extraire l'archive", on: () => unzipArchive(one) }));
+      }
+      bar.appendChild(btn("", { cls: "fx-btn is-ghost", icon: "pin", title: S.pins.has(one) ? "Désépingler" : "Épingler", on: () => togglePin(one) }));
+    }
+    if (S.dualMode) {
+      const oppRel = S.dualActive === "left" ? (S.relRight || "Inbox") : (S.relLeft || "");
+      bar.appendChild(btn("Transférer ➔ " + (oppRel || "Racine"), {
+        cls: "fx-btn is-primary",
+        icon: "move",
+        title: "Transférer la sélection vers l'autre volet",
+        on: async () => {
+          await moveTo(selRels, oppRel);
+          await load(S.rel);
+        },
+      }));
+    }
+    bar.append(
+      btn("Corbeille", { cls: "fx-btn is-danger", icon: "trash", on: () => trash(selRels) }),
       btn("", { cls: "fx-btn is-ghost", icon: "close", aria: "Annuler la sélection", on: () => {
         S.sel.clear();
         S.selecting = false;
@@ -2165,6 +3837,13 @@
       ev.preventDefault();
       if (!ev.target.closest || !ev.target.closest(".fx-folder,.fx-tab")) showDrop(uploadTarget(S.rel));
     });
+    S.doc.addEventListener("dragover", (ev) => {
+      if (!S.drag && !hasFiles(ev)) return;
+      const y = ev.clientY;
+      const h = S.win.innerHeight;
+      if (y < 70) S.win.scrollBy(0, -14);
+      else if (y > h - 70) S.win.scrollBy(0, 14);
+    });
     S.app.addEventListener("drop", (ev) => {
       depth = 0;
       hideDrop();
@@ -2265,6 +3944,61 @@
       } else nameIn.value = it.name;
     });
     const meta = el("p", { class: "fx-ql-meta", text: kd.label + " · " + it.size_h + " · modifié " + when(it.mtime, Date.now() / 1000) + " · " + (parentOf(it.rel) || "") });
+
+    const hashVal = el("code", { class: "fx-ql-hash-val", text: "Calcul…" });
+    const hashWrap = el("div", { class: "fx-ql-hash" }, [
+      el("span", { class: "fx-ql-hash-label", text: "SHA-256 :" }),
+      hashVal,
+      btn("", {
+        cls: "fx-btn fx-btn-copy",
+        icon: "copy",
+        title: "Copier le hash SHA-256",
+        aria: "Copier le hash SHA-256",
+        on: (ev) => {
+          ev.stopPropagation();
+          const full = hashVal.getAttribute("data-hash");
+          if (full && S.win && S.win.navigator && S.win.navigator.clipboard) {
+            S.win.navigator.clipboard.writeText(full);
+            toast("Empreinte SHA-256 copiée");
+          }
+        },
+      }),
+    ]);
+    getJson("/api/files/hash?rel=" + encodeURIComponent(it.rel)).then((res) => {
+      if (res && res.sha256) {
+        hashVal.textContent = res.sha256.slice(0, 16) + "…" + res.sha256.slice(-8);
+        hashVal.setAttribute("data-hash", res.sha256);
+        hashVal.setAttribute("title", res.sha256);
+      }
+    }, () => {
+      hashVal.textContent = "Indisponible";
+    });
+
+    const TAG_COLORS = ["rose", "amber", "emerald", "cyan", "violet"];
+    const tagDots = TAG_COLORS.map((c) => {
+      const active = S.tags.get(it.rel) === c;
+      return el("button", {
+        type: "button",
+        class: "fx-tag-dot is-" + c + (active ? " is-active" : ""),
+        title: "Étiquette " + c,
+        "aria-label": "Étiquette " + c,
+        on: {
+          click: (ev) => {
+            ev.stopPropagation();
+            if (S.tags.get(it.rel) === c) S.tags.delete(it.rel);
+            else S.tags.set(it.rel, c);
+            persistTags();
+            render();
+            quickLook(it, tile);
+          },
+        },
+      });
+    });
+    const tagWrap = el("div", { class: "fx-tag-picker" }, [
+      el("span", { class: "fx-hint", text: "Étiquette :" }),
+      ...tagDots,
+    ]);
+
     const nav = el("div", { class: "fx-ql-nav" }, [
       btn("", { cls: "fx-btn is-round", icon: "left", aria: "Fichier précédent", on: () => idx > 0 && quickLook(files[idx - 1]) }),
       el("span", { class: "fx-ql-pos", text: idx + 1 + " / " + files.length }),
@@ -2272,17 +4006,60 @@
     ]);
     nav.children[0].disabled = idx <= 0;
     nav.children[2].disabled = idx >= files.length - 1;
-    const body = el("div", { class: "fx-ql" }, [stage, el("div", { class: "fx-ql-info" }, [nameIn, meta, nav])]);
+    const body = el("div", { class: "fx-ql" }, [stage, el("div", { class: "fx-ql-info" }, [nameIn, meta, hashWrap, tagWrap, nav])]);
     const acts = [
       el("a", { class: "fx-btn", href: fileUrl(it.rel), target: "_blank", rel: "noopener" }, [icon("open"), el("span", { text: "Ouvrir" })]),
       el("a", { class: "fx-btn", href: dlUrl(it.rel), download: "" }, [icon("download"), el("span", { text: "Télécharger" })]),
     ];
+    const isPinned = S.pins.has(it.rel);
+    acts.push(btn(isPinned ? "Désépingler" : "Épingler", {
+      icon: "pin",
+      on: () => {
+        if (S.pins.has(it.rel)) S.pins.delete(it.rel);
+        else S.pins.add(it.rel);
+        persistPins();
+        render();
+        quickLook(it, tile);
+      },
+    }));
+    if (/\.zip$/i.test(it.name)) acts.push(btn("Extraire", {
+      icon: "zip",
+      on: async () => {
+        closeSheet(true);
+        await unzipArchive(it.rel);
+      },
+    }));
+    if (kd.family === "image") acts.push(btn("Studio Forge", {
+      icon: "sparkles",
+      on: () => {
+        closeSheet(true);
+        if (typeof S.win.hqForgeLoadSource === "function") {
+          S.win.hqForgeLoadSource(fileUrl(it.rel));
+        }
+        if (typeof S.win.setView === "function") S.win.setView("forge");
+        toast("Envoyé au Studio Forge");
+      },
+    }));
     if (FOR_LECTEUR.test(it.name) && typeof S.win.hqPlayerOpen === "function") acts.push(btn("Lecteur", { icon: "play", on: () => {
       closeSheet(true);
       flyToLecteur(tile || stage);
       S.win.hqPlayerOpen(it.rel, true);
     } }));
     if (EDITABLE.test(it.name)) acts.push(btn("Éditer", { icon: "edit", on: () => editText(it) }));
+    if (/\.(stl|3mf|gcode|glb|obj)$/i.test(it.name)) acts.push(btn("Atelier 3D", { icon: "cube", on: () => {
+      closeSheet(true);
+      if (typeof S.win.setView === "function") S.win.setView("atelier3d");
+      toast("Ouvert dans l'Atelier 3D");
+    } }));
+    if (/\.(md|txt)$/i.test(it.name)) acts.push(btn("Carnet", { icon: "book", on: async () => {
+      try {
+        if (typeof S.win.hqCarnetLoad === "function") await S.win.hqCarnetLoad();
+        if (typeof S.win.setView === "function") S.win.setView("carnet");
+        toast("Ouvert dans Carnet");
+      } catch (e) {
+        toast((e && e.message) || "Erreur Carnet", null, null, true);
+      }
+    } }));
     if (it.rel.startsWith("Print/")) acts.push(btn("Imprimer", { icon: "print", on: async () => {
       try {
         if (typeof S.win.hqPolishPrintSend === "function") S.win.hqPolishPrintSend(it.name);
@@ -2340,8 +4117,17 @@
       toast((e && e.message) || "Lecture impossible", null, null, true);
       return;
     }
+    const counter = el("span", { class: "fx-hint fx-editor-counter" });
     const ta = el("textarea", { class: "fx-editor", spellcheck: "false", "aria-label": "Contenu de " + it.name });
     ta.value = d.content || "";
+    const updateStats = () => {
+      const val = ta.value;
+      const lines = val ? val.split("\n").length : 0;
+      const chars = val.length;
+      counter.textContent = lines + " ligne" + (lines > 1 ? "s" : "") + " · " + chars + " car.";
+    };
+    updateStats();
+    ta.addEventListener("input", updateStats);
     const save = btn("Enregistrer", { cls: "fx-btn is-primary", icon: "check", on: async () => {
       save.disabled = true;
       try {
@@ -2356,9 +4142,16 @@
         save.disabled = false;
       }
     } });
-    openSheet("Éditer " + it.name, ta, [btn("Annuler", { on: () => closeSheet() }), save], "is-editor");
+    openSheet("Éditer " + it.name, el("div", { class: "fx-editor-wrap" }, [counter, ta]), [btn("Annuler", { on: () => closeSheet() }), save], "is-editor");
     ta.addEventListener("keydown", (ev) => {
-      if (ev.key === "s" && (ev.ctrlKey || ev.metaKey)) {
+      if (ev.key === "Tab") {
+        ev.preventDefault();
+        const start = ta.selectionStart;
+        const end = ta.selectionEnd;
+        ta.value = ta.value.substring(0, start) + "  " + ta.value.substring(end);
+        ta.selectionStart = ta.selectionEnd = start + 2;
+        updateStats();
+      } else if (ev.key === "s" && (ev.ctrlKey || ev.metaKey)) {
         ev.preventDefault();
         save.click();
       }
@@ -2523,7 +4316,37 @@
   function bindKeys() {
     S.app.addEventListener("keydown", (ev) => {
       if (S.sheet || (ev.target.closest && ev.target.closest("input,textarea,select"))) return;
-      if (!S.listEl.contains(ev.target)) return; // the toolbar keeps its own keys
+      if (ev.key === "/" && S.searchEl) {
+        ev.preventDefault();
+        S.searchEl.focus();
+        S.searchEl.select();
+        return;
+      }
+      if (ev.key === "Tab" && S.dualMode) {
+        ev.preventDefault();
+        S.dualActive = S.dualActive === "left" ? "right" : "left";
+        toast("Volet actif : " + (S.dualActive === "left" ? "Gauche" : "Droite"));
+        render();
+        return;
+      }
+      if (ev.altKey && ev.key === "ArrowLeft") {
+        ev.preventDefault();
+        goBack();
+        return;
+      }
+      if (ev.altKey && ev.key === "ArrowRight") {
+        ev.preventDefault();
+        goForward();
+        return;
+      }
+      if (ev.altKey && ev.key >= "1" && ev.key <= "9") {
+        const k = Number(ev.key) - 1;
+        if (k < S.crumbs.length) {
+          ev.preventDefault();
+          go(S.crumbs[k].rel);
+          return;
+        }
+      }
       const items = Array.prototype.slice.call(S.listEl.querySelectorAll(".fx-item[data-rel]"));
       const cur = ev.target.closest && ev.target.closest(".fx-item[data-rel]");
       const i = cur ? items.indexOf(cur) : -1;
@@ -2531,10 +4354,17 @@
       const focusAt = (k) => {
         const n = items[Math.max(0, Math.min(items.length - 1, k))];
         if (n) {
-          for (const x of items) x.tabIndex = -1;
+          mechSound("switch");
+          buzz(5);
+          for (const x of items) {
+            x.tabIndex = -1;
+            x.classList.remove("is-keyboard-focus");
+          }
           n.tabIndex = 0;
+          n.classList.add("is-keyboard-focus");
           n.focus();
           S.focusRel = n.getAttribute("data-rel");
+          n.scrollIntoView({ block: "nearest", behavior: "smooth" });
         }
       };
       const cols = () => {
@@ -2544,16 +4374,39 @@
         while (c < items.length && items[c].offsetTop === top) c += 1;
         return Math.max(1, c);
       };
-      if (ev.key === "ArrowRight") focusAt(i + 1);
-      else if (ev.key === "ArrowLeft") focusAt(i - 1);
-      else if (ev.key === "ArrowDown") focusAt(i < 0 ? 0 : i + cols());
-      else if (ev.key === "ArrowUp") focusAt(i - cols());
+      if (ev.key === "ArrowRight" || ev.key === "l") focusAt(i + 1);
+      else if (ev.key === "ArrowLeft" || ev.key === "h") focusAt(i - 1);
+      else if (ev.key === "ArrowDown" || ev.key === "j") focusAt(i < 0 ? 0 : i + cols());
+      else if (ev.key === "ArrowUp" || ev.key === "k") focusAt(i - cols());
       else if (ev.key === "Home") focusAt(0);
       else if (ev.key === "End") focusAt(items.length - 1);
       else if (ev.key === "Enter" && cur) cur.click();
-      else if (ev.key === " " && cur) toggleSel(cur.getAttribute("data-rel"));
-      else if ((ev.key === "Delete" || (ev.key === "Backspace" && (ev.metaKey || ev.ctrlKey))) && (S.sel.size || it)) trash(S.sel.size ? [...S.sel] : [it.rel]);
-      else if (ev.key === "F2" && it) inlineRename(it);
+      else if (ev.key === "x" && cur) toggleSel(cur.getAttribute("data-rel"));
+      else if (ev.key === "u") {
+        S.sel.clear();
+        S.selecting = false;
+        render();
+      } else if (ev.key === "*") {
+        for (const r of order()) S.sel.add(r);
+        render();
+      } else if (ev.key === " ") {
+        if (it) {
+          if (it.type !== "dir") quickLook(it, cur);
+          else toggleSel(it.rel);
+        } else if (cur) toggleSel(cur.getAttribute("data-rel"));
+      } else if (ev.key === "m" && (S.sel.size || it)) {
+        movePicker(S.sel.size ? [...S.sel] : [it.rel]);
+      } else if (ev.key === "r" && (S.sel.size || it)) {
+        const rels = S.sel.size ? [...S.sel] : [it.rel];
+        if (rels.length > 1) openBatchRenamer(rels);
+        else if (it) inlineRename(it);
+      } else if (ev.key === "e" && it && EDITABLE.test(it.name)) {
+        editText(it);
+      } else if (ev.key === "z" && (S.sel.size || it)) {
+        downloadZip(S.sel.size ? [...S.sel] : [it.rel]);
+      } else if ((ev.key === "Delete" || (ev.key === "Backspace" && (ev.metaKey || ev.ctrlKey))) && (S.sel.size || it)) {
+        trash(S.sel.size ? [...S.sel] : [it.rel]);
+      } else if (ev.key === "F2" && it) inlineRename(it);
       else if ((ev.key === "Backspace" || (ev.key === "ArrowUp" && ev.altKey)) && S.rel) go(S.rel === TRASH ? "" : parentOf(S.rel));
       else if (ev.key === "a" && (ev.ctrlKey || ev.metaKey)) {
         for (const r of order()) S.sel.add(r);
@@ -2593,6 +4446,85 @@
         S.qlStep(ev.key === "ArrowRight" ? 1 : -1);
       }
     }, true);
+    S.doc.addEventListener("paste", async (ev) => {
+      if (S.doc.body.dataset.view !== "fichiers" || S.rel === TRASH) return;
+      if (ev.target && ev.target.closest && ev.target.closest("input,textarea,[contenteditable]")) return;
+      const cd = ev.clipboardData;
+      if (!cd) return;
+      const files = [];
+      if (cd.files && cd.files.length) {
+        for (let i = 0; i < cd.files.length; i++) files.push(cd.files[i]);
+      } else if (cd.items && cd.items.length) {
+        for (let i = 0; i < cd.items.length; i++) {
+          const item = cd.items[i];
+          if (item.kind === "file") {
+            const f = item.getAsFile();
+            if (f) files.push(f);
+          }
+        }
+      }
+      if (files.length) {
+        ev.preventDefault();
+        toast("Envoi depuis le presse-papiers…");
+        await upload(files, uploadTarget(S.rel));
+        return;
+      }
+      const text = cd.getData("text/plain");
+      if (text && /^https?:\/\/\S+/i.test(text.trim())) {
+        ev.preventDefault();
+        const url = text.trim();
+        const folder = uploadTarget(S.rel);
+        const urlIn = el("input", { type: "text", class: "fx-name", value: url, "aria-label": "URL à aspirer" });
+        const nameIn = el("input", { type: "text", class: "fx-name", placeholder: "Nom du fichier (optionnel)", "aria-label": "Nom du fichier cible" });
+        const siphonBtn = btn("Aspirer le fichier", {
+          cls: "fx-btn is-primary",
+          icon: "download",
+          on: async () => {
+            siphonBtn.disabled = true;
+            toast("Aspiration en cours…");
+            try {
+              const res = await postJson("/api/files/siphon", { url: urlIn.value.trim(), folder, name: nameIn.value.trim() || null });
+              toast("Fichier aspiré : " + (res.name || "fichier"));
+              closeSheet();
+              await load(S.rel);
+            } catch (e) {
+              toast((e && e.message) || "Échec de l'aspiration", null, null, true);
+            } finally {
+              siphonBtn.disabled = false;
+            }
+          },
+        });
+        openSheet("Aspirer l'URL dans " + folder, el("div", { style: "display:flex;flex-direction:column;gap:12px;padding:8px 0" }, [
+          el("p", { class: "fx-hint", text: "Télécharger directement ce fichier distant dans le dossier :" }),
+          urlIn,
+          nameIn,
+        ]), [btn("Annuler", { on: () => closeSheet() }), siphonBtn]);
+        return;
+      }
+      if (text && text.trim()) {
+        ev.preventDefault();
+        const d = new Date();
+        const stamp = d.getFullYear() + String(d.getMonth() + 1).padStart(2, "0") + String(d.getDate()).padStart(2, "0") + "_" + String(d.getHours()).padStart(2, "0") + String(d.getMinutes()).padStart(2, "0") + String(d.getSeconds()).padStart(2, "0");
+        const defaultName = "presse-papiers_" + stamp + ".txt";
+        const nameIn = el("input", { type: "text", class: "fx-name", value: defaultName, "aria-label": "Nom du fichier" });
+        const ta = el("textarea", { class: "fx-editor", spellcheck: "false", "aria-label": "Contenu collé" });
+        ta.value = text;
+        const save = btn("Enregistrer", { cls: "fx-btn is-primary", icon: "check", on: async () => {
+          save.disabled = true;
+          try {
+            await postJson("/api/create", { path: uploadTarget(S.rel), name: nameIn.value.trim() || defaultName, content: ta.value });
+            toast("Fichier créé depuis le presse-papiers");
+            closeSheet();
+            await load(S.rel);
+          } catch (e) {
+            toast((e && e.message) || "Erreur de création", null, null, true);
+          } finally {
+            save.disabled = false;
+          }
+        } });
+        openSheet("Coller le texte dans " + uploadTarget(S.rel), el("div", { class: "fx-paste-wrap" }, [nameIn, ta]), [btn("Annuler", { on: () => closeSheet() }), save], "is-editor");
+      }
+    });
     const boot = () => {
       S.app = S.doc.getElementById("hq-files-app");
       if (!S.app) return;
@@ -2612,6 +4544,16 @@
         render();
       };
       win.hqFilesUpload = (files, folder) => upload(files, folder || uploadTarget(S.rel));
+      try {
+        const savedPins = JSON.parse(win.localStorage.getItem("hq_files_pins_v1") || "[]");
+        if (Array.isArray(savedPins)) S.pins = new Set(savedPins);
+      } catch (_) {}
+      try {
+        const savedTags = JSON.parse(win.localStorage.getItem("hq_files_tags_v1") || "{}");
+        if (savedTags && typeof savedTags === "object") {
+          S.tags = new Map(Object.entries(savedTags));
+        }
+      } catch (_) {}
       loadBackups(true);
       let start = "";
       try {

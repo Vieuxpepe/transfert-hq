@@ -60,7 +60,7 @@ GULP_VARIANTS: list[tuple[str, str, float, float]] = [
 def catalog_name(preview_name: str) -> str:
     stem = Path(preview_name).stem
     num = stem.split("_")[-1]
-    return f"Else_oral_gulp_{num}.mp3"
+    return f"Transferania_oral_gulp_{num}.mp3"
 
 
 def synthesize_sfx(
@@ -113,7 +113,7 @@ def reencode_gulp_oggs() -> None:
     urls = sorted(
         u
         for u in collect_manifest_urls(manifest)
-        if u.endswith(".ogg") and "else_oral_gulp_" in u.lower()
+        if u.endswith(".ogg") and "transferania_oral_gulp_" in u.lower()
     )
     if not urls:
         print("no gulp OGG urls in manifest")

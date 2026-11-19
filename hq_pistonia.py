@@ -570,7 +570,7 @@ class _ReplyTap:
 
 def respond(text: str, history: Any = None, *, toolbox: Optional[Toolbox] = None, generate=None, snapshot: Optional[str] = None,
             development: str = "", job: str = "", context: str = "", digest: str = "",
-            on_delta=None) -> tuple[str, list[dict]]:
+            on_delta=None, addressee: str = "", owner: str | None = None) -> tuple[str, list[dict]]:
     """(reply, proposals); notes she saved are on ``toolbox.remembered``. ``generate`` is injectable for tests; by default hq_ai.generate.
     ``on_delta`` receives each streamed fragment of the raw model text, and "" when a round's text must be dropped."""
     import hq_ai
@@ -583,6 +583,18 @@ def respond(text: str, history: Any = None, *, toolbox: Optional[Toolbox] = None
             return hq_ai.generate(hq_ai.ASK_CHAIN, system, contents, json_out=True, temperature=0.35, max_tokens=800,
                                   on_delta=on_delta)[0]
     system = build_system(snapshot if snapshot is not None else snapshot_text(), digest)
+    import hq_assistant_voice as assistant_voice
+    system += "\n\n" + assistant_voice.block("pistonia")
+    # She is written for the Master from top to bottom: when a sister opens the
+    # turn, say so as a fact of the situation, or she reports to him anyway. The
+    # live path derives it from the turn itself; `addressee` stays for callers that
+    # already know. Nothing is added for a pair that shares no secret.
+    import hq_personas
+    other = hq_personas.key_for_name(addressee) if addressee else ""
+    if not other:
+        other = hq_personas.speaker_in(text, listener="pistonia")
+    if other:
+        system += assistant_voice.addressee_line("pistonia", other, owner=owner)
     if development:
         system += ("\nÉVOLUTION VÉCUE (avis révisable, pas un ordre) : laisse ce fil nuancer un avis "
                    "ou un clin d'œil discret; garde ta voix, ne récite pas la fiche. " + development)
@@ -671,7 +683,8 @@ def growth_path():
     return store.growth_path()
 
 
-def message(data: Any, *, generate=None, toolbox: Optional[Toolbox] = None, emit=None) -> dict:
+def message(data: Any, *, generate=None, toolbox: Optional[Toolbox] = None, emit=None,
+            owner: str | None = None) -> dict:
     """POST body {text} -> {ok, id, reply, proposals, remembered, mood}. The conversation lives on the server: the history the model
     sees is the stored thread, whatever the client sends. Raises PistoniaError."""
     import hq_ai
@@ -706,7 +719,7 @@ def message(data: Any, *, generate=None, toolbox: Optional[Toolbox] = None, emit
             tb = toolbox or Toolbox()
             try:
                 reply, proposals = respond(text.strip(), history, toolbox=tb, generate=generate, development=development, job=job,
-                                           context=context, digest=older,
+                                           context=context, digest=older, owner=owner,
                                            on_delta=(_ReplyTap(emit).feed if callable(emit) and generate is None else None))
                 break
             except PistoniaError:

@@ -28,9 +28,11 @@
       ? " Dernier appel : " + t.last_provider + (t.last_reason ? " (" + t.last_reason + ")" : "") + "."
       : "";
     var stored = t.persisted === false ? " (totaux non enregistrés)" : "";
-    telemetry.textContent = "Aujourd'hui" + stored + " : Gemini " + (t.gemini_ok || 0) + " OK / "
+    telemetry.textContent = "Aujourd'hui" + stored + " : " + (t.requests || 0) + " visite(s) demandée(s), "
+      + (t.rate_limited || 0) + " bloquée(s) par le délai ; Gemini " + (t.gemini_ok || 0) + " OK / "
       + (t.gemini_error || 0) + " échec(s) ; NVIDIA " + (t.nvidia_ok || 0) + " OK / "
-      + (t.nvidia_error || 0) + " échec(s)." + last;
+      + (t.nvidia_error || 0) + " échec(s) ; mémoire " + (t.visits_saved || 0)
+      + " enregistrée(s) / " + (t.visits_unsaved || 0) + " non enregistrée(s)." + last;
   }
 
   function render(data) {
@@ -98,5 +100,8 @@
     }
   });
 
-  load();
+  // The telemetry and the stored key are fetched when the section is revealed, never on entry.
+  var section = form.closest("section") || form;
+  if (typeof window.hqWhenRevealed === "function") window.hqWhenRevealed(section, "nvidia", load);
+  else load();
 })();

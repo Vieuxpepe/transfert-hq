@@ -305,9 +305,16 @@ def tick(root: Path, *, transport=None) -> str:
     with _LOCK:
         data = _load(root)
         ready = [e for e in data["entries"] if e["state"] == "queued" and (e["when"] == "idle" or in_window(now))]
+        last_ckpt = next(
+            ((e.get("settings") or {}).get("checkpoint") for e in reversed(data["entries"]) if e["state"] == "done" and (e.get("settings") or {}).get("checkpoint")),
+            None,
+        )
     if not ready:
         return "idle"
-    entry = ready[0]
+    entry = next(
+        (e for e in ready if jobs._same_checkpoint((e.get("settings") or {}).get("checkpoint"), last_ckpt)),
+        ready[0],
+    )
     # The existing single-job path does the idle checks: an HQ job, a fleet task on this GPU,
     # or Forge busy for its owner -> a 409 and the entry just waits for the next tick.
     body = dict(entry["settings"], destination="normal", **({"finish_of": entry["finish_of"]} if entry.get("finish_of") else {}))

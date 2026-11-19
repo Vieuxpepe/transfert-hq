@@ -34,6 +34,14 @@ class MusicUiWiringTests(unittest.TestCase):
         self.assertIn("unmount:", self.js)
         self.assertIn("stopPoll", self.js)
 
+    def test_chip_survives_a_missing_beat_engine(self):
+        """Without hq-musica-beat.js the chip still shows, drags and sizes, and says why."""
+        chip = (ROOT / "assets/hq-musica-chip.js").read_text(encoding="utf-8")
+        self.assertIn("window.HqMusicaBeat is missing", chip)
+        self.assertIn("Beat = beatlessEngine();", chip)
+        self.assertIn('button.setAttribute("data-beat", "off")', chip)
+        self.assertNotIn("return;\n  }", chip)  # the missing engine no longer aborts the whole chip
+
     def test_four_sections_present(self):
         for label in ("Lecture", "Playlists", "Mixer", "Découvertes"):
             self.assertIn(label, self.js)

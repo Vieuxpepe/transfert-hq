@@ -1,0 +1,42 @@
+name: Navigation checks
+
+on:
+  push:
+    paths:
+      - "iphone_bridge.py"
+      - "assets/**"
+      - "tests/check_hq_nav_badges.mjs"
+      - "tests/check_hq_nav_rail.mjs"
+      - "tests/check_hq_chrome.mjs"
+      - "tests/check_hq_polish.mjs"
+      - "tests/hq_dom_stub.mjs"
+      - "docs/test-index.md"
+      - ".github/workflows/nav-checks.yml"
+  pull_request:
+    paths:
+      - "iphone_bridge.py"
+      - "assets/**"
+      - "tests/check_hq_nav_badges.mjs"
+      - "tests/check_hq_nav_rail.mjs"
+      - "tests/check_hq_chrome.mjs"
+      - "tests/check_hq_polish.mjs"
+      - "tests/hq_dom_stub.mjs"
+      - "docs/test-index.md"
+      - ".github/workflows/nav-checks.yml"
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Nav badges
+        run: node tests/check_hq_nav_badges.mjs
+      - name: Nav rail
+        run: node tests/check_hq_nav_rail.mjs
+      - name: Nav chrome
+        run: node tests/check_hq_chrome.mjs
+      - name: Nav polish
+        run: node tests/check_hq_polish.mjs

@@ -20,6 +20,7 @@
   var busy = false;
   var activeJobId = null;
   var loadGen = 0;
+  var revealedOnce = false;
 
   function apiFn() {
     return typeof root.api === "function" ? root.api : null;
@@ -296,14 +297,25 @@
   }
 
   function onView() {
+    // Nothing is fetched before the section has been on screen once: the catalogue is not entry-path data.
+    if (!revealedOnce) return;
     if (document.body && document.body.dataset && document.body.dataset.view === "plus") {
       load();
     }
   }
 
   function start() {
-    if (!document.getElementById("hq-mini-quests")) return;
-    load();
+    var host = document.getElementById("hq-mini-quests");
+    if (!host) return;
+    if (typeof window.hqWhenRevealed === "function") {
+      window.hqWhenRevealed(host, "mini-quests", function () {
+        revealedOnce = true;
+        load();
+      });
+    } else {
+      revealedOnce = true;
+      load();
+    }
     document.addEventListener("hq:view", onView);
     // Fallback: Plus jump / setView may not always dispatch hq:view on older builds.
     var lastView = document.body ? document.body.dataset.view : "";

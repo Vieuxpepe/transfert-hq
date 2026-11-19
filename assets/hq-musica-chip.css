@@ -14,6 +14,35 @@
 .hq-musica-chip-dock.is-dragging { transition: none; opacity: .96; }
 .hq-musica-chip-dock.is-floated { z-index: 1182; }
 
+/* Tap tempo: shown while music plays and her beat is still a guess, while he taps, and on hover. */
+.hq-musica-beat-tap {
+  position: absolute;
+  left: 50%;
+  top: 100%;
+  transform: translate(-50%, 6px);
+  display: none;
+  align-items: center;
+  padding: 3px 9px;
+  border: 1px solid color-mix(in srgb, var(--hq-musica-accent, #b86bff) 55%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--hq-musica-accent, #b86bff) 18%, rgba(16, 12, 24, .82));
+  color: #fff;
+  font: 600 11px/1.2 system-ui, sans-serif;
+  white-space: nowrap;
+  cursor: pointer;
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.hq-musica-chip-dock.has-beat-tap.is-beat-guess .hq-musica-beat-tap,
+.hq-musica-chip-dock.has-beat-tap .hq-musica-beat-tap.is-tapping,
+.hq-musica-chip-dock.has-beat-tap .hq-musica-beat-tap:focus-visible { display: inline-flex; }
+@media (hover: hover) {
+  .hq-musica-chip-dock.has-beat-tap:hover .hq-musica-beat-tap { display: inline-flex; }
+}
+.hq-musica-beat-tap.is-tapping { background: color-mix(in srgb, var(--hq-musica-accent, #b86bff) 45%, rgba(16, 12, 24, .9)); }
+.hq-musica-chip-dock.is-dragging .hq-musica-beat-tap { display: none; }
+
 .hq-musica-chip-dance {
   display: flex;
   transform-origin: 50% 72%;
@@ -214,7 +243,7 @@
   background: rgba(18, 12, 26, 0.94);
   border: 1px solid rgba(236, 72, 153, 0.55);
   color: #fce7f3;
-  font-size: 12.5px;
+  font-size: var(--text-sm);
   line-height: 1.42;
   word-break: normal;
   overflow-wrap: break-word;
@@ -231,6 +260,84 @@
   color: #fef3c7;
   box-shadow: 0 10px 24px rgba(0, 0, 0, 0.45), 0 0 14px rgba(212, 169, 98, 0.18);
 }
+
+.hq-musica-chip-bubble.is-edit {
+  display: grid;
+  gap: 7px;
+  width: 240px;
+  cursor: default;
+}
+
+.hq-musica-chip-bubble-label {
+  font-size: var(--text-xs, 11px);
+  letter-spacing: .02em;
+  color: rgba(252, 231, 243, 0.72);
+}
+
+.hq-musica-chip-bubble.is-sfw .hq-musica-chip-bubble-label { color: rgba(254, 243, 199, 0.72); }
+
+.hq-musica-chip-bubble-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 8px;
+  border-radius: 9px;
+  border: 1px solid rgba(236, 72, 153, 0.45);
+  background: rgba(0, 0, 0, 0.32);
+  color: inherit;
+  font: inherit;
+}
+
+/* 16px and specific enough to beat the global input[type="text"] { font-size: inherit }. */
+.hq-musica-chip-bubble-input[type="text"] { font-size: 16px; }
+
+.hq-musica-chip-bubble-input:focus {
+  outline: none;
+  border-color: rgba(236, 72, 153, 0.9);
+  box-shadow: 0 0 0 2px rgba(236, 72, 153, 0.22);
+}
+
+
+.hq-musica-chip-bubble.is-sfw .hq-musica-chip-bubble-input { border-color: rgba(212, 169, 98, 0.5); }
+
+.hq-musica-chip-bubble.is-sfw .hq-musica-chip-bubble-input:focus {
+  border-color: rgba(212, 169, 98, 0.9);
+  box-shadow: 0 0 0 2px rgba(212, 169, 98, 0.2);
+}
+
+.hq-musica-chip-bubble-actions { display: flex; gap: 6px; }
+
+.hq-musica-chip-bubble-btn {
+  flex: 1;
+  padding: 5px 8px;
+  border-radius: 9px;
+  border: 1px solid rgba(236, 72, 153, 0.35);
+  background: rgba(236, 72, 153, 0.12);
+  color: #fce7f3;
+  font: inherit;
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+.hq-musica-chip-bubble-btn:hover { background: rgba(236, 72, 153, 0.24); }
+
+.hq-musica-chip-bubble-btn.is-primary {
+  background: rgba(236, 72, 153, 0.78);
+  border-color: rgba(236, 72, 153, 0.9);
+  color: #fff;
+}
+
+.hq-musica-chip-bubble-btn.is-primary:hover { background: rgba(236, 72, 153, 0.9); }
+
+.hq-musica-chip-bubble-btn.is-quiet {
+  flex: 0 0 auto;
+  background: transparent;
+  border-color: transparent;
+  color: rgba(252, 231, 243, 0.6);
+}
+
+.hq-musica-chip-bubble-btn.is-quiet:hover { color: #fce7f3; background: rgba(255, 255, 255, 0.06); }
+
+.hq-musica-chip-bubble.is-ok { cursor: pointer; }
 
 @keyframes hq-musica-bubble-in {
   from { opacity: 0; transform: translateY(-50%) translateX(8px) scale(.96); }
@@ -283,7 +390,8 @@
   transform: translateX(-50%) scaleY(.14);
   transform-origin: 50% 100%;
   animation: hq-musica-chip-wave-bar var(--wave-speed, 1.25s) ease-in-out infinite;
-  animation-delay: var(--wave-delay, 0s);
+  /* --wave-sync (on the halo) seats the bars on Musica's beat clock; --wave-delay staggers them round the ring. */
+  animation-delay: calc(var(--wave-delay, 0s) + var(--wave-sync, 0s));
   animation-play-state: paused;
   transition: opacity .25s ease;
 }
@@ -493,9 +601,9 @@ body.hqm-keyboard-open .hq-musica-chip-wave i::before { animation-play-state: pa
 .hq-musica-moment { position: fixed; right: 12px; bottom: calc(76px + env(safe-area-inset-bottom, 0px)); z-index: 60; max-width: min(340px, calc(100vw - 24px));
   padding: 12px 14px; border-radius: 16px; border: 1px solid color-mix(in srgb, var(--accent, #9b7bff) 45%, transparent);
   background: var(--panel, #1b2030); color: var(--fg, #eee); box-shadow: 0 14px 40px rgba(0,0,0,.4); animation: hq-musica-moment-in .35s cubic-bezier(.2,.9,.3,1) both; }
-.hq-musica-moment p { margin: 0 0 8px; font-size: .92rem; line-height: 1.35; }
+.hq-musica-moment p { margin: 0 0 8px; font-size: var(--text-md); line-height: 1.35; }
 .hq-musica-moment-actions { display: flex; flex-wrap: wrap; gap: 6px; }
-.hq-musica-moment-actions button { min-height: 36px; padding: 0 12px; border-radius: 999px; border: 0; font: inherit; font-size: .82rem; font-weight: 700; cursor: pointer;
+.hq-musica-moment-actions button { min-height: 36px; padding: 0 12px; border-radius: 999px; border: 0; font: inherit; font-size: var(--text-sm); font-weight: 700; cursor: pointer;
   background: var(--accent, #9b7bff); color: #120a1c; }
 .hq-musica-moment-actions button.is-quiet { background: transparent; color: inherit; opacity: .75; border: 1px solid color-mix(in srgb, currentColor 25%, transparent); }
 @media (pointer: coarse) { .hq-musica-moment-actions button { min-height: 44px; } }
@@ -544,7 +652,7 @@ body.hqm-keyboard-open .hq-musica-chip-wave i::before { animation-play-state: pa
 }
 .hq-musica-chip-fx .hip-trail {
   color: #fbcfe8;
-  font-size: 7px;
+  font-size: var(--text-xs);
   animation-duration: .33s;
 }
 @keyframes hq-musica-chip-hip-burst {
@@ -580,7 +688,7 @@ body.hqm-keyboard-open .hq-musica-chip-wave i::before { animation-play-state: pa
   min-width: 0;
   max-width: min(240px, 66vw);
   padding: 7px 11px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   border-radius: 16px;
 }
 .hq-musica-chip-bubble-ghost { visibility: hidden; }

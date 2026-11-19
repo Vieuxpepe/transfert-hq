@@ -6,7 +6,7 @@
   if (window.hqPersonhoodReady) return;
   window.hqPersonhoodReady = true;
 
-  var KEYS = ["transferania", "else", "culinia", "forgia", "musica", "inventoria", "pistonia", "securia"];
+  var KEYS = ["transferania", "else", "culinia", "forgia", "musica", "inventoria", "pistonia", "securia", "elsea"];
   var current = "transferania";
   var busy = false;
 
@@ -44,11 +44,19 @@
   }
 
   function build() {
-    var button = el("button", "hq-self-open", "Personnalité");
+    var button = el("button", "hq-self-open");
     button.type = "button";
     button.setAttribute("aria-haspopup", "dialog");
+    button.innerHTML =
+      '<span class="nav-ico"><svg class="nav-svg" viewBox="0 0 24 24" fill="none"' +
+      ' stroke="currentColor" stroke-width="1.8" stroke-linecap="round"' +
+      ' stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="3.4"/>' +
+      '<path d="M5.5 20c.6-3.6 3.3-5.4 6.5-5.4s5.9 1.8 6.5 5.4"/></svg></span>' +
+      '<span class="nav-label">Personnalité</span>';
     button.addEventListener("click", function () { open(); });
-    document.body.appendChild(button);
+    // It lives in the app's own navigation, so it owns a row/tab instead of floating over the page.
+    var nav = document.querySelector(".bottom-nav");
+    (nav || document.body).appendChild(button);
 
     var panel = el("section", "hq-self-panel");
     panel.id = "hq-personhood-panel";
@@ -137,11 +145,70 @@
     return box;
   }
 
+  // No ladder here on purpose: the server owns the rungs and their labels and
+  // sends `stage_label` for the bond and for every pair. A second table in the
+  // browser is how a row ends up showing a rung it has really left behind.
+  function stageLabel(row) {
+    row = row || {};
+    return row.stage_label || row.stage || "";
+  }
+
   function render(data) {
     var body = document.getElementById("hq-self-body");
     if (!body) return;
     body.className = "";
     body.innerHTML = "";
+    var voice = data.voice || {};
+    var bond = data.bond || {};
+    var family = Array.isArray(data.family) ? data.family : [];
+    body.appendChild(section((data.name || current) + (voice.role ? " — " + voice.role : ""),
+      (voice.alias ? '<div class="hq-self-muted">alias \u00ab ' + esc(voice.alias) + " \u00bb" +
+        (voice.lang ? " · " + esc(voice.lang) : "") + "</div>" : "") +
+      (voice.card ? '<div class="hq-self-item">' + esc(voice.card) + "</div>" : "") +
+      (voice.opinion ? '<div class="hq-self-item"><strong>' + esc(voice.opinion) + "</strong></div>" : "") +
+      (voice.quirks ? '<div class="hq-self-muted">' + esc(voice.quirks) + "</div>" : "")));
+    // Under two distinct days there is no closeness to claim, but the link is
+    // already hers and already hers alone: she says in her own words where it
+    // stands, and the rung names the evidence behind it.
+    var bondCounts = esc(bond.days) + " jour(s) distinct(s) · " + esc(bond.turns) + " échange(s) comptés";
+    // The rung is shown at every stage, including once the closeness sentence
+    // takes over: a link that has climbed must not lose its label on the way up.
+    var bondRung = bond.stage ? " · " + esc(stageLabel(bond)) : "";
+    body.appendChild(section("Lien au Maître",
+      Number(bond.days) >= 2
+        ? '<div class="hq-self-item"><strong>' +
+          esc(String(bond.line || "").replace(/^LIEN AU MAÎTRE\s*—\s*/, "")) + "</strong>" +
+          '<div class="hq-self-muted">' + bondCounts + bondRung + "</div></div>"
+        : '<div class="hq-self-item">' +
+          esc(String(bond.stage_line || "").replace(/^(LIEN AU MAÎTRE|BOND WITH THE MASTER)\s*—\s*/, "")) +
+          '<div class="hq-self-muted">' + bondCounts + bondRung + "</div></div>"));
+    // What she hides from him, for his eyes only: her own undercurrent, the rung
+    // real days have carried it to, and the counts behind that rung.
+    var heart = data.heart || {};
+    if (heart.line) {
+      body.appendChild(section("Cœur caché",
+        '<div class="hq-self-item"><strong>' + esc(stageLabel(heart)) + "</strong>" +
+        '<div class="hq-self-muted">' + esc(heart.days) + " jour(s) distinct(s) · " +
+        esc(heart.turns) + " échange(s) avec toi</div>" +
+        '<div class="hq-self-muted">' + esc(heart.line) + "</div>" +
+        '<div class="hq-self-muted">Visible pour toi seul — elle ne le dit jamais.</div></div>'));
+    }
+    // Every pair is its own thing: her line for the rung it actually reached, its
+    // real counts, and a truthful "nothing shared yet" when there is nothing.
+    body.appendChild(section("Famille",
+      family.map(function (row) {
+        var days = Number(row.days) || 0;
+        var rung = stageLabel(row);
+        var counts = esc(days) + " jour(s) distinct(s) · " + esc(row.exchanges) + " échange(s)";
+        var line = row.stage_line || row.line || "";
+        // The echo only exists where the API says two lit hearts met real evidence;
+        // with none it renders nothing at all, never a generic placeholder.
+        return '<div class="hq-self-item"><strong>' + esc(row.other_name) +
+          (rung ? " · " + esc(rung) : "") + "</strong>" +
+          '<div class="hq-self-muted">' + counts + "</div>" +
+          (line ? '<div class="hq-self-muted">' + esc(line) + "</div>" : "") +
+          (row.echo ? '<div class="hq-self-muted hq-self-echo">' + esc(row.echo) + "</div>" : "") + "</div>";
+      }).join("") || '<p class="hq-self-muted">Aucune sœur dans le périmètre.</p>'));
     body.appendChild(section("Disposition de passage",
       '<div class="hq-self-kv"><strong>' + esc(data.disposition.label) + "</strong></div>" +
       '<div class="hq-self-muted">Depuis ' + esc(when(data.disposition.since)) +
@@ -195,8 +262,32 @@
       }).join("") || '<p class="hq-self-muted">Le journal est vide.</p>'));
   }
 
+  // The debug overlay lands in the same bottom-left corner at z-index 120000 and
+  // took every click meant for the open button. It keeps that corner: we only
+  // record when it is there, and the stylesheet lifts this button and panel clear
+  // of it. Watched, because the chip mounts after this script on some pages.
+  var chipObserver = null;
+  function watchDebugChip() {
+    var apply = function () {
+      var chip = document.getElementById("hq-debug-panel");
+      document.body.classList.toggle("hq-self-debug-chip", !!chip);
+      if (!chip) { document.body.style.removeProperty("--hq-self-chip-clear"); return; }
+      // Measured, not guessed: the chip is a different height collapsed and open.
+      var clear = Math.round(chip.getBoundingClientRect().height) + 16;
+      document.body.style.setProperty("--hq-self-chip-clear", clear + "px");
+      if (typeof ResizeObserver === "function" && !chipObserver) {
+        chipObserver = new ResizeObserver(apply);
+        chipObserver.observe(chip);
+      }
+    };
+    apply();
+    if (typeof MutationObserver !== "function" || !document.body) return;
+    new MutationObserver(apply).observe(document.body, { childList: true });
+  }
+
   function init() {
     build();
+    watchDebugChip();
     window.hqPersonhoodOpen = open;
   }
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);

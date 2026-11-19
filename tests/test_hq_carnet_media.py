@@ -1352,7 +1352,7 @@ class StaticMediaTests(unittest.TestCase):
         text = (self.ROOT / "iphone_bridge.py").read_text(encoding="utf-8")
         policy_source = (self.ROOT / "hq_forge_lifecycle_listener.py").read_text(encoding="utf-8")  # the policy string is built there
         self.assertEqual((text + policy_source).count('frame-ancestors \'self\''), 1,"only the Stage-05 PDF frame exception exists")
-        self.assertIn("def _security_headers(self, *, frame_self: bool = False)", text)
+        self.assertIn("def _security_headers(self, *, frame_self: bool = False, csp_override: str | None = None)", text)
         # no image response is ever framed: the only explicit frame_self=True uses are the Phase 9 r2 verified frozen-PDF route (body + readable refusal)
         start = text.index("def _carnet_reader_pdf(")
         end = text.index("    def _carnet_asset_get(")

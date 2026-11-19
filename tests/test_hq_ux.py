@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -20,8 +21,13 @@ class UxMarkupTests(unittest.TestCase):
         cls.cal_css = (ROOT / "assets" / "hq-calendar.css").read_text(encoding="utf-8")
 
     def test_type_and_light_accent(self):
-        self.assertIn("--text-xs:.75rem", self.css)
-        self.assertIn("--text-sm:.82rem", self.css)
+        # Six steps, no 9-11px stragglers: these are the only sizes the page is allowed to pick from.
+        for step in ("--text-xs:11px", "--text-sm:13px", "--text-md:15px",
+                     "--text-lg:17px", "--text-xl:20px", "--text-2xl:26px"):
+            self.assertIn(step, self.css)
+        # 16px was a seventh size between md and lg; nothing may add it back.
+        self.assertNotIn("--text-base", self.css)
+        self.assertNotIn("font-size:.62rem", self.css)
         self.assertIn("--tap-min:44px", self.css)
         self.assertIn("--focus-ring:2px solid var(--accent)", self.css)
         self.assertIn("--accent:#08724f", self.css)
@@ -70,6 +76,7 @@ class UxMarkupTests(unittest.TestCase):
         block = self.hq_js[start:end]
         for name in ("ensureTooltip", "scheduleHelp", "showHelp", "hideHelp", "positionHelp", "cancelHelp"):
             self.assertIn("function " + name, block)
+        self.assertIn('closest("[data-help], button[aria-label]:not([data-help-skip])")', block)
         self.assertNotIn("innerHTML", block)
         self.assertIn("textContent", block)
         self.assertIn("(hover: hover) and (pointer: fine)", block)
@@ -92,6 +99,12 @@ class UxMarkupTests(unittest.TestCase):
             bare.append(found.group(1) if found else tag[:70])
         self.assertEqual(bare, [], "buttons with no data-help (add one, or data-help-skip)")
 
+    def test_dynamic_help_with_node(self):
+        """The real help controller must resolve dynamically built aria-only controls."""
+        for path in (ROOT / "assets" / "hq.js", ROOT / "assets" / "hq-forge-vault.js", ROOT / "assets" / "hq-forge-studio.js"):
+            subprocess.run(["node", "--check", str(path)], check=True, cwd=ROOT, timeout=60)
+        subprocess.run(["node", str(ROOT / "tests" / "check_hq_dynamic_help.mjs")], check=True, cwd=ROOT, timeout=60)
+
     def test_calendar_a11y_preserves_month_clip(self):
         self.assertIn("Mois précédent", self.cal_js)
         self.assertIn("Agenda suivant", self.cal_js)
@@ -106,9 +119,9 @@ class UxMarkupTests(unittest.TestCase):
         coarse = self.cal_css.split("@media (pointer:coarse){", 1)[1].split(".hq-cal-event{", 1)[0]
         self.assertIn(".hq-cal-mcell .hq-cal-chip", coarse)
         self.assertIn(".hq-cal-more", coarse)
-        self.assertIn("min-height:32px", coarse)
+        self.assertIn("min-height:44px", coarse)
         grouped = self.cal_css.split(".hq-cal-mcell .hq-cal-chip,.hq-cal-mcell .hq-cal-more{", 1)[1].split("}", 1)[0]
-        self.assertIn("min-height:32px", grouped)
+        self.assertIn("min-height:44px", grouped)
         self.assertNotIn("min-height:0", grouped)
         self.assertIn("hq-cal-face", self.cal_css)
         self.assertIn("function assignHitSlop", self.cal_js)

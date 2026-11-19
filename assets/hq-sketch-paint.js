@@ -10,6 +10,8 @@
 })(typeof window !== "undefined" ? window : null, function () {
   "use strict";
 
+  const CLOSE_ART = '<svg class="sk-i" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m6 6 12 12M18 6 6 18"/></svg>';
+
   const LONG = 768; // a size both SD 1.5 and SDXL models handle without wasting the GPU
   const LIVE_DELAY_MS = 1400; // after the last change, wait this long before repainting live
 
@@ -47,7 +49,8 @@
     const S = { open: false, live: true, prompt: "", fidelity: 0.6, seed: Math.floor(Math.random() * 2147483647), version: 0, sentVersion: -1,
       dirtyAt: 0, inFlight: false, id: null, timer: 0, poll: 0 };
     const title = el(doc, "strong", { text: "Forge peint ton croquis" });
-    const closeBtn = el(doc, "button", { type: "button", class: "sk-paint-x", "aria-label": "Fermer « Forge peint »", text: "✕" });
+    const closeBtn = el(doc, "button", { type: "button", class: "sk-paint-x", "aria-label": "Fermer « Forge peint »" });
+    closeBtn.innerHTML = CLOSE_ART;
     const prompt = el(doc, "textarea", { class: "sk-paint-prompt", rows: "2", maxlength: "400",
       placeholder: "Ce que représente le croquis : une cabane dans les bois au crépuscule", "aria-label": "Ce que représente le croquis" });
     const fid = el(doc, "input", { type: "range", min: "0", max: "100", value: "60", class: "sk-paint-fid", "aria-label": "Fidélité au croquis" });

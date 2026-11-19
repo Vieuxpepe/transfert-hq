@@ -3,7 +3,11 @@ import json
 
 import hq_ai as ai
 import hq_companion_memory as memory
+from tests import hq_assistant_state
 from tests.test_hq_ai import Base, DEV, DEV2
+
+setUpModule = hq_assistant_state.set_up
+tearDownModule = hq_assistant_state.tear_down
 
 
 class PromptPipelineTests(Base):

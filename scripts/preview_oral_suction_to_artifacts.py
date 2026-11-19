@@ -18,13 +18,13 @@ SRC = ROOT / "artifacts" / "elevenlabs-sound-design-src"
 EXPANSION = ROOT / "scripts" / "sound_expansion_catalog.json"
 
 COPY_MAP = [
-    (SRC / "Else_wet_mouth_sfx_01.mp3", "in_game_wet_mouth_sfx.mp3", "[wet mouth sounds] (in-game wet_mouth pool)"),
-    (SRC / "Else_soft_swallow_01.mp3", "in_game_soft_swallow.mp3", "[soft swallow gulp] (in-game wet_mouth pool)"),
-    (SRC / "Else_lip_pop_01.mp3", "in_game_lip_pop_release_01.mp3", "[crisp lip pop] (in-game release pop)"),
-    (SRC / "Else_lip_pop_02.mp3", "in_game_lip_pop_release_02.mp3", "[playful bubble pop] (in-game release pop)"),
+    (SRC / "Transferania_wet_mouth_sfx_01.mp3", "in_game_wet_mouth_sfx.mp3", "[wet mouth sounds] (in-game wet_mouth pool)"),
+    (SRC / "Transferania_soft_swallow_01.mp3", "in_game_soft_swallow.mp3", "[soft swallow gulp] (in-game wet_mouth pool)"),
+    (SRC / "Transferania_lip_pop_01.mp3", "in_game_lip_pop_release_01.mp3", "[crisp lip pop] (in-game release pop)"),
+    (SRC / "Transferania_lip_pop_02.mp3", "in_game_lip_pop_release_02.mp3", "[playful bubble pop] (in-game release pop)"),
 ]
 
-ORAL_PREFIX = re.compile(r"Else_oral_suction_", re.I)
+ORAL_PREFIX = re.compile(r"Transferania_oral_suction_", re.I)
 
 
 def slug_from_file(name: str) -> str:

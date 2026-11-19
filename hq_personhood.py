@@ -39,6 +39,22 @@ import hq_visit_memory
 
 log = logging.getLogger(__name__)
 
+# Verification and CI probes use fixed device ids; they must not inflate Master bond.
+_INSTRUMENT_SOURCE = re.compile(
+    r"^(?:hq(?:live|verify|test|personaudit)|verify_)", re.IGNORECASE
+)
+
+
+def _instrument_source(source: str) -> bool:
+    return bool(_INSTRUMENT_SOURCE.match(str(source or "").strip()))
+
+
+def _bond_eligible(event: dict[str, Any]) -> bool:
+    if event.get("kind") == "visit":
+        return False
+    return not _instrument_source(str(event.get("source") or ""))
+
+
 VERSION = 1
 RETENTION = 90 * 86400
 EVENT_LIMIT = 80
@@ -132,7 +148,7 @@ _REGIME_POOLS: dict[str, tuple[str, ...]] = {
     ),
 }
 FRICTION_WINDOW = 2 * 3600
-DOMAIN_KEYS = ("culinia", "forgia", "musica", "inventoria", "pistonia", "securia")
+DOMAIN_KEYS = ("culinia", "forgia", "musica", "inventoria", "pistonia", "securia", "elsea")
 SISTER_KEYS = ("else", "transferania")
 KEYS = DOMAIN_KEYS + SISTER_KEYS
 _UNREADABLE = object()
@@ -171,6 +187,11 @@ VALUES: dict[str, tuple[tuple[str, str, tuple[str, ...]], ...]] = {
         ("discretion", "La discrétion", ("discret", "prive", "secret", "silence", "visible")),
         ("coherence", "La cohérence des règles", ("regle", "coherent", "log", "journal", "verification", "ordre")),
     ),
+    "elsea": (
+        ("premiere_couche", "La première couche juste", ("couche", "plateau", "buse", "temperature", "adherence", "impression")),
+        ("fierte", "La fierté d'un objet fini", ("fini", "termine", "reussi", "piece", "objet", "modele")),
+        ("partage", "Partager ce qu'on fabrique", ("makerworld", "telechargement", "partage", "publie", "communaute")),
+    ),
     "else": (
         ("tendresse", "La tendresse lucide", ("douceur", "tendre", "attention", "presence", "lien")),
         ("curiosite", "La curiosité des formes", ("forme", "image", "couleur", "dessin", "regard", "cadre")),
@@ -190,6 +211,7 @@ AXES: dict[str, tuple[tuple[str, str], ...]] = {
     "inventoria": (("brevity", "Brièveté"), ("directness", "Franchise"), ("initiative", "Initiative")),
     "pistonia": (("brevity", "Brièveté"), ("warmth", "Chaleur"), ("initiative", "Initiative")),
     "securia": (("brevity", "Brièveté"), ("directness", "Franchise"), ("initiative", "Initiative")),
+    "elsea": (("brevity", "Brièveté"), ("warmth", "Chaleur"), ("playfulness", "Fantaisie")),
     "else": (("brevity", "Brièveté"), ("warmth", "Chaleur"), ("playfulness", "Fantaisie")),
     "transferania": (("brevity", "Brièveté"), ("warmth", "Chaleur"), ("initiative", "Initiative")),
 }
@@ -341,6 +363,92 @@ def _date(ts: float) -> str:
     return datetime.fromtimestamp(float(ts)).strftime("%Y-%m-%d")
 
 
+def _subject_touched(words: Any, label: Any) -> bool:
+    """Whether the turn itself names this subject enough to reopen it."""
+    subject = set(_words(label))
+    return bool(subject & set(words))
+
+
+def _repair_line(row: dict) -> str:
+    """The one bounded line a changed answer can honestly carry."""
+    topic = _topic(row.get("topic")) or _clean(row.get("topic"), 80)
+    old = _clean(row.get("old"), 160)
+    new = _clean(row.get("new"), 160)
+    try:
+        since = float(row.get("since"))
+    except (TypeError, ValueError):
+        return ""
+    if not topic or not old or not new:
+        return ""
+    return _hint_text("RÉPARATION — « %s » : je disais « %s » ; depuis le %s je dis « %s »."
+                      % (topic, old, _date(since), new))
+
+
+def _chapter_line(row: dict) -> str:
+    """The one bounded line a closed chapter can honestly carry."""
+    topic = _topic(row.get("topic")) or _clean(row.get("topic"), 80)
+    try:
+        opened = float(row.get("opened_at"))
+        closed = float(row.get("closed_at"))
+        days = max(0, int(row.get("days") if row.get("days") is not None
+                          else round((closed - opened) / 86400)))
+    except (TypeError, ValueError):
+        return ""
+    if not topic:
+        return ""
+    outcome = _clean(row.get("outcome"), 160)
+    tail = " : " + outcome if outcome else ""
+    return _hint_text("CHAPITRE CLOS — « %s » (ouvert le %s, clos le %s, %d jours)%s."
+                      % (topic, _date(opened), _date(closed), days, tail))
+
+
+# The memory pipeline calls the public name; the tests pin the private one.
+chapter_line = _chapter_line
+
+
+def _offer_repair_or_chapter(repairs: Any, chapters: Any, words: Any, stamp: float,
+                             persist: bool) -> dict[str, Any] | None:
+    """A repair or a closed chapter the turn itself returns to, once.
+
+    Both records are read from the store by the caller; this only decides which
+    one his message is about and what its own evidence implies. Nothing is
+    offered twice: ``quoted`` is the caller's mark, and ``persist`` keeps a
+    preview from spending it.
+    """
+    found: list[tuple[float, str, str, dict]] = []
+    for row in repairs if isinstance(repairs, (list, tuple)) else ():
+        if not isinstance(row, dict) or row.get("quoted") or not _subject_touched(words, row.get("topic")):
+            continue
+        try:
+            since = float(row.get("since"))
+        except (TypeError, ValueError):
+            continue
+        line = _repair_line(row)
+        if line:
+            found.append((since, "repair", line, row))
+    for row in chapters if isinstance(chapters, (list, tuple)) else ():
+        if not isinstance(row, dict) or row.get("quoted") or not _subject_touched(words, row.get("topic")):
+            continue
+        try:
+            closed = float(row.get("closed_at"))
+        except (TypeError, ValueError):
+            continue
+        line = _chapter_line(row)
+        if line:
+            found.append((closed, "chapter", line, row))
+    if not found:
+        return None
+    moment, basis, line, row = max(found, key=lambda item: item[0])
+    if persist:
+        row["quoted"] = True
+    age = max(0.0, stamp - moment)
+    if basis == "repair":
+        return {"line": line, "basis": "repair", "repair_id": row.get("id"),
+                "label": row.get("topic") or "", **salience(age, 1, 1, 1)}
+    return {"line": line, "basis": "chapter", "chapter_id": row.get("id"),
+            "label": row.get("topic") or "", **salience(age, 1)}
+
+
 def _trace_mark(row: dict) -> float | None:
     """The newest timestamp a trace actually records, or None if it records none."""
     marks = [row.get("at")] + [s.get("at") for s in (row.get("sources") or []) if isinstance(s, dict)]
@@ -476,7 +584,8 @@ def _write(path: Path, data: dict[str, Any]) -> None:
 def _domain_paths() -> dict[str, Path]:
     out: dict[str, Path] = {}
     modules = (("culinia", "hq_culinia"), ("forgia", "hq_forgia"), ("musica", "hq_musica"),
-               ("inventoria", "hq_inventoria_ai"), ("pistonia", "hq_pistonia"), ("securia", "hq_securia"))
+               ("inventoria", "hq_inventoria_ai"), ("pistonia", "hq_pistonia"), ("securia", "hq_securia"),
+               ("elsea", "hq_elsea"))
     for key, module_name in modules:
         try:
             module = __import__(module_name)
@@ -654,7 +763,8 @@ def _affect_view(data: dict[str, Any], now: float) -> dict[str, Any]:
     }
 
 
-def state_line(key: str, *, owner: str | None = None, now: float | None = None) -> str:
+def state_line(key: str, *, owner: str | None = None, now: float | None = None,
+               compact: bool = False) -> str:
     """One bounded line of her own present state, or "" when nothing is left.
 
     Deliberately cheap and read-only: no snapshot, no visit lookup, no
@@ -674,6 +784,14 @@ def state_line(key: str, *, owner: str | None = None, now: float | None = None) 
     if data is _UNREADABLE or not isinstance(data, dict):
         return ""
     view = _affect_view(data, stamp)
+    if compact:
+        # One clause for a prompt whose core is byte-tight (a sister's chat
+        # core): the band and, when it says something new, the direction.
+        label = str(view["label"] or "")
+        trend = str(view["trend"] or "")
+        if not label or (label == "au calme" and not trend):
+            return ""
+        return "ÉTAT — " + label + ((" ; " + trend) if trend else "") + "."
     rows = _decayed_affect(data.get("affect"), stamp)
     directive = _regime_text(data, rows, stamp)
     if not view["cause"] and view["label"] == "au calme" and not directive:
@@ -687,6 +805,39 @@ def state_line(key: str, *, owner: str | None = None, now: float | None = None) 
     if directive:
         text += " " + directive
     return _bounded_state(text, cause_clause=cause_clause)
+
+
+def bond(key: str, *, owner: str | None = None, now: float | None = None) -> dict[str, int]:
+    """Distinct days of real exchange with the Master, from her own ledger.
+
+    Visits are exchanges with another assistant, so they belong to the
+    relationship store, not here: a day spent with a sister is not a day of
+    conversation with him. Cheap and read-only; an unreadable file claims
+    nothing rather than guessing.
+    """
+    key = str(key or "").strip().lower()
+    if key not in KEYS:
+        return {"days": 0, "turns": 0}
+    stamp = float(now if now is not None else time.time())
+    try:
+        with _scope(key, owner) as path:
+            with _lock:
+                data = _load(path, key)
+    except Exception:
+        return {"days": 0, "turns": 0}
+    if data is _UNREADABLE or not isinstance(data, dict):
+        return {"days": 0, "turns": 0}
+    events: list[dict[str, Any]] = []
+    for event in data.get("events") or []:
+        if not isinstance(event, dict) or not _bond_eligible(event):
+            continue
+        try:
+            age = stamp - float(event.get("at"))
+        except (TypeError, ValueError):
+            continue
+        if 0 <= age <= RETENTION:
+            events.append(event)
+    return {"days": len({_date(float(e["at"])) for e in events}), "turns": len(events)}
 
 
 def _bounded_state(text: str, *, cause_clause: str = "") -> str:
@@ -886,23 +1037,37 @@ def _feedback(text: str) -> list[tuple[str, str, str]]:
 
 def observe_chat(key: str, message: Any, *, source: str = "", now: float | None = None,
                  owner: str | None = None) -> None:
-    """Record a chat turn and any explicit delivery feedback in it."""
+    """Record a chat turn and any explicit delivery feedback in it.
+
+    A day of conversation is a day however short the exchange weighed: a bare
+    greeting still counts for the bond, so the link with the Master can form on
+    the days they actually spoke. Such a turn carries no subject, so it can
+    never become a preoccupation or a continuity line of its own.
+    """
     text = _clean(message, 180)
+    if not text:
+        return
     topic = _topic(text)
-    if topic:
-        record_event(key, kind="chat", topic=topic, text=topic, outcome="turn", source=source, now=now, owner=owner)
+    record_event(key, kind="chat", topic=topic, text=topic, outcome="turn", source=source, now=now, owner=owner)
     for category, sign, snippet in _feedback(text):
         record_event(key, kind="feedback", topic=category, text=snippet, outcome=sign, source=source, now=now, owner=owner)
 
 
 def observe_visit(host: str, visitor: str, lines: Any, *, now: float | None = None,
-                  owner: str | None = None) -> None:
-    """Record both sides of a completed visit, with the last useful thread."""
-    thread = ""
-    for row in reversed(lines if isinstance(lines, list) else []):
-        if isinstance(row, dict) and str(row.get("text") or "").strip():
-            thread = _clean(row.get("text"), 160)
-            break
+                  owner: str | None = None, thread: str | None = None) -> None:
+    """Record both sides of a completed visit, with the last useful thread.
+
+    The caller passes the thread the visit memory kept (never the departure line).
+    Without one, the last non-empty line is used, as before.
+    """
+    if thread is not None:
+        thread = _clean(thread, 160)
+    else:
+        thread = ""
+        for row in reversed(lines if isinstance(lines, list) else []):
+            if isinstance(row, dict) and str(row.get("text") or "").strip():
+                thread = _clean(row.get("text"), 160)
+                break
     stamp = float(now if now is not None else time.time())
     for key, other in ((host, visitor), (visitor, host)):
         if key in KEYS and other in KEYS:
@@ -1095,7 +1260,9 @@ def pair_threads(key: str, *, owner: str | None = None, now: float | None = None
                              key=lambda item: item[1]["at"], default=(None, None))
             if not row or stamp - float(row["at"]) > PAIR_RETENTION:
                 continue
-            thread = _clean(row.get("thread") or (row.get("lines") or [{}])[-1].get("text"), 200)
+            if row.get("source") == "canned":
+                continue
+            thread = _clean(row.get("thread") or "", 200)
             if thread:
                 # In the other assistant's own log ``other_name`` is *her* name,
                 # not theirs: the thread she remembers is with that other, so the
@@ -1114,6 +1281,116 @@ def pair_threads(key: str, *, owner: str | None = None, now: float | None = None
             continue
     rows.sort(key=lambda r: r["at"], reverse=True)
     return rows[:3]
+
+
+def _family_rows(key: str, *, owner: str | None = None) -> list[dict[str, Any]]:
+    """Each sibling she has actually exchanged with, and the rung they reached.
+
+    Read-only evidence for the review panel: it never writes a relationship and
+    never invents one for a pair that has not met.
+    """
+    rows: list[dict[str, Any]] = []
+    try:
+        import hq_relationships as rel
+    except Exception:
+        return rows
+    # Read the relationships from this panel's own root, never from whichever
+    # root another module bound last: a review must not report a sibling it
+    # never met because some other caller happened to point the store elsewhere.
+    base = None
+    try:
+        import hq_companion_memory as _memory
+        base = _memory.root()
+    except Exception:
+        base = None
+    master_days: dict[str, int] = {}
+
+    def days_with_master(who: str) -> int:
+        """Real days with the Master, read once per assistant for the echo gate."""
+        if who not in master_days:
+            try:
+                master_days[who] = int(bond(who, owner=owner).get("days") or 0)
+            except Exception:
+                master_days[who] = 0
+        return master_days[who]
+
+    for other in hq_personas.others(key):
+        try:
+            pair = rel.pair(base, key, other["key"], owner=owner)
+        except Exception:
+            continue
+        days = int(pair.get("days") or 0)
+        exchanges = int(pair.get("exchanges") or 0)
+        lang = hq_personas.get(key)["lang"]
+        stage = rel.pair_stage(days, exchanges)
+        rows.append({"other": other["key"], "other_name": other["name"],
+                     "days": days, "exchanges": int(pair.get("exchanges") or 0),
+                     "tier": rel.tier(days), "tier_label": rel.TIER_LABEL.get(rel.tier(days), ""),
+                     "stage": stage, "stage_label": rel.stage_label(stage, lang=lang),
+                     "line": rel.line(base, key, other["key"], lang=lang, owner=owner),
+                     "stage_line": rel.stage_line(base, key, other["key"], lang=lang, owner=owner),
+                     "echo": hq_personas.echo_line(
+                         key, other["key"], days=days, exchanges=exchanges,
+                         a_heart_days=days_with_master(key),
+                         b_heart_days=days_with_master(other["key"]), lang=lang,
+                         earned=bool(rel.echo_earned(base, key, other["key"], owner=owner)))})
+    rows.sort(key=lambda row: (row["days"], row["exchanges"]), reverse=True)
+    return rows
+
+
+def _voice_view(key: str) -> dict[str, Any]:
+    """What the panel shows of her identity: role, alias, card and opinion."""
+    try:
+        a = hq_personas.get(key)
+        card = hq_personas.voice_line(key)
+        opinion = hq_personas.opinion_line(key)
+        quirks = hq_personas.quirks_line(key)
+    except Exception:
+        return {}
+    return {"role": a.get("role", ""), "alias": a.get("alias", ""),
+            "lang": a.get("lang", "fr"), "card": card, "opinion": opinion, "quirks": quirks,
+            "cap": (a.get("voice") or {}).get("cap")}
+
+
+def _heart_view(key: str, *, owner: str | None = None, now: float) -> dict[str, Any]:
+    """Her hidden undercurrent toward the Master, with the evidence behind it.
+
+    Panel-only: the same days that move her bond move this, so it evolves with
+    real history, but nothing here is ever handed to a prompt as a declaration.
+    """
+    row = bond(key, owner=owner, now=now)
+    days = int(row.get("days") or 0)
+    turns = int(row.get("turns") or 0)
+    try:
+        stage = hq_personas.heart_stage(days)
+        label = hq_personas.heart_stage_label(stage, lang=hq_personas.get(key)["lang"])
+        line = hq_personas.heart_line(key, days, turns)
+    except Exception:
+        stage, label, line = "", "", ""
+    return {"stage": stage, "stage_label": label, "line": line,
+            "days": days, "turns": turns, "hidden": True}
+
+
+def _bond_view(key: str, *, owner: str | None = None, now: float) -> dict[str, Any]:
+    """Distinct days with the Master, the stage they put her at, and her sentence."""
+    row = bond(key, owner=owner, now=now)
+    days = int(row.get("days") or 0)
+    try:
+        sentence = hq_personas.closeness_line(key, days) if days >= 2 else ""
+    except Exception:
+        sentence = ""
+    try:
+        stage = hq_personas.bond_stage(days)
+        stage_line = hq_personas.bond_line(key, days)
+    except Exception:
+        stage, stage_line = "", ""
+    try:
+        import hq_relationships as rel
+        stage_label = rel.stage_label(stage)
+    except Exception:
+        stage_label = ""
+    return {"days": days, "turns": int(row.get("turns") or 0), "stage": stage,
+            "stage_label": stage_label, "line": sentence, "stage_line": stage_line}
 
 
 def _snapshot_data(key: str, data: dict[str, Any], now: float, *, owner: str | None = None) -> dict[str, Any]:
@@ -1161,6 +1438,10 @@ def _snapshot_data(key: str, data: dict[str, Any], now: float, *, owner: str | N
             "weekly_cap": WEEKLY_CAP,
         },
         "preoccupations": _preoccupations(events, now),
+        "voice": _voice_view(key),
+        "bond": _bond_view(key, owner=owner, now=now),
+        "heart": _heart_view(key, owner=owner, now=now),
+        "family": _family_rows(key, owner=owner),
         "pair_threads": pair_threads(key, owner=owner, now=now),
         "review": {
             "pending_drift": pending,
@@ -1177,7 +1458,7 @@ def _name(key: str) -> str:
         return key.capitalize()
 
 
-def snapshot(key: str, *, now: float | None = None, owner: str | None = None) -> dict[str, Any]:
+def snapshot(key: str, *, now: float | None = None, owner: str | None = None, persist: bool = True) -> dict[str, Any]:
     key = str(key or "").strip().lower()
     if key not in KEYS:
         return {"ok": False, "error": "Assistant inconnu", "code": "validation_error"}
@@ -1190,7 +1471,7 @@ def snapshot(key: str, *, now: float | None = None, owner: str | None = None) ->
                     return {"ok": False, "error": "Fichier de personnalité illisible", "code": "unreadable"}
                 changed = _prune(data, stamp)
                 changed = _update_disposition(data, stamp) or changed
-                if changed:
+                if changed and persist:
                     _write(path, data)
                 return _snapshot_data(key, data, stamp, owner=owner)
     except Exception:
@@ -1348,8 +1629,15 @@ def _subject_returns(key: str, label: str, since: float, *, owner: str | None = 
     return count
 
 
-def _pick(snap: dict, stamp: float, folded: str, social: bool, words: set) -> tuple[str, dict]:
+def _pick(snap: dict, stamp: float, folded: str, social: bool, words: set,
+          rows: Any = ()) -> tuple[str, dict]:
     """The one line the store can honestly offer, with the evidence behind it."""
+    # A repair answers a subject he returns to before any generic thread does.
+    offered = _offer_repair_or_chapter(rows, (), words, stamp, True)
+    if offered is not None:
+        return offered["line"], {"basis": offered["basis"], "age": offered.get("age_s"),
+                                 "repeats": 1, "label": offered.get("label", ""),
+                                 "repair_id": offered.get("repair_id")}
     # A recent thread is the most concrete continuity; use it when the question
     # is social or names the other assistant.
     for row in snap.get("pair_threads", []):
@@ -1427,12 +1715,16 @@ def _pick(snap: dict, stamp: float, folded: str, social: bool, words: set) -> tu
 
 
 def hint_detail(key: str, query: Any, *, owner: str | None = None, now: float | None = None,
-                pushback: Any = ()) -> dict:
+                pushback: Any = (), repairs: Any = (), chapters: Any = (),
+                persist: bool = True) -> dict:
     """The at-most-one line plus the salience its own evidence implies.
 
     ``pushback`` is the archive of the Master's corrections (topic, text, at):
     corrections about this same subject lower its salience, and two of them
     take the line away instead of spending room on a subject he keeps refusing.
+    ``repairs`` and ``chapters`` are the store's own records; a turn that names
+    their subject gets that one dated line, once, instead of a generic thread.
+    ``persist`` guards a preview from spending the record it quotes.
     """
     query = _clean(query, 400)
     words = _words(query)
@@ -1440,7 +1732,7 @@ def hint_detail(key: str, query: Any, *, owner: str | None = None, now: float | 
     if not words and not social:
         return {}
     stamp = float(now if now is not None else time.time())
-    snap = snapshot(key, owner=owner, now=stamp)
+    snap = snapshot(key, owner=owner, now=stamp, persist=persist)
     if not snap.get("ok"):
         return {}
     if (snap.get("affect") or {}).get("withholds"):
@@ -1448,6 +1740,9 @@ def hint_detail(key: str, query: Any, *, owner: str | None = None, now: float | 
         # still reach the prompt through ``state_line``; what stops is the offer
         # to reopen a subject — an initiative, not an answer.
         return {}
+    offered = _offer_repair_or_chapter(repairs, chapters, words, stamp, persist)
+    if offered is not None:
+        return offered
     picked, evidence = _pick(snap, stamp, _fold(query), social, words)
     if not picked:
         return {}

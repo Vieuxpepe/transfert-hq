@@ -1,27 +1,39 @@
+import unittest
+
 """Else-inspired arbitration without Else runtime/data or additional model calls."""
 import json
 
 import hq_ai as ai
 import hq_companion_memory as memory
 import hq_companion_presence as presence
+import hq_companion_guard as guard
 from tests.test_hq_ai import Base, DEV, DEV2
 
 
 class PresenceTests(Base):
     def test_family_canon_keeps_transferania_distinct_and_the_bond_warm(self):
+        # docs/companion-prompt-assembly.md: the stable core declares the alias
+        # once, through alias_line, before the editable character hint. The alias
+        # must therefore be provable in the outgoing payload, not inside the hint.
+        for channel in ("chat", "ambient"):
+            for persona in ("warm", "flirt"):
+                system = ai.build_transferania_system(
+                    channel, persona, nsfw=False, view="accueil",
+                    device_id=DEV, context_core=True)
+                self.assertIn("Autre nom : « Transferina ».", system)
+                self.assertEqual(system.count("Transferina"), 1)
+                self.assertIn("Else", system)
+                self.assertIn("Maître", system)
+                self.assertIn("Static", system)
+                self.assertIn("plus intense qu'Else", system)
+                if channel == "chat":
+                    self.assertIn("complicité affectueuse", system)
+                    self.assertIn("sa propre identité", system)
         for persona in ("warm", "flirt"):
-            for compact in (False, True):
-                text = presence.character_hint(persona, compact=compact)
-                self.assertIn("Transferina", text)
-                self.assertIn("Else", text)
-                self.assertIn("Maître", text)
-                self.assertIn("Static", text)
-                self.assertIn("plus intense qu'Else", text)
-                if compact:
-                    self.assertLessEqual(len(text.encode("utf-8")), 320)
-                else:
-                    self.assertIn("complicité affectueuse", text)
-                    self.assertIn("sa propre identité", text)
+            text = presence.character_hint(persona, compact=True)
+            self.assertNotIn("Transferina", text, "the alias belongs to alias_line once")
+            self.assertIn("plus intense qu'Else", text)
+            self.assertLessEqual(len(text.encode("utf-8")), 320)
 
     def test_temperament_reaches_chat_and_ambient_core_without_calls(self):
         for channel in ("chat", "ambient"):
@@ -221,3 +233,44 @@ class PresenceTests(Base):
         ai._finalize_continuity_context(packet, [{"role": "user", "parts": [{"text": "current message only"}]}])
         retry = memory.context_packet("robot", conversation_text="About the robot", reserve_followup=True)
         self.assertEqual(retry["presence"]["continuity_kind"], "episode")
+
+
+class ReplyGuardTests(unittest.TestCase):
+    """The reply layer, not the prompt, owns these two rules."""
+
+    def test_article_and_fragment_openings_are_repaired_before_delivery(self):
+        cases = (("Des cliquets minuscules changent le rapport.", "cliquets"),
+                 ("La lumière sur ton écran a baissé d'un cran.", "lumière"),
+                 ("Pignons. Salut, t'arrives au bon moment.", "pignons"))
+        for text, kept in cases:
+            fixed, info = guard.guard_reply(text, user_text="moyeu ?")
+            self.assertFalse(guard.opens_on_article(fixed), fixed)
+            self.assertFalse(guard.opens_on_fragment(fixed), fixed)
+            self.assertIn(kept, fixed.lower())
+            self.assertTrue(info["opening"])
+
+    def test_legitimate_short_replies_and_questions_are_not_touched(self):
+        for text in ("Oui — celle que tu viens de réparer.",
+                     "Viens là. On respire deux secondes.",
+                     "D'accord. Je me tais et je t'écoute.",
+                     "Ah, enfin !", "Tiens, minuit approche et tu carbures encore."):
+            fixed, info = guard.guard_reply(text, user_text="Café à 23 h")
+            self.assertEqual(fixed, text)
+            self.assertFalse(info["changed"])
+
+    def test_a_volunteered_clock_is_removed_from_the_reply(self):
+        fixed, info = guard.guard_reply("Midi pile et tu tombes déjà sur les genoux.",
+                                        user_text="Salut")
+        self.assertTrue(info["time"])
+        self.assertFalse(guard.mentions_time(fixed), fixed)
+        self.assertIn("genoux", fixed)
+        kept, info = guard.guard_reply("Il est 14 h, tu veux une pause ?",
+                                       user_text="Il est quelle heure ?")
+        self.assertEqual(kept, "Il est 14 h, tu veux une pause ?")
+        self.assertFalse(info["changed"])
+
+    def test_an_opening_never_repeats_the_forbidden_particle(self):
+        fixed, _ = guard.guard_reply("Le dérailleur expose ses galets.",
+                                     user_text="différence ?", avoid=("Tiens",))
+        self.assertNotEqual(guard.fold(fixed.split(",")[0]), "tiens")
+        self.assertFalse(guard.opens_on_article(fixed))

@@ -68,19 +68,164 @@ def _roll_seed(seed: int | None) -> int:
     return int(seed)
 
 CHARACTER_CORE = (
-    "masterpiece, best quality, "
-    "transferania, 1woman, solo, same character, same face, identical face, "
+    "masterpiece, best quality, newest, absurdres, highres, "
+    "transferania_char, 1girl, transferania, 1woman, solo, same character, same face, identical face, "
     "mature adult, fair skin, warm undertone, pink blush on cheeks, "
     "long wavy purple hair, magenta hair, amber eyes, golden eyes, full lips, dark red lipstick, heavy eyelashes, "
     "voluptuous, large breasts, narrow waist, wide hips, black lace lingerie"
 )
 
 CHARACTER_CORE_NUDE = (
-    "masterpiece, best quality, "
-    "transferania, 1woman, solo, same character, same face, identical face, "
+    "masterpiece, best quality, newest, absurdres, highres, "
+    "transferania_char, 1girl, transferania, 1woman, solo, same character, same face, identical face, "
     "mature adult, fair skin, warm undertone, pink blush on cheeks, "
     "long wavy purple hair, magenta hair, amber eyes, golden eyes, full lips, dark red lipstick, heavy eyelashes, "
     "voluptuous, large breasts, narrow waist, wide hips, nude, naked"
+)
+
+ELSE_CHARACTER_CORE = (
+    "masterpiece, best quality, newest, absurdres, highres, "
+    "else_char, 1girl, solo, dark-skinned female, dark skin, "
+    "long pastel pink hair, blunt bangs, cyan streaks, black flower hair ornament, glowing cyan eyes, "
+    "voluptuous, large breasts, narrow waist, wide hips, black cybernetic bodysuit, glowing pink circuit lines, "
+    "sheer chest cutout, purple rhombus chest gem"
+)
+
+ELSE_CHARACTER_CORE_NUDE = (
+    "masterpiece, best quality, newest, absurdres, highres, "
+    "else_char, 1girl, solo, dark-skinned female, dark skin, "
+    "long pastel pink hair, blunt bangs, cyan streaks, black flower hair ornament, glowing cyan eyes, "
+    "voluptuous, large breasts, narrow waist, wide hips, nude, naked"
+)
+
+FORGIA_CHARACTER_CORE = (
+    "masterpiece, best quality, newest, absurdres, highres, "
+    "forgia_char, 1girl, solo, fair skin, crimson red hair, long braided hair, single side braid over shoulder, "
+    "glowing golden amber eyes, brass steampunk goggles on head, gold forehead ornament, "
+    "voluptuous, large breasts, narrow waist, wide hips, black and gold lace corset"
+)
+
+FORGIA_CHARACTER_CORE_NUDE = (
+    "masterpiece, best quality, newest, absurdres, highres, "
+    "forgia_char, 1girl, solo, fair skin, crimson red hair, long braided hair, single side braid over shoulder, "
+    "glowing golden amber eyes, brass steampunk goggles on head, gold forehead ornament, "
+    "voluptuous, large breasts, narrow waist, wide hips, nude, naked"
+)
+
+INVENTORIA_CHARACTER_CORE = (
+    "masterpiece, best quality, newest, absurdres, highres, "
+    "inventoria_char, 1girl, solo, petite, shortstack, chibi-stylized, flat chest, small breasts, fair skin, "
+    "pale silver-mint hair, short bob cut, chunky blunt bangs, "
+    "sharp lime green eyes, slit pupils, heavy black eyeliner, smug cat-like grin, blush, "
+    "emerald green and black lace lingerie"
+)
+
+INVENTORIA_CHARACTER_CORE_NUDE = (
+    "masterpiece, best quality, newest, absurdres, highres, "
+    "inventoria_char, 1girl, solo, petite, shortstack, chibi-stylized, flat chest, small breasts, fair skin, "
+    "pale silver-mint hair, short bob cut, chunky blunt bangs, "
+    "sharp lime green eyes, slit pupils, heavy black eyeliner, smug cat-like grin, blush, nude, naked"
+)
+
+PISTONIA_CHARACTER_CORE = (
+    "masterpiece, best quality, newest, absurdres, highres, "
+    "pistonia_char, 1girl, solo, adult woman, mature female, fair warm skin, "
+    "auburn hair, high ponytail, orange hair streaks, messy bangs, "
+    "golden amber eyes, half-lidded eyes, confident smirk, "
+    "orange-tinted mechanic goggles on head, "
+    "large breasts, narrow waist, wide hips, athletic curvy figure, black and copper-gold lace lingerie"
+)
+
+PISTONIA_CHARACTER_CORE_NUDE = (
+    "masterpiece, best quality, newest, absurdres, highres, "
+    "pistonia_char, 1girl, solo, adult woman, mature female, fair warm skin, "
+    "auburn hair, high ponytail, orange hair streaks, messy bangs, "
+    "golden amber eyes, half-lidded eyes, confident smirk, "
+    "orange-tinted mechanic goggles on head, "
+    "large breasts, narrow waist, wide hips, athletic curvy figure, nude, naked"
+)
+
+MUSICA_CHARACTER_CORE = (
+    "masterpiece, best quality, newest, absurdres, highres, "
+    "musica_char, 1girl, solo, petite, shortstack, chibi-stylized, "
+    "flat chest, small breasts, small stature, young-looking anime proportions, fair skin, "
+    "emerald green hair, long twintails, curled hair tips, blunt bangs, "
+    "big bright green eyes, playful cat smile, blush, "
+    "black and red cat ear headphones on head, fluffy green cat tail"
+)
+
+MUSICA_CHARACTER_CORE_NUDE = (
+    "masterpiece, best quality, newest, absurdres, highres, "
+    "musica_char, 1girl, solo, petite, shortstack, chibi-stylized, "
+    "flat chest, small breasts, small stature, young-looking anime proportions, fair skin, "
+    "emerald green hair, long twintails, curled hair tips, blunt bangs, "
+    "big bright green eyes, playful cat smile, blush, "
+    "black and red cat ear headphones on head, fluffy green cat tail, nude, naked"
+)
+
+SECURIA_CHARACTER_CORE = (
+    "masterpiece, best quality, newest, absurdres, highres, "
+    "securia_char, 1girl, solo, chibi, very petite, pint-sized, 3-head chibi proportions, "
+    "fair pale skin, electric cyan-blue hair, short bob cut, blunt bangs, "
+    "large glowing cyan eyes, HUD reticle pupils, deadpan unamused expression, "
+    "black cybernetic comms headphones with glowing cyan emblem, fully clothed"
+)
+
+CULINIA_CHARACTER_CORE = (
+    "masterpiece, best quality, newest, absurdres, highres, "
+    "culinia_char, 1girl, solo, adult woman, mature female, fair warm skin, blush, "
+    "chestnut brown hair, messy side bun, long face-framing sidelocks, soft parted bangs, "
+    "warm golden amber eyes, gentle affectionate smile, curvy hourglass figure, wide hips"
+)
+
+CULINIA_CHARACTER_CORE_NUDE = (
+    "masterpiece, best quality, newest, absurdres, highres, "
+    "culinia_char, 1girl, solo, adult woman, mature female, fair warm skin, blush, "
+    "chestnut brown hair, messy side bun, long face-framing sidelocks, soft parted bangs, "
+    "warm golden amber eyes, gentle affectionate smile, curvy hourglass figure, wide hips, nude, naked"
+)
+
+KINETIA_CHARACTER_CORE = (
+    "masterpiece, best quality, newest, absurdres, highres, "
+    "kinetia_char, 1girl, solo, adult woman, mature female, athletic slender curvy figure, fair skin, "
+    "symmetrical platinum silver-white hair with cobalt blue underside, geometric bob cut, "
+    "twin side braids, precision blunt bangs, vivid electric-indigo eyes, dryly amused wry smirk, "
+    "symmetrical white and cobalt servo headband earpieces"
+)
+
+KINETIA_CHARACTER_CORE_NUDE = (
+    "masterpiece, best quality, newest, absurdres, highres, "
+    "kinetia_char, 1girl, solo, adult woman, mature female, athletic slender curvy figure, fair skin, "
+    "symmetrical platinum silver-white hair with cobalt blue underside, geometric bob cut, "
+    "twin side braids, precision blunt bangs, vivid electric-indigo eyes, dryly amused wry smirk, "
+    "symmetrical white and cobalt servo headband earpieces, nude, naked"
+)
+
+ELSEA_CHARACTER_CORE = (
+    "masterpiece, best quality, newest, absurdres, highres, "
+    "elsea_char, 1girl, solo, chibi, 2.5-head chibi proportions, big head, short torso, short slender legs, "
+    "thin limbs, pint-sized fairy sprite, huge expressive glowing magenta-pink eyes, flat chest, "
+    "dark-skinned female, dark skin, long pointed elf ears, pastel pink bob hair, blunt bangs, "
+    "twin black and pink butterfly hair ornaments, glowing pink and white butterfly fairy wings, "
+    "modest obsidian high-collar sleeveless cyber-fey dress, strictly sfw"
+)
+
+STATIC_CHARACTER_CORE = (
+    "masterpiece, best quality, newest, absurdres, highres, "
+    "static_char, 1girl, solo, adult petite female android, short-stature compact android, "
+    "dark gunmetal slate metal skin, oversized olive-gunmetal cranial housing helmet, "
+    "glowing yellow starburst crest light on top of helmet, enormous glowing yellow eyes with bright pupils, "
+    "mischievous bratty smirk, long glowing yellow fiber-optic hair strands, black choker collar, "
+    "narrow shoulders, flat chest, safety-yellow accent seams, black diamond-mesh cybernetic bodysuit"
+)
+
+STATIC_CHARACTER_CORE_NUDE = (
+    "masterpiece, best quality, newest, absurdres, highres, "
+    "static_char, 1girl, solo, adult petite female android, short-stature compact android, "
+    "dark gunmetal slate metal skin, oversized olive-gunmetal cranial housing helmet, "
+    "glowing yellow starburst crest light on top of helmet, enormous glowing yellow eyes with bright pupils, "
+    "mischievous bratty smirk, long glowing yellow fiber-optic hair strands, black choker collar, "
+    "narrow shoulders, flat chest, safety-yellow accent seams, nude, naked"
 )
 
 NEGATIVE = (
@@ -120,7 +265,44 @@ def _negative_family(pose_id: str) -> str:
     return ""
 
 
-def character_core_for_pose(pose_id: str) -> str:
+def character_core_for_pose(pose_id: str, *, character: str = "transferania") -> str:
+    who = str(character or "transferania").strip().lower()
+    if who == "else":
+        if pose_id in POSE_LINGERIE_CORE_IDS:
+            return ELSE_CHARACTER_CORE
+        return ELSE_CHARACTER_CORE_NUDE
+    if who == "forgia":
+        if pose_id in POSE_LINGERIE_CORE_IDS:
+            return FORGIA_CHARACTER_CORE
+        return FORGIA_CHARACTER_CORE_NUDE
+    if who == "inventoria":
+        if pose_id in POSE_LINGERIE_CORE_IDS:
+            return INVENTORIA_CHARACTER_CORE
+        return INVENTORIA_CHARACTER_CORE_NUDE
+    if who == "pistonia":
+        if pose_id in POSE_LINGERIE_CORE_IDS:
+            return PISTONIA_CHARACTER_CORE
+        return PISTONIA_CHARACTER_CORE_NUDE
+    if who == "musica":
+        if pose_id in POSE_LINGERIE_CORE_IDS:
+            return MUSICA_CHARACTER_CORE
+        return MUSICA_CHARACTER_CORE_NUDE
+    if who == "securia":
+        return SECURIA_CHARACTER_CORE
+    if who == "culinia":
+        if pose_id in POSE_LINGERIE_CORE_IDS:
+            return CULINIA_CHARACTER_CORE
+        return CULINIA_CHARACTER_CORE_NUDE
+    if who == "kinetia":
+        if pose_id in POSE_LINGERIE_CORE_IDS:
+            return KINETIA_CHARACTER_CORE
+        return KINETIA_CHARACTER_CORE_NUDE
+    if who == "elsea":
+        return ELSEA_CHARACTER_CORE
+    if who == "static":
+        if pose_id in POSE_LINGERIE_CORE_IDS:
+            return STATIC_CHARACTER_CORE
+        return STATIC_CHARACTER_CORE_NUDE
     if pose_id in POSE_LINGERIE_CORE_IDS:
         return CHARACTER_CORE
     return CHARACTER_CORE_NUDE
@@ -1635,7 +1817,10 @@ def parse_generation_context(data: dict | None, *, root: Path | None = None) -> 
     if raw.get("stock_chance") is None and root is not None:
         stock_chance = float(forge_ui_defaults(root).get("stock_chance") or stock_chance)
         stock_chance = max(0.05, min(0.95, stock_chance))
+    raw_char = str(raw.get("character") or raw.get("companion") or "transferania").strip().lower()
+    character = raw_char if raw_char in ("else", "forgia", "inventoria", "pistonia", "musica", "securia", "culinia", "kinetia", "elsea", "static") else "transferania"
     return {
+        "character": character,
         "intensity": intensity,
         "variations": variations,
         "hour": hour,
@@ -1691,7 +1876,78 @@ def _lora_tag_fragment(meta: dict) -> str:
     return _lora_tag_from_meta(meta, ("lora_name", "lora"), "lora_weight", 0.75)
 
 
-def _character_lora_tag_fragment(meta: dict) -> str:
+def _character_lora_tag_fragment(meta: dict, *, character: str = "transferania") -> str:
+    who = str(character or "transferania").strip().lower()
+    if who == "else":
+        return _lora_tag_from_meta(
+            meta,
+            ("else_lora_name", "else_character_lora_name", "else_lora"),
+            "else_lora_weight",
+            0.90,
+        ) or "<lora:else_char:0.90>"
+    if who == "forgia":
+        return _lora_tag_from_meta(
+            meta,
+            ("forgia_lora_name", "forgia_character_lora_name", "forgia_lora"),
+            "forgia_lora_weight",
+            0.75,
+        ) or "<lora:forgia_char:0.75>"
+    if who == "inventoria":
+        return _lora_tag_from_meta(
+            meta,
+            ("inventoria_lora_name", "inventoria_character_lora_name", "inventoria_lora"),
+            "inventoria_lora_weight",
+            0.85,
+        ) or "<lora:inventoria_char:0.85>"
+    if who == "pistonia":
+        return _lora_tag_from_meta(
+            meta,
+            ("pistonia_lora_name", "pistonia_character_lora_name", "pistonia_lora"),
+            "pistonia_lora_weight",
+            0.80,
+        ) or "<lora:pistonia_char:0.80>"
+    if who == "musica":
+        return _lora_tag_from_meta(
+            meta,
+            ("musica_lora_name", "musica_character_lora_name", "musica_lora"),
+            "musica_lora_weight",
+            0.80,
+        ) or "<lora:musica_char:0.80>"
+    if who == "securia":
+        return _lora_tag_from_meta(
+            meta,
+            ("securia_lora_name", "securia_character_lora_name", "securia_lora"),
+            "securia_lora_weight",
+            0.80,
+        ) or "<lora:securia_char:0.80>"
+    if who == "culinia":
+        return _lora_tag_from_meta(
+            meta,
+            ("culinia_lora_name", "culinia_character_lora_name", "culinia_lora"),
+            "culinia_lora_weight",
+            0.80,
+        ) or "<lora:culinia_char:0.80>"
+    if who == "kinetia":
+        return _lora_tag_from_meta(
+            meta,
+            ("kinetia_lora_name", "kinetia_character_lora_name", "kinetia_lora"),
+            "kinetia_lora_weight",
+            0.80,
+        ) or "<lora:kinetia_char:0.80>"
+    if who == "elsea":
+        return _lora_tag_from_meta(
+            meta,
+            ("elsea_lora_name", "elsea_character_lora_name", "elsea_lora"),
+            "elsea_lora_weight",
+            0.80,
+        ) or "<lora:elsea_char:0.80>"
+    if who == "static":
+        return _lora_tag_from_meta(
+            meta,
+            ("static_lora_name", "static_character_lora_name", "static_lora"),
+            "static_lora_weight",
+            0.80,
+        ) or "<lora:static_char:0.80>"
     return _lora_tag_from_meta(
         meta,
         ("character_lora_name", "character_lora"),
@@ -1700,16 +1956,21 @@ def _character_lora_tag_fragment(meta: dict) -> str:
     )
 
 
-def _inject_lora_prompt(prompt: str, root: Path | None) -> str:
+def _lora_name_key(tag: str) -> str:
+    m = re.match(r"^<lora:([^:>]+):", str(tag or "").strip(), re.I)
+    return m.group(1).strip().lower() if m else ""
+
+
+def _inject_lora_prompt(prompt: str, root: Path | None, *, character: str = "transferania") -> str:
     if root is None:
         return prompt[:4000]
     meta = load_forge_meta(root)
     parts = [prompt]
-    char_tag = _character_lora_tag_fragment(meta)
+    char_tag = _character_lora_tag_fragment(meta, character=character)
     if char_tag:
         parts.append(char_tag)
     tag = _lora_tag_fragment(meta)
-    if tag:
+    if tag and (_lora_name_key(tag) != _lora_name_key(char_tag) or not char_tag):
         parts.append(tag)
     suffix = str(meta.get("lora_prompt_suffix") or meta.get("lora_tags") or "").strip()
     if suffix:
@@ -1874,8 +2135,13 @@ def _default_settings(
         seed = _roll_seed(FORGE_RANDOM_SEED)
     else:
         seed = int(seed)
+    character = str(ctx.get("character") or "transferania").strip().lower()
     pose_extra, prompt_tags = _compose_pose_prompt(spec, ctx)
-    prompt = _inject_lora_prompt(f"{character_core_for_pose(pose_id)}, {pose_extra}", root)
+    prompt = _inject_lora_prompt(
+        f"{character_core_for_pose(pose_id, character=character)}, {pose_extra}",
+        root,
+        character=character,
+    )
     w = int(spec.get("width") or CANVAS_WIDTH)
     h = int(spec.get("height") or CANVAS_HEIGHT)
     if pose_id.startswith(("portrait-", "hc-", "hx-")) and root is not None and ctx.get("width") is None and ctx.get("height") is None:
@@ -2019,12 +2285,88 @@ def chat_art_recipe(plan: dict, mood: str, root: Path) -> dict:
     sampler = str(plan.get("sampler"))
     if sampler not in (DEFAULT_SAMPLER, "Euler"):
         sampler = DEFAULT_SAMPLER
-    prompt = (
-        "transferania, solo adult woman, long wavy purple hair, amber eyes, fully clothed, "
-        f"({expression}:1.5), {plan['prompt']}, {secrets.choice(accents)}"
-    )
+    character = str(plan.get("character") or "transferania").strip().lower()
+    if character == "else":
+        prompt = (
+            "else_char, 1girl, solo, dark-skinned female, dark skin, long pastel pink hair, blunt bangs, "
+            "cyan streaks, black flower hair ornament, glowing cyan eyes, fully clothed, "
+            f"({expression}:1.5), {plan['prompt']}, {secrets.choice(accents)}"
+        )
+    elif character == "forgia":
+        prompt = (
+            "forgia_char, 1girl, solo, fair skin, crimson red hair, long braided hair, single side braid over shoulder, "
+            "glowing golden amber eyes, brass steampunk goggles on head, gold forehead ornament, fully clothed, "
+            f"({expression}:1.5), {plan['prompt']}, {secrets.choice(accents)}"
+        )
+    elif character == "inventoria":
+        prompt = (
+            "inventoria_char, 1girl, solo, petite, shortstack, chibi-stylized, flat chest, fair skin, "
+            "pale silver-mint hair, short bob cut, chunky blunt bangs, sharp lime green eyes, slit pupils, "
+            "smug cat-like grin, fully clothed, "
+            f"({expression}:1.5), {plan['prompt']}, {secrets.choice(accents)}"
+        )
+    elif character == "pistonia":
+        prompt = (
+            "pistonia_char, 1girl, solo, adult woman, mature female, fair warm skin, "
+            "auburn hair, high ponytail, orange hair streaks, messy bangs, golden amber eyes, "
+            "orange-tinted mechanic goggles on head, fully clothed, "
+            f"({expression}:1.5), {plan['prompt']}, {secrets.choice(accents)}"
+        )
+    elif character == "musica":
+        prompt = (
+            "musica_char, 1girl, solo, petite, shortstack, chibi-stylized, "
+            "flat chest, small breasts, small stature, young-looking anime proportions, fair skin, "
+            "emerald green hair, long twintails, curled hair tips, blunt bangs, big bright green eyes, "
+            "black and red cat ear headphones on head, fluffy green cat tail, fully clothed, "
+            f"({expression}:1.5), {plan['prompt']}, {secrets.choice(accents)}"
+        )
+    elif character == "securia":
+        prompt = (
+            "securia_char, 1girl, solo, chibi, very petite, pint-sized, 3-head chibi proportions, "
+            "fair pale skin, electric cyan-blue hair, short bob cut, blunt bangs, large glowing cyan eyes, "
+            "black cybernetic comms headphones with glowing cyan emblem, fully clothed, "
+            f"({expression}:1.5), {plan['prompt']}, {secrets.choice(accents)}"
+        )
+    elif character == "culinia":
+        prompt = (
+            "culinia_char, 1girl, solo, adult woman, mature female, fair warm skin, "
+            "chestnut brown hair, messy side bun, long face-framing sidelocks, soft parted bangs, "
+            "warm golden amber eyes, curvy hourglass figure, wide hips, fully clothed, "
+            f"({expression}:1.5), {plan['prompt']}, {secrets.choice(accents)}"
+        )
+    elif character == "kinetia":
+        prompt = (
+            "kinetia_char, 1girl, solo, adult woman, mature female, athletic slender curvy figure, fair skin, "
+            "symmetrical platinum silver-white hair with cobalt blue underside, geometric bob cut, twin side braids, "
+            "precision blunt bangs, vivid electric-indigo eyes, symmetrical white and cobalt servo headband earpieces, "
+            "fully clothed, "
+            f"({expression}:1.5), {plan['prompt']}, {secrets.choice(accents)}"
+        )
+    elif character == "elsea":
+        prompt = (
+            "elsea_char, 1girl, solo, chibi, 2.5-head chibi proportions, big head, short torso, short slender legs, "
+            "thin limbs, pint-sized fairy sprite, huge expressive glowing magenta-pink eyes, flat chest, "
+            "dark-skinned female, dark skin, long pointed elf ears, pastel pink bob hair, blunt bangs, "
+            "twin black and pink butterfly hair ornaments, glowing pink and white butterfly fairy wings, "
+            "strictly sfw, fully clothed, "
+            f"({expression}:1.5), {plan['prompt']}, {secrets.choice(accents)}"
+        )
+    elif character == "static":
+        prompt = (
+            "static_char, 1girl, solo, adult petite female android, short-stature compact android, "
+            "dark gunmetal slate metal skin, oversized olive-gunmetal cranial housing helmet, "
+            "glowing yellow starburst crest light on top of helmet, enormous glowing yellow eyes with bright pupils, "
+            "long glowing yellow fiber-optic hair strands, black choker collar, narrow shoulders, flat chest, "
+            "safety-yellow accent seams, fully clothed, "
+            f"({expression}:1.5), {plan['prompt']}, {secrets.choice(accents)}"
+        )
+    else:
+        prompt = (
+            "transferania_char, 1girl, transferania, solo adult woman, long wavy purple hair, amber eyes, fully clothed, "
+            f"({expression}:1.5), {plan['prompt']}, {secrets.choice(accents)}"
+        )
     return {
-        "prompt": _inject_lora_prompt(prompt, root),
+        "prompt": _inject_lora_prompt(prompt, root, character=character),
         "negative_prompt": NEGATIVE + ", nudity, lingerie, explicit content, " + plan.get("negative", ""),
         "sampler_name": sampler,
         "scheduler": DEFAULT_SCHEDULER,
@@ -2571,8 +2913,28 @@ def http_get(*, role: str, nsfw: bool, root: Path | None = None) -> tuple[int, d
             "name": meta_cfg.get("lora_name") or meta_cfg.get("lora"),
             "weight": meta_cfg.get("lora_weight"),
             "prompt_suffix": meta_cfg.get("lora_prompt_suffix") or meta_cfg.get("lora_tags"),
-            "character_name": meta_cfg.get("character_lora_name") or meta_cfg.get("character_lora"),
-            "character_weight": meta_cfg.get("character_lora_weight"),
+            "character_name": meta_cfg.get("character_lora_name") or meta_cfg.get("character_lora") or "transferania_char",
+            "character_weight": meta_cfg.get("character_lora_weight") or 0.85,
+            "else_character_name": meta_cfg.get("else_lora_name") or "else_char",
+            "else_character_weight": meta_cfg.get("else_lora_weight") or 0.9,
+            "forgia_character_name": meta_cfg.get("forgia_lora_name") or "forgia_char",
+            "forgia_character_weight": meta_cfg.get("forgia_lora_weight") or 0.75,
+            "inventoria_character_name": meta_cfg.get("inventoria_lora_name") or "inventoria_char",
+            "inventoria_character_weight": meta_cfg.get("inventoria_lora_weight") or 0.85,
+            "pistonia_character_name": meta_cfg.get("pistonia_lora_name") or "pistonia_char",
+            "pistonia_character_weight": meta_cfg.get("pistonia_lora_weight") or 0.80,
+            "musica_character_name": meta_cfg.get("musica_lora_name") or "musica_char",
+            "musica_character_weight": meta_cfg.get("musica_lora_weight") or 0.80,
+            "securia_character_name": meta_cfg.get("securia_lora_name") or "securia_char",
+            "securia_character_weight": meta_cfg.get("securia_lora_weight") or 0.80,
+            "culinia_character_name": meta_cfg.get("culinia_lora_name") or "culinia_char",
+            "culinia_character_weight": meta_cfg.get("culinia_lora_weight") or 0.80,
+            "kinetia_character_name": meta_cfg.get("kinetia_lora_name") or "kinetia_char",
+            "kinetia_character_weight": meta_cfg.get("kinetia_lora_weight") or 0.80,
+            "elsea_character_name": meta_cfg.get("elsea_lora_name") or "elsea_char",
+            "elsea_character_weight": meta_cfg.get("elsea_lora_weight") or 0.80,
+            "static_character_name": meta_cfg.get("static_lora_name") or "static_char",
+            "static_character_weight": meta_cfg.get("static_lora_weight") or 0.80,
         },
         "features": {
             "intensity_levels": 5,
@@ -2591,6 +2953,26 @@ def http_get(*, role: str, nsfw: bool, root: Path | None = None) -> tuple[int, d
                 "lora_prompt_suffix",
                 "character_lora_name",
                 "character_lora_weight",
+                "else_lora_name",
+                "else_lora_weight",
+                "forgia_lora_name",
+                "forgia_lora_weight",
+                "inventoria_lora_name",
+                "inventoria_lora_weight",
+                "pistonia_lora_name",
+                "pistonia_lora_weight",
+                "musica_lora_name",
+                "musica_lora_weight",
+                "securia_lora_name",
+                "securia_lora_weight",
+                "culinia_lora_name",
+                "culinia_lora_weight",
+                "kinetia_lora_name",
+                "kinetia_lora_weight",
+                "elsea_lora_name",
+                "elsea_lora_weight",
+                "static_lora_name",
+                "static_lora_weight",
                 "character_sheet",
                 "character_sheet_weight",
                 "img2img_cn_weight",

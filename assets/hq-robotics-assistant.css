@@ -9,9 +9,18 @@
   --rb-ai-bg: var(--panel, #14202a);
   --rb-ai-ink: var(--text, #ebf4f6);
   --rb-ai-muted: var(--muted, #a9b8c0);
+  /* The floating chip is a dark instrument in the dark scheme; the light block below re-tunes it. */
+  --rb-ai-chip-border: #58c9b4;
+  --rb-ai-chip-bg: radial-gradient(circle at 35% 30%, #1d4954, #0f252c);
+  --rb-ai-chip-ink: #86e1cd;
+  --rb-ai-chip-shadow: 0 8px 26px rgba(6, 20, 32, .52), 0 0 14px rgba(94, 211, 188, .22);
   color: var(--rb-ai-ink);
   font-family: var(--font, system-ui);
 }
+/* The chat is a sheet over the workshop. While it is open it must outrank the companion chips and
+   their alert whispers (z 1179–1185), which otherwise float over its messages. The root itself is a
+   pointer-events:none layer, so chips outside the sheet keep working; closing restores the order. */
+.rb-ai:has(.rb-ai-chat:not([hidden])) { z-index: 1186; }
 .rb-ai .rb-ai-chip {
   position: fixed;
   z-index: 1;
@@ -19,13 +28,17 @@
   top: 50%;
   display: grid;
   place-items: center;
+  /* The glyph is sized in % of the chip. Without a definite track that percentage resolves against
+     an indefinite grid area and the face collapses to its 2 px borders (a 4 px dot). */
+  grid-template-columns: 100%;
+  grid-template-rows: 100%;
   width: clamp(44px, calc(62px * var(--image-chip-user-scale, 1)), min(36vw, 180px));
   aspect-ratio: 1;
   padding: 0;
-  border: 1px solid #499b91;
+  border: 1.5px solid var(--rb-ai-chip-border);
   border-radius: 28%;
-  background: #133038;
-  box-shadow: 0 7px 24px #091e3566;
+  background: var(--rb-ai-chip-bg);
+  box-shadow: var(--rb-ai-chip-shadow);
   cursor: grab;
   touch-action: none;
   user-select: none;
@@ -37,11 +50,11 @@
   width: 53%;
   aspect-ratio: 1;
   position: relative;
-  border: 2px solid #86e1cd;
+  border: 2px solid var(--rb-ai-chip-ink);
   border-radius: 29%;
   background:
-    radial-gradient(circle at 31% 44%, #86e1cd 0 8%, transparent 9%),
-    radial-gradient(circle at 69% 44%, #86e1cd 0 8%, transparent 9%);
+    radial-gradient(circle at 31% 44%, var(--rb-ai-chip-ink) 0 8%, transparent 9%),
+    radial-gradient(circle at 69% 44%, var(--rb-ai-chip-ink) 0 8%, transparent 9%);
   pointer-events: none;
 }
 .rb-ai-icon::after {
@@ -49,7 +62,7 @@
   position: absolute;
   inset: 68% 34% auto;
   height: 2px;
-  background: #86e1cd;
+  background: var(--rb-ai-chip-ink);
 }
 .rb-ai-chip img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; border-radius: inherit; pointer-events: none; }
 .rb-ai-alert-dot { position: absolute; top: 3px; right: 3px; width: 12px; height: 12px; border-radius: 50%; background: #d64555; border: 2px solid white; }
@@ -79,7 +92,7 @@
 }
 .rb-ai-chat h2 {
   margin: 0 auto 0 0;
-  font: 730 1rem var(--font, system-ui);
+  font: 730 var(--text-md) var(--font, system-ui);
   letter-spacing: -.018em;
 }
 .rb-ai-chat button {
@@ -89,15 +102,15 @@
   padding: 6px 9px;
   background: var(--rb-ai-bg);
   color: var(--rb-ai-ink);
-  font: 650 .82rem var(--font, system-ui);
+  font: 650 var(--text-sm) var(--font, system-ui);
 }
 .rb-ai-chat button:hover:enabled { background: color-mix(in srgb, var(--rb-ai-bg) 90%, var(--rb-ai-ink)); }
 .rb-ai-chat button:disabled { opacity: .5; }
-.rb-ai-chat [data-chat="close"] { min-width: 44px; font-size: 1.15rem; }
+.rb-ai-chat [data-chat="close"] { min-width: 44px; font-size: var(--text-lg); }
 .rb-ai-options { display: flex; flex-wrap: wrap; gap: 5px; padding: 7px 10px; border-bottom: 1px solid var(--rb-ai-border); }
 .rb-ai-log { min-height: 70px; overflow: auto; overscroll-behavior: contain; padding: 10px; }
 .rb-ai-log p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
-.rb-ai-empty { padding: 6px; color: var(--rb-ai-muted); font-size: .86rem; }
+.rb-ai-empty { padding: 6px; color: var(--rb-ai-muted); font-size: var(--text-sm); }
 .rb-ai-message {
   width: fit-content;
   max-width: 100%;
@@ -105,10 +118,10 @@
   margin-bottom: 8px;
   border-radius: 8px;
   background: color-mix(in srgb, var(--rb-ai-bg) 94%, var(--rb-ai-ink));
-  font-size: .86rem;
+  font-size: var(--text-sm);
 }
 .rb-ai-message.is-user { margin-inline-start: auto; background: color-mix(in srgb, var(--rb-ai-bg) 83%, #328f80); }
-.rb-ai-message > strong { display: block; margin-bottom: 4px; color: var(--rb-ai-muted); font-size: .72rem; }
+.rb-ai-message > strong { display: block; margin-bottom: 4px; color: var(--rb-ai-muted); font-size: var(--text-xs); }
 .rb-ai-script {
   display: grid;
   gap: 5px;
@@ -120,10 +133,220 @@
   overflow-wrap: anywhere;
 }
 .rb-ai-script summary { display: grid; align-content: center; min-height: 44px; cursor: pointer; }
-.rb-ai-script .rb-ai-stage { color: var(--rb-ai-muted); font-size: .78rem; }
+.rb-ai-script .rb-ai-stage { color: var(--rb-ai-muted); font-size: var(--text-sm); }
 .rb-ai-script ol { padding-inline-start: 22px; margin-block: 5px; }
 .rb-ai-chat form { display: flex; align-items: end; gap: 6px; padding: 8px 10px; border-top: 1px solid var(--rb-ai-border); }
-.rb-ai-chat textarea { flex: 1; min-width: 0; padding: 6px 8px; resize: vertical; color: inherit; background: var(--rb-ai-bg); border: 1px solid var(--rb-ai-border); border-radius: 7px; font: inherit; font-size: 1rem; }
+.rb-ai-chat textarea { flex: 1; min-width: 0; padding: 6px 8px; resize: vertical; color: inherit; background: var(--rb-ai-bg); border: 1px solid var(--rb-ai-border); border-radius: 7px; font: inherit; font-size: var(--text-md); }
 .rb-ai-chat [data-chat="send"]:enabled { background: #09665d; color: white; }
-.rb-ai-status { margin: 0; padding: 0 10px 8px; color: var(--rb-ai-muted); font-size: .78rem; }
+.rb-ai-status { margin: 0; padding: 0 10px 8px; color: var(--rb-ai-muted); font-size: var(--text-sm); }
 .rb-ai-status:empty { display: none; }
+
+/* On a phone-width page the floating chip sat over the pilot's +/- buttons; the header's
+   Kinétia button opens the same chat there. */
+@media (max-width: 620px) { .rb-ai .rb-ai-chip { display: none; } }
+
+/* Both chip rows scroll sideways and hide their scrollbar, so the edge fade is the only cue that
+   more chips wait off-screen — at every width, since the card is 430 px wide on a desktop too.
+   is-start: earlier chips are scrolled out of view. is-end: more chips wait on the right. The masks
+   are static, so there is no motion to reduce. */
+.rb-ai-chips.is-overflow:not(.is-start),
+.rb-ai-macros.is-overflow:not(.is-start) {
+  mask-image: linear-gradient(90deg, #000 calc(100% - 26px), transparent);
+}
+.rb-ai-chips.is-overflow.is-start,
+.rb-ai-macros.is-overflow.is-start {
+  mask-image: linear-gradient(90deg, transparent, #000 22px);
+}
+.rb-ai-chips.is-overflow.is-start:not(.is-end),
+.rb-ai-macros.is-overflow.is-start:not(.is-end) {
+  mask-image: linear-gradient(90deg, transparent, #000 22px, #000 calc(100% - 26px), transparent);
+}
+/* The macro pills are drawn in the dark panel's teal; on the light scheme's white panel they wash
+   out, so they take the house green (the same #08724f as the light-theme accent). */
+@media (prefers-color-scheme: light) {
+  body:not(.theme-midnight):not(.theme-oled) .rb-ai .rb-ai-macros button {
+    border-color: color-mix(in srgb, #08724f 42%, var(--rb-ai-border));
+    background: color-mix(in srgb, #08724f 9%, transparent);
+    color: #08724f;
+  }
+  body:not(.theme-midnight):not(.theme-oled) .rb-ai .rb-ai-macros button:hover {
+    background: color-mix(in srgb, #08724f 17%, transparent);
+  }
+  /* The floating chip keeps its instrument shape but swaps its dark glass for the light panel's
+     house green: glyph #08724f on #fff/#eaf2ef stays above 5:1. Dark keeps every teal above. */
+  body:not(.theme-midnight):not(.theme-oled) .rb-ai {
+    --rb-ai-accent: #08724f;
+    --rb-ai-chip-border: color-mix(in srgb, #08724f 70%, #ffffff);
+    --rb-ai-chip-bg: radial-gradient(circle at 35% 30%, #ffffff, #eaf2ef);
+    --rb-ai-chip-ink: #08724f;
+    --rb-ai-chip-shadow: 0 8px 24px rgba(6, 40, 34, .18), 0 0 14px rgba(8, 114, 79, .14);
+  }
+  /* Mood rings are drawn in the dark scheme's neon; on a white chip they need the dark palette. */
+  body:not(.theme-midnight):not(.theme-oled) .rb-ai.is-busy .rb-ai-chip,
+  body:not(.theme-midnight):not(.theme-oled) .rb-ai.is-speaking .rb-ai-chip,
+  body:not(.theme-midnight):not(.theme-oled) .rb-ai.is-happy .rb-ai-chip { border-color: #08724f; }
+  body:not(.theme-midnight):not(.theme-oled) .rb-ai.is-caring .rb-ai-chip { border-color: #8b5e00; }
+  body:not(.theme-midnight):not(.theme-oled) .rb-ai.is-focused .rb-ai-chip { border-color: #2b63c7; }
+  body:not(.theme-midnight):not(.theme-oled) .rb-ai.is-alert .rb-ai-chip { border-color: #b4233d; }
+  body:not(.theme-midnight):not(.theme-oled) .rb-ai.is-curious .rb-ai-chip { border-color: #5a40af; }
+  /* Amber on a white card is ~1.6:1; the light-scheme warning brown keeps the same meaning. It is
+     darker than the page's #8b5e00 because a tool pill also sits on the user message's teal tint. */
+  body:not(.theme-midnight):not(.theme-oled) .rb-ai .rb-ai-tool-btn {
+    border-color: color-mix(in srgb, #6f4b00 55%, transparent);
+    background: color-mix(in srgb, #6f4b00 8%, transparent);
+    color: #6f4b00;
+  }
+  body:not(.theme-midnight):not(.theme-oled) .rb-ai .rb-ai-tool-btn:hover {
+    background: color-mix(in srgb, #6f4b00 16%, transparent);
+  }
+  body:not(.theme-midnight):not(.theme-oled) .rb-ai .rb-ai-tool-btn:focus-visible { outline-color: #6f4b00; }
+}
+
+/* Phone: the chips need a thumb-sized target and room to land when the row snaps. */
+@media (max-width: 620px) {
+  .rb-ai-chips,
+  .rb-ai-macros { scroll-padding-inline: 12px; }
+  /* More specific than the base `.rb-ai-chips button` rule, which sits later in the file. */
+  .rb-ai .rb-ai-chips button,
+  .rb-ai .rb-ai-macros button { min-height: 34px; padding-inline: 12px; }
+}
+
+.rb-ai-macros {
+  display: flex;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  scrollbar-width: none;
+  gap: 5px;
+  padding: 5px 12px 4px;
+  border-top: 1px solid var(--rb-line, #2c3a48);
+}
+.rb-ai-macros::-webkit-scrollbar,
+.rb-ai-chips::-webkit-scrollbar { display: none; }
+.rb-ai-macros button,
+.rb-ai-macro-btn {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  min-height: 28px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, #117f6c 55%, var(--rb-line, #2c3a48));
+  background: color-mix(in srgb, #117f6c 16%, transparent);
+  color: #73edce;
+  font-size: var(--text-xs);
+  font-weight: 620;
+  cursor: pointer;
+  transition: background .15s ease, border-color .15s ease, transform .1s ease;
+}
+.rb-ai-macro-btn {
+  margin-top: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.rb-ai-macros button:hover,
+.rb-ai-macro-btn:hover {
+  background: color-mix(in srgb, #117f6c 28%, transparent);
+}
+.rb-ai-macros button:active,
+.rb-ai-macro-btn:active,
+.rb-ai-chips button:active {
+  transform: scale(.97);
+}
+.rb-ai-macros button:focus-visible,
+.rb-ai-macro-btn:focus-visible,
+.rb-ai-chips button:focus-visible {
+  outline: 2px solid var(--rb-ai-accent);
+  outline-offset: 2px;
+}
+.rb-ai-chips {
+  display: flex;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  scrollbar-width: none;
+  gap: 5px;
+  padding: 5px 12px 3px;
+  border-top: 1px solid var(--rb-line, #2c3a48);
+}
+.rb-ai-chips button {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  min-height: 25px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  border: 1px dashed color-mix(in srgb, var(--rb-ai-accent) 45%, transparent);
+  background: transparent;
+  color: var(--rb-ai-ink);
+  font-size: var(--text-xs);
+  cursor: pointer;
+  transition: background .15s ease, border-color .15s ease, transform .1s ease;
+}
+.rb-ai-chips button:hover {
+  background: color-mix(in srgb, var(--rb-ai-accent) 14%, transparent);
+}
+.rb-ai-preflight {
+  margin: 6px 0;
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, #117f6c 45%, var(--rb-ai-border));
+  background: color-mix(in srgb, #117f6c 10%, transparent);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+}
+.rb-ai-preflight.is-warn {
+  border-color: rgba(255, 193, 118, .55);
+  background: rgba(255, 193, 118, .1);
+}
+
+@keyframes rb-ai-orbit {
+  0%, 100% { box-shadow: 0 8px 26px rgba(6, 20, 32, .52), 0 0 0 2px rgba(115, 237, 206, .35), 0 0 18px rgba(115, 237, 206, .45); }
+  50% { box-shadow: 0 8px 26px rgba(6, 20, 32, .52), 0 0 0 6px rgba(115, 237, 206, .18), 0 0 26px rgba(115, 237, 206, .72); }
+}
+.rb-ai.is-busy .rb-ai-chip,
+.rb-ai.is-speaking .rb-ai-chip {
+  border-color: #73edce;
+  animation: rb-ai-orbit 1.4s ease-in-out infinite;
+}
+.rb-ai.is-happy .rb-ai-chip {
+  border-color: #73edce;
+  box-shadow: 0 8px 26px rgba(6, 20, 32, .52), 0 0 0 4px rgba(115, 237, 206, .28), 0 0 24px rgba(115, 237, 206, .65);
+}
+.rb-ai.is-caring .rb-ai-chip {
+  border-color: #ffc176;
+  box-shadow: 0 8px 26px rgba(6, 20, 32, .52), 0 0 0 4px rgba(255, 193, 118, .25), 0 0 22px rgba(255, 193, 118, .55);
+}
+.rb-ai.is-focused .rb-ai-chip {
+  border-color: #6bc4ff;
+  box-shadow: 0 8px 26px rgba(6, 20, 32, .52), 0 0 0 4px rgba(107, 196, 255, .28), 0 0 24px rgba(107, 196, 255, .6);
+}
+.rb-ai.is-alert .rb-ai-chip {
+  border-color: #ff7891;
+  box-shadow: 0 8px 26px rgba(6, 20, 32, .52), 0 0 0 5px rgba(255, 120, 145, .32), 0 0 26px rgba(255, 120, 145, .7);
+}
+.rb-ai.is-curious .rb-ai-chip {
+  border-color: #c59bff;
+  box-shadow: 0 8px 26px rgba(6, 20, 32, .52), 0 0 0 4px rgba(197, 155, 255, .28), 0 0 24px rgba(197, 155, 255, .62);
+}
+@media (prefers-reduced-motion: reduce) {
+  .rb-ai.is-busy .rb-ai-chip,
+  .rb-ai.is-speaking .rb-ai-chip { animation: none; }
+}
+.rb-ai-tool-btn {
+  margin-top: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 28px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 193, 118, .55);
+  background: rgba(255, 193, 118, .12);
+  color: #ffc176;
+  font-size: var(--text-xs);
+  font-weight: 620;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background .15s ease, border-color .15s ease, transform .1s ease;
+}
+.rb-ai-tool-btn:hover { background: rgba(255, 193, 118, .22); }
+.rb-ai-tool-btn:active { transform: scale(.97); }
+.rb-ai-tool-btn:focus-visible { outline: 2px solid #ffc176; outline-offset: 2px; }

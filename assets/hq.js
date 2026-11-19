@@ -163,14 +163,22 @@
       const list = $("#hq-attention");
       if (list) {
         const items = snap.attention || [];
+        // Each row carries the place that fixes it: the banner is only right for hero-level notices.
         list.innerHTML = items.length
           ? items
               .map(
                 (a) =>
-                  `<li><strong>${esc(a.title || "")}</strong><div class="meta">${esc(a.detail || "")}</div></li>`
+                  `<li><button type="button" class="attention-row" data-attention-target="${esc(a.target || "")}">` +
+                  `<strong>${esc(a.title || "")}</strong><span class="meta">${esc(a.detail || "")}</span></button></li>`
               )
               .join("")
           : "";
+        list.querySelectorAll("[data-attention-target]").forEach((btn) => {
+          btn.addEventListener("click", () => {
+            const target = btn.dataset.attentionTarget;
+            if (target) goToSection(target);
+          });
+        });
       }
       const quick = $("#hq-quick-scenes");
       if (quick) {
@@ -644,34 +652,79 @@
     try {
       const data = await api("/api/backups");
       const items = data.backups || [];
+      paintBackupSummary(data.summary || { count: items.length });
       el.innerHTML = items.length
         ? items
-            .map(
-              (b) =>
-                `<li><strong>${esc(b.id || "")}</strong><div class="meta">${esc(String(b.folders || ""))} dossier(s)</div>` +
-                `<div class="row hq-actions">` +
+            .map((b) => {
+              const id = esc(b.id);
+              return `<li><strong>${id}</strong><div class="meta">${esc(String(b.folders || ""))} dossier(s)</div>` +
+                `<div class="row hq-actions"><button type="button" class="danger" data-restore-open="${id}" aria-expanded="false" aria-controls="restore-pick-${id}">Restaurer…</button></div>` +
+                `<div class="hq-restore-pick" id="restore-pick-${id}" data-restore-pick="${id}" hidden>` +
+                `<span class="hint">Écraser :</span>` +
                 ["Inbox", "Uni", "Print"]
-                  .map(
-                    (folder) =>
-                      `<button type="button" class="danger" data-restore="${esc(b.id)}" data-folder="${folder}">Restaurer ${folder}</button>`
-                  )
+                  .map((folder) => `<button type="button" class="danger" data-restore="${id}" data-folder="${folder}">${folder}</button>`)
                   .join("") +
-                `</div></li>`
-            )
+                `<button type="button" class="secondary" data-restore-cancel="${id}">Annuler</button>` +
+                `</div></li>`;
+            })
             .join("")
         : '<li class="hint">Aucune sauvegarde pour l\'instant.</li>';
+      const pickFor = (id) => el.querySelector('[data-restore-pick="' + id + '"]');
+      const openButtons = el.querySelectorAll("[data-restore-open]");
+      const setOpen = (btn, open) => btn.setAttribute("aria-expanded", open ? "true" : "false");
+      // One visible action per backup: « Restaurer… » reveals the three destination folders, for that backup only.
+      openButtons.forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const pick = pickFor(btn.dataset.restoreOpen);
+          if (!pick) return;
+          const opening = pick.hidden;
+          el.querySelectorAll("[data-restore-pick]").forEach((other) => { other.hidden = true; });
+          openButtons.forEach((other) => setOpen(other, other === btn && opening));
+          pick.hidden = !opening;
+          if (opening) pick.querySelector("[data-restore]")?.focus();
+        });
+      });
+      el.querySelectorAll("[data-restore-cancel]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const id = btn.dataset.restoreCancel;
+          const pick = pickFor(id);
+          if (pick) pick.hidden = true;
+          openButtons.forEach((other) => {
+            if (other.dataset.restoreOpen === id) { setOpen(other, false); other.focus(); }
+          });
+        });
+      });
       el.querySelectorAll("[data-restore]").forEach((btn) => {
         btn.addEventListener("click", async () => {
           const folder = btn.dataset.folder;
-          if (!confirm("Écraser " + folder + " avec le backup " + btn.dataset.restore + " ?")) return;
+          // Restoring overwrites a folder: no single click can do it, and a fresh backup is taken first.
+          const typed = window.prompt(
+            "Écraser " + folder + " avec le backup " + btn.dataset.restore + " ?\nTape " + folder + " pour confirmer."
+          );
+          if (typed !== folder) return;
           try {
             const busy = typeof withBusy === "function" ? withBusy : async (_label, fn) => fn();
-            const res = await busy("Restauration…", () => api("/api/backup/restore", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ id: btn.dataset.restore, folder, confirm: true }),
-            }));
-            if (typeof toast === "function") toast((res.copied || 0) + " fichier(s) restauré(s)");
+            const res = await busy("Restauration…", async () => {
+              try {
+                await api("/api/backup", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: "{}",
+                });
+              } catch (_) {}
+              return api("/api/backup/restore", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ id: btn.dataset.restore, folder, confirm: true }),
+              });
+            });
+            if (typeof toast === "function") toast((res.copied || 0) + " fichier(s) restauré(s) — sauvegarde de sécurité créée");
+            loadBackups();
+            const pick = pickFor(btn.dataset.restore);
+            if (pick) pick.hidden = true;
+            openButtons.forEach((other) => {
+              if (other.dataset.restoreOpen === btn.dataset.restore) setOpen(other, false);
+            });
           } catch (e) {
             if (typeof toast === "function") toast(e.message, "err");
           }
@@ -913,6 +966,11 @@
     return window.matchMedia("(hover: hover) and (pointer: fine)").matches;
   }
 
+  function normalizedHelpText(value) {
+    // Case, spacing and punctuation do not make a different label.
+    return value.toLocaleLowerCase("fr").replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+  }
+
   function helpTextFor(target) {
     const own = (target.getAttribute("data-help") || "").trim();
     if (own) return own;
@@ -921,6 +979,10 @@
     const aria = (target.getAttribute("aria-label") || "").trim();
     if (!aria) return "";
     const visible = (target.textContent || "").trim();
+    // A visible label that already says the same thing must not become noise.
+    // Exact matches cover most controls; normalisation covers punctuation/case
+    // differences such as “Coffre perso, ouvert” beside “Coffre perso Ouvert”.
+    if (aria === visible || normalizedHelpText(aria) === normalizedHelpText(visible)) return "";
     // A symbol button (‹, ×, ⋯) has no readable label of its own, and a name that
     // says more than the label does is worth showing; anything else would just
     // repeat the button and add noise.
@@ -1028,7 +1090,9 @@
   }
 
   function helpTargetFrom(node) {
-    return node && node.closest ? node.closest("[data-help]") : null;
+    // JS-built controls often have only an accessible name; helpTextFor() turns
+    // that into a tooltip, so the selector must find them too.
+    return node && node.closest ? node.closest("[data-help], button[aria-label]:not([data-help-skip])") : null;
   }
 
   function helpTargetAt(ev) {
@@ -1045,8 +1109,11 @@
     helpReady = true;
     window.hqHideHelp = hideHelp;
     document.addEventListener("keydown", (ev) => {
-      if (ev.key === "Tab" || ev.key.indexOf("Arrow") === 0) helpFromKeyboard = true;
-      if (ev.key === "Escape") hideHelp();
+      // A synthetic or exotic event can arrive without a key string; the global
+      // shortcut listener must never throw on one.
+      const key = ev && typeof ev.key === "string" ? ev.key : "";
+      if (key === "Tab" || key.indexOf("Arrow") === 0) helpFromKeyboard = true;
+      if (key === "Escape") hideHelp();
     }, true);
     document.addEventListener("pointerdown", () => {
       helpFromKeyboard = false;
@@ -1123,12 +1190,22 @@
     window.addEventListener("resize", () => hideHelp());
   }
 
+  function hqSectionFromHash() {
+    const m = /^#plus\/([^/?#]+)/.exec(location.hash || "");
+    return m ? decodeURIComponent(m[1]) : "";
+  }
+  window.hqSectionFromHash = hqSectionFromHash;
+
   function jumpToSection(id, focus = false) {
     const target = document.getElementById(id);
     if (!target) return;
     if (id === "hq-banner") setDisclosure($("#hq-attention-toggle"), true);
     if (id === "home-devices") $("#home-devices-off[aria-expanded='false']")?.click();
     if (target.tagName === "DETAILS") target.open = true;
+    // Section links are addressable: #plus/system-backups reopens the same place on reload.
+    if (id.indexOf("system-") === 0 && document.body.dataset.view === "plus") {
+      history.replaceState(null, "", "#plus/" + id);
+    }
     if (focus) {
       const heading = target.querySelector(":scope > summary, h2") || target;
       if (heading.tabIndex < 0) heading.setAttribute("tabindex", "-1");
@@ -1139,14 +1216,33 @@
   }
   window.hqJumpToSection = (id) => jumpToSection(id, true);
 
+  // Every data-jump on the page (jump list, État tiles, attention rows) goes through one place, and switches view
+  // first when the target lives in another panel instead of scrolling a hidden element.
+  function goToSection(id) {
+    const el = id ? document.getElementById(id) : null;
+    if (!el) return;
+    const panel = el.closest ? el.closest("[data-panel]") : null;
+    const view = panel ? panel.dataset.panel : "";
+    if (view && view !== document.body.dataset.view && typeof window.setView === "function") {
+      window.setView(view, { section: id });
+      return;
+    }
+    jumpToSection(id, true);
+  }
+  window.hqGoToSection = goToSection;
+
   function setupSystemNav() {
-    const nav = document.querySelector('nav[aria-label="Sections Système"]');
-    if (!nav || nav.dataset.ready) return;
-    nav.dataset.ready = "1";
-    nav.addEventListener("click", (ev) => {
+    if (document.body.dataset.systemNav === "1") return;
+    document.body.dataset.systemNav = "1";
+    document.addEventListener("click", (ev) => {
       const btn = ev.target && ev.target.closest ? ev.target.closest("[data-jump]") : null;
-      if (!btn || !nav.contains(btn)) return;
-      jumpToSection(btn.dataset.jump);
+      if (!btn) return;
+      const panel = btn.closest("[data-panel]");
+      if (!panel || panel.dataset.panel !== "plus") return;
+      ev.preventDefault();
+      goToSection(btn.dataset.jump);
+      const nav = btn.closest("nav.sys-jump");
+      if (!nav) return;
       nav.querySelectorAll("[data-jump]").forEach((node) => {
         const on = node === btn;
         node.classList.toggle("is-current", on);
@@ -1154,6 +1250,153 @@
         else node.removeAttribute("aria-current");
       });
     });
+  }
+
+  function fmtAge(sec) {
+    const s = Math.max(0, Math.round(sec));
+    if (s < 90) return "moins d'une minute";
+    if (s < 3600) return Math.round(s / 60) + " min";
+    if (s < 86400) return Math.round(s / 3600) + " h";
+    return Math.round(s / 86400) + " j";
+  }
+
+  function paintBackupSummary(summary) {
+    const box = $("#hq-backup-summary");
+    if (!box) return;
+    const count = Number(summary.count || 0);
+    if (!count) {
+      box.textContent = "Aucune sauvegarde enregistrée.";
+      box.dataset.stale = "1";
+      return;
+    }
+    const age = summary.newest ? Math.max(0, Date.now() / 1000 - summary.newest) : 0;
+    const size = typeof fmtBytes === "function" ? fmtBytes(summary.bytes || 0) : "";
+    box.textContent =
+      count + " sauvegarde" + (count > 1 ? "s" : "") +
+      (age ? " · dernière il y a " + fmtAge(age) : "") +
+      (size ? " · " + size + " sur disque" : "");
+    box.dataset.stale = age > 86400 ? "1" : "0";
+  }
+
+  // Sections fetch their own data when revealed (a <details> opened or a panel scrolled near), never all on entry.
+  const revealSeen = new Set();
+
+  function whenRevealed(el, key, fn) {
+    if (!el || revealSeen.has(key)) return;
+    const run = () => {
+      if (revealSeen.has(key)) return;
+      revealSeen.add(key);
+      fn();
+    };
+    if (el.tagName === "DETAILS") {
+      if (el.open) run();
+      else el.addEventListener("toggle", () => { if (el.open) run(); });
+      return;
+    }
+    if (typeof IntersectionObserver === "function") {
+      const io = new IntersectionObserver((entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) { io.disconnect(); run(); }
+      }, { rootMargin: "300px" });
+      io.observe(el);
+      return;
+    }
+    run();
+  }
+
+  // The view scripts that gate their own first fetch (users, mini-quests, NVIDIA) share this rule.
+  window.hqWhenRevealed = whenRevealed;
+
+  function setupOpenPrefs() {
+    document.querySelectorAll("[data-open-key]").forEach((el) => {
+      if (el.dataset.openBound === "1") return;
+      el.dataset.openBound = "1";
+      const key = "hq_open_" + el.dataset.openKey;
+      let stored = null;
+      try { stored = localStorage.getItem(key); } catch (_) {}
+      if (stored === "1" || stored === "0") el.open = stored === "1";
+      el.addEventListener("toggle", () => {
+        try { localStorage.setItem(key, el.open ? "1" : "0"); } catch (_) {}
+      });
+    });
+  }
+
+  async function downloadBundle() {
+    try {
+      const data = await api("/api/diag/session-bundle?limit=50", { timeoutMs: 15000 });
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "hq-diagnostic-" + new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-") + ".json";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 4000);
+    } catch (e) {
+      if (typeof toast === "function") toast(e.message || "Export diagnostic impossible", "err");
+    }
+  }
+
+  function resetBrowserPrefs() {
+    if (!window.confirm("Réinitialiser les préférences de ce navigateur (Transferania, sons, sections ouvertes) ?")) return;
+    const keep = new Set(["tf_hq_mode", "tf_hq_view"]);
+    const keys = [];
+    for (let i = 0; i < localStorage.length; i += 1) {
+      const key = localStorage.key(i);
+      if (key && !keep.has(key) && /^(hq_|tf_)/.test(key)) keys.push(key);
+    }
+    keys.forEach((key) => { try { localStorage.removeItem(key); } catch (_) {} });
+    window.location.reload();
+  }
+
+  function setupSystemFilter() {
+    const input = $("#sys-find");
+    const panel = document.querySelector('[data-panel="plus"]');
+    if (!input || !panel) return;
+    const sections = Array.prototype.slice.call(panel.querySelectorAll('section[id^="system-"], details[id^="system-"]'));
+    const empty = $("#sys-find-empty");
+    input.addEventListener("input", () => {
+      const query = input.value.trim().toLowerCase();
+      let shown = 0;
+      sections.forEach((sec) => {
+        const hit = !query || (sec.textContent || "").toLowerCase().indexOf(query) !== -1;
+        sec.hidden = !hit;
+        if (hit) shown += 1;
+      });
+      if (empty) empty.hidden = shown > 0;
+    });
+  }
+
+  function setupSystemTools() {
+    const backupBtn = $("#btn-backup-now");
+    if (backupBtn && !backupBtn.dataset.ready) {
+      backupBtn.dataset.ready = "1";
+      backupBtn.addEventListener("click", async () => {
+        try {
+          const busy = typeof withBusy === "function" ? withBusy : async (_label, fn) => fn();
+          await busy("Sauvegarde…", () => api("/api/backup", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: "{}",
+          }));
+          if (typeof toast === "function") toast("Sauvegarde créée");
+          loadBackups();
+        } catch (e) {
+          if (typeof toast === "function") toast(e.message || "Sauvegarde impossible", "err");
+        }
+      });
+    }
+    const bundle = $("#btn-diag-bundle");
+    if (bundle && !bundle.dataset.ready) {
+      bundle.dataset.ready = "1";
+      bundle.addEventListener("click", downloadBundle);
+    }
+    const reset = $("#btn-reset-prefs");
+    if (reset && !reset.dataset.ready) {
+      reset.dataset.ready = "1";
+      reset.addEventListener("click", resetBrowserPrefs);
+    }
+    setupSystemFilter();
   }
 
   function boot() {
@@ -1243,18 +1486,21 @@
     setupHomeDisclosures();
     window.hqLoadSnapshot = loadSnapshot;
     loadSnapshot();
-    loadEvents();
-    loadBrief();
-    loadBackups();
-    loadRules();
     loadHostSpark();
+    setupOpenPrefs();
+    setupSystemTools();
+    // Sections fetch their own data when revealed, not all at once on entry to the view.
+    whenRevealed($("#system-backups"), "backups", loadBackups);
+    whenRevealed($("#system-journal"), "events", loadEvents);
+    whenRevealed($("#system-automations"), "rules", loadRules);
+    whenRevealed($("#hq-brief"), "brief", loadBrief);
     window.hqOpenDevice = openDevice;
     if (document.body.classList.contains("wall")) {
       setInterval(loadSnapshot, 15000);
     } else {
       setInterval(() => {
         loadSnapshot();
-        loadEvents();
+        if (revealSeen.has("events")) loadEvents();
       }, 20000);
     }
   }

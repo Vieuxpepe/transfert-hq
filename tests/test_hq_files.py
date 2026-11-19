@@ -162,12 +162,101 @@ class PeekTests(Base):
         self.assertEqual(set(out["folders"]), {"Inbox/Photos", "Uni"})
 
 
+class ZipTests(Base):
+    def test_make_zip_files_and_dirs(self):
+        import io
+        import zipfile
+        self.put("Inbox/doc.txt", b"hello doc")
+        self.put("Uni/folder/sub.pdf", b"pdf data")
+        code, payload = hf.make_zip(["Inbox/doc.txt", "Uni/folder"])
+        self.assertEqual(code, 200)
+        with zipfile.ZipFile(io.BytesIO(payload), "r") as zf:
+            names = zf.namelist()
+            self.assertIn("Inbox/doc.txt", names)
+            self.assertIn("Uni/folder/sub.pdf", names)
+            self.assertEqual(zf.read("Inbox/doc.txt"), b"hello doc")
+            self.assertEqual(zf.read("Uni/folder/sub.pdf"), b"pdf data")
+
+    def test_make_zip_empty_or_invalid_refused(self):
+        with self.assertRaises(hf.FilesError):
+            hf.make_zip([])
+        with self.assertRaises(hf.FilesError):
+            hf.make_zip(["Inbox/absent.txt"])
+
+
+class HashAndDuplicateTests(Base):
+    def test_file_hash(self):
+        self.put("Inbox/sample.txt", b"precision_torque_titan")
+        res = hf.file_hash("Inbox/sample.txt")
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["size"], len(b"precision_torque_titan"))
+        import hashlib
+        expected = hashlib.sha256(b"precision_torque_titan").hexdigest()
+        self.assertEqual(res["sha256"], expected)
+
+    def test_find_duplicates(self):
+        self.put("Inbox/file1.bin", b"same_content_bytes")
+        self.put("Inbox/file2.bin", b"same_content_bytes")
+        self.put("Inbox/different.bin", b"different_bytes")
+        res = hf.find_duplicates("Inbox")
+        self.assertTrue(res["ok"])
+        self.assertEqual(len(res["duplicates"]), 1)
+        names = {item["name"] for item in res["duplicates"][0]}
+        self.assertEqual(names, {"file1.bin", "file2.bin"})
+
+
+class UnzipTests(Base):
+    def test_unzip_safe(self):
+        import io
+        import zipfile
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("extracted/note.txt", "unzipped content")
+        self.put("Inbox/archive.zip", buf.getvalue())
+        res = hf.unzip("Inbox/archive.zip", "Inbox/unpacked")
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["extracted"], 1)
+        self.assertTrue((self.root / "Inbox/unpacked/extracted/note.txt").exists())
+        self.assertEqual((self.root / "Inbox/unpacked/extracted/note.txt").read_text(encoding="utf-8"), "unzipped content")
+
+
+class RecentAndSiphonTests(Base):
+    def test_recent_files(self):
+        self.put("Inbox/doc_old.txt", b"old")
+        self.put("Uni/doc_new.txt", b"new")
+        res = hf.recent_files(limit=10)
+        self.assertTrue(res["ok"])
+        self.assertGreaterEqual(len(res["files"]), 2)
+        names = [f["name"] for f in res["files"]]
+        self.assertIn("doc_new.txt", names)
+        self.assertIn("doc_old.txt", names)
+
+    def test_siphon_invalid_url(self):
+        with self.assertRaises(hf.FilesError):
+            hf.siphon_url("ftp://example.com/file.bin", "Inbox")
+        with self.assertRaises(hf.FilesError):
+            hf.siphon_url("not_a_url", "Inbox")
+
+    def test_siphon_bad_folder(self):
+        with self.assertRaises(hf.FilesError):
+            hf.siphon_url("https://example.com/test.png", "../outside")
+
+    def test_recent_bounds(self):
+        res_zero = hf.recent_files(limit=0)
+        self.assertTrue(res_zero["ok"])
+        self.assertLessEqual(len(res_zero["files"]), 1)
+        res_high = hf.recent_files(limit=999)
+        self.assertTrue(res_high["ok"])
+        self.assertLessEqual(len(res_high["files"]), 50)
+
+
 class WiringTests(unittest.TestCase):
     def test_bridge(self):
         src = (Path(__file__).resolve().parents[1] / "iphone_bridge.py").read_text(encoding="utf-8")
         self.assertIn('raw in ("/api/files/trash", "/api/files/peek")', src)
         self.assertIn('raw == "/api/files"', src)
-        self.assertIn('<script src="/assets/hq-files.js"></script>', src)
+        self.assertIn('raw == "/api/files/zip"', src)
+        self.assertRegex(src, r'<script src="/assets/hq-files\.js"( defer)?></script>')
 
 
 if __name__ == "__main__":

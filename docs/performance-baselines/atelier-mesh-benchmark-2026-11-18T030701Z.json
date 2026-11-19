@@ -1,0 +1,130 @@
+{
+  "schema": "transfert-hq-atelier-mesh-benchmark/v1",
+  "capturedAtUtc": "2026-11-18T030701Z",
+  "baseUrl": "http://127.0.0.1:8765",
+  "meshes": [
+    {
+      "label": "small_10k",
+      "targetTriangles": 10000,
+      "path": "docs\\performance-baselines\\fixtures\\bench-small_10k.stl",
+      "triangles": 10000,
+      "bytes": 500084,
+      "seed": 0
+    },
+    {
+      "label": "medium_100k",
+      "targetTriangles": 100000,
+      "path": "docs\\performance-baselines\\fixtures\\bench-medium_100k.stl",
+      "triangles": 100000,
+      "bytes": 5000084,
+      "seed": 0
+    },
+    {
+      "label": "large_300k",
+      "targetTriangles": 300000,
+      "path": "docs\\performance-baselines\\fixtures\\bench-large_300k.stl",
+      "triangles": 300000,
+      "bytes": 15000084,
+      "seed": 0
+    }
+  ],
+  "results": {
+    "small_10k": {
+      "ok": true,
+      "parseMs": 20,
+      "viewerInitMs": 45,
+      "firstFrameMs": 219,
+      "longTasksDuringOpen": 4,
+      "longTaskMsDuringOpen": 284,
+      "trianglesReported": 10000,
+      "rotation": {
+        "rafCallbacks": 36,
+        "sampleElapsedMs": 1003.1,
+        "wallElapsedMs": 1003.1,
+        "sampleSpanMs": 916.6,
+        "fps": 38.2,
+        "fpsFromSampleElapsed": 35.9,
+        "fpsLegacyIncludingIdle": 35.9,
+        "medianGapMs": 16.8,
+        "p95GapMs": 50,
+        "p99GapMs": 50,
+        "maxGapMs": 50,
+        "gapsOver16_7ms": 24,
+        "gapsOver33_3ms": 11,
+        "gapsOver50ms": 0,
+        "gapCount": 35
+      },
+      "heapPeak": 16100000,
+      "heapAfterDispose": 16100000
+    },
+    "medium_100k": {
+      "ok": true,
+      "parseMs": 40,
+      "viewerInitMs": 35,
+      "firstFrameMs": 130,
+      "longTasksDuringOpen": 3,
+      "longTaskMsDuringOpen": 306,
+      "trianglesReported": 100000,
+      "rotation": {
+        "rafCallbacks": 50,
+        "sampleElapsedMs": 1006.6,
+        "wallElapsedMs": 1006.6,
+        "sampleSpanMs": 883.3,
+        "fps": 55.5,
+        "fpsFromSampleElapsed": 49.7,
+        "fpsLegacyIncludingIdle": 49.7,
+        "medianGapMs": 16.7,
+        "p95GapMs": 33.3,
+        "p99GapMs": 33.4,
+        "maxGapMs": 33.4,
+        "gapsOver16_7ms": 20,
+        "gapsOver33_3ms": 2,
+        "gapsOver50ms": 0,
+        "gapCount": 49
+      },
+      "heapPeak": 16100000,
+      "heapAfterDispose": 16100000
+    },
+    "large_300k": {
+      "ok": true,
+      "parseMs": 8878,
+      "viewerInitMs": 70,
+      "firstFrameMs": 317,
+      "longTasksDuringOpen": 4,
+      "longTaskMsDuringOpen": 9373,
+      "trianglesReported": 300000,
+      "rotation": {
+        "rafCallbacks": 53,
+        "sampleElapsedMs": 1002,
+        "wallElapsedMs": 1002,
+        "sampleSpanMs": 883.3,
+        "fps": 58.9,
+        "fpsFromSampleElapsed": 52.9,
+        "fpsLegacyIncludingIdle": 52.9,
+        "medianGapMs": 16.7,
+        "p95GapMs": 16.8,
+        "p99GapMs": 33.3,
+        "maxGapMs": 33.3,
+        "gapsOver16_7ms": 30,
+        "gapsOver33_3ms": 0,
+        "gapsOver50ms": 0,
+        "gapCount": 52
+      },
+      "heapPeak": 16100000,
+      "heapAfterDispose": 16100000
+    }
+  },
+  "memoryStability": {
+    "mesh": "medium_100k",
+    "cycles": 1,
+    "heapBefore": 16100000,
+    "heapAfter": 16100000,
+    "perCycle": [
+      {
+        "cycle": 1,
+        "parseMs": 210,
+        "heapAfterDispose": 16100000
+      }
+    ]
+  }
+}

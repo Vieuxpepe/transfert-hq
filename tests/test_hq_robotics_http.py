@@ -389,11 +389,17 @@ class Browser(unittest.TestCase):
             {"base": 0, "shoulder": 0, "elbow": 90, "hand": 180},
         ]}}
         review = {"verdict": "pass", "notes": "Les deux étapes correspondent à la demande."}
+
+        def model_reply(chain, system, *_args, **_kwargs):
+            """Answer by prompt rather than by call order: opening the chip checks in first."""
+            if system == assistant.CHECKIN_PROMPT:
+                return (json.dumps({"reply": "Banc prêt, Maître.", "mood": "focused"}), assistant.DRAFT_MODELS[0])
+            if system == assistant.DRAFT_PROMPT:
+                return (json.dumps(draft), assistant.DRAFT_MODELS[0])
+            return (json.dumps(review), assistant.REVIEW_MODELS[0])
+
         with (fixture() as (base, _), sync_playwright() as p,
-              patch.object(assistant.hq_ai, "generate", side_effect=[
-                  (json.dumps(draft), assistant.DRAFT_MODELS[0]),
-                  (json.dumps(review), assistant.REVIEW_MODELS[0]),
-              ])):
+              patch.object(assistant.hq_ai, "generate", side_effect=model_reply)):
             browser = p.chromium.launch()
             page = browser.new_page(viewport={"width": 1440, "height": 960})
             admin = Client(base, ADMIN)
@@ -412,6 +418,13 @@ class Browser(unittest.TestCase):
             expect(chat).to_be_hidden()
             chip.click()
             expect(chat).to_be_visible()
+            # The suggestion row overflows the 430 px desktop card too: same edge fade, not a hard cut.
+            # It is filled by the opening check-in, so wait for the row instead of sampling it blind.
+            page.wait_for_function("""() => {
+                const row = document.querySelector('#hq-robotics-chat .rb-ai-chips');
+                return row && row.scrollWidth > row.clientWidth + 2 && row.classList.contains('is-overflow') &&
+                    getComputedStyle(row).maskImage !== 'none';
+            }""", timeout=10000)
             chat.get_by_role("button", name="Puce", exact=True).click()
             chat.get_by_role("button", name="Agrandir").click()
             expect(chip).to_be_visible()
@@ -421,8 +434,11 @@ class Browser(unittest.TestCase):
             expect(chat.get_by_role("button", name="Jouer en simulation")).to_have_count(0)
             chat.get_by_role("button", name="Faire revoir par Gemini 3.6 Flash").click()
             chat.get_by_role("button", name="Approuver cette version").click()
+            # Approving is a two-step in-page confirmation (a native dialog would drop focus and disarm).
+            chat.get_by_role("button", name="Confirmer", exact=True).click()
             expect(chat.get_by_role("button", name="Jouer en simulation")).to_be_visible()
             chat.get_by_role("button", name="Fermer la conversation").click()
+            page.locator('[data-rb="section-overview"]').click()  # the arm button lives in Pilotage
             page.locator('[data-rb="arm"]').click()
             expect(page.locator('[data-rb="move"]')).to_be_enabled()
             chip.click()
@@ -453,6 +469,14 @@ class Browser(unittest.TestCase):
             stop = page.locator('[data-rb="stop"]')
             move = page.locator('[data-rb="move"]')
             expect(arm).to_be_enabled(timeout=12000)
+            # Section mode opens on Moniteur; a chip shows its own section, then the overview restores
+            # every card for the motion flow below.
+            expect(page.locator('.rb-workspace > [data-section="camera"]')).to_be_visible(timeout=12000)
+            page.locator('[data-go-section="motion"]').click()
+            expect(page.locator('.rb-workspace > [data-section="motion"]')).to_be_visible()
+            expect(page.locator('.rb-workspace > [data-section="camera"]')).to_be_hidden()
+            page.locator('[data-rb="section-overview"]').click()
+            expect(page.locator('.rb-workspace > [data-section="camera"]')).to_be_visible()
             expect(move).to_be_disabled()
             expect(page.locator('[data-rb="position-x"]')).to_have_text("310.2")
             page.locator('[data-rb="preview"]').click()
@@ -513,12 +537,39 @@ class Browser(unittest.TestCase):
             move = mobile.locator('[data-rb="move"]')
             expect(arm).to_be_enabled()
             expect(move).to_be_disabled()
+            # The stacking check below needs both cards on screen, not just the Moniteur section.
+            expect(mobile.locator('.rb-workspace > [data-section="camera"]')).to_be_visible(timeout=12000)
+            mobile.locator('[data-rb="section-overview"]').tap(timeout=8000)
+            expect(mobile.locator('.rb-workspace > [data-section="motion"]')).to_be_visible()
             self.assertTrue(mobile.evaluate("""() => {
                 const root = document.querySelector('#hq-robotics-app');
                 const camera = root.querySelector('.rb-camera').getBoundingClientRect();
                 const motion = root.querySelector('.rb-motion').getBoundingClientRect();
                 return root.scrollWidth <= root.clientWidth + 1 && camera.bottom <= motion.top;
             }"""))
+            # The floating chip is hidden on a phone and the header button scrolls away with the card
+            # head, so the sticky bar's entry must stay reachable and open the same chat.
+            expect(mobile.locator('.rb-ai-chip')).to_be_hidden()
+            ai = mobile.locator('[data-rb="section-ai"]')
+            expect(ai).to_be_visible()
+            ai.tap(timeout=8000)
+            chat = mobile.locator('#hq-robotics-chat')
+            expect(chat).to_be_visible(timeout=12000)
+            # The context chips mount with the panel, but the opening check-in renders just after and
+            # replaces them: wait for that message so the tap cannot race the re-render.
+            expect(chat.locator('.rb-ai-message').first).to_be_visible(timeout=12000)
+            # The chip rows scroll on a phone: the card must not overflow, the row must announce the
+            # hidden content with the page's edge fade, and a chip must still send its text.
+            self.assertTrue(mobile.evaluate("""() => {
+                const card = document.querySelector('#hq-robotics-chat');
+                const row = card.querySelector('.rb-ai-chips');
+                return card.scrollWidth <= card.clientWidth + 1 && row.scrollWidth > row.clientWidth + 2 &&
+                    row.classList.contains('is-overflow') && getComputedStyle(row).maskImage !== 'none';
+            }"""))
+            suggestion = mobile.locator('.rb-ai-chips button').first
+            text = suggestion.inner_text()
+            suggestion.tap(timeout=8000)
+            expect(mobile.locator('[data-chat="log"]')).to_contain_text(text, timeout=8000)
             mobile.reload(wait_until="domcontentloaded")
             expect(arm).to_be_enabled(timeout=12000)
             expect(move).to_be_disabled()
@@ -536,6 +587,7 @@ class Browser(unittest.TestCase):
             nav = page.locator(".bottom-nav [data-nav=robotique]")
             expect(nav).to_be_visible(timeout=12000)
             nav.click()
+            page.locator('[data-rb="section-overview"]').click()  # arming and recording live in two sections
             arm = page.locator('[data-rb="arm"]')
             expect(arm).to_be_enabled(timeout=12000)
             arm.click()

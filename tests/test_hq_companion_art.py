@@ -227,41 +227,43 @@ class CompanionArtContextTests(unittest.TestCase):
         self.assertNotIn("controlnet", body.get("alwayson_scripts", {}))
         self.assertEqual(info["controlnet"].get("skipped"), "controlnet_off")
 
+    def forge_meta_root(self) -> Path:
+        """A throwaway HQ root whose Forge metadata mirrors the live one.
+
+        The live checkout's ``.hq-ai/companion_forge.json`` is the Master's own
+        file: a test that rewrites it (even restored) writes live state, which the
+        store guard refuses. The copy carries the same base so the assertions are
+        unchanged.
+        """
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        live = ROOT / ".hq-ai" / "companion_forge.json"
+        data = json.loads(live.read_text(encoding="utf-8")) if live.is_file() else {}
+        path = root / ".hq-ai" / "companion_forge.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        return root
+
     def test_lora_tag_in_prompt(self):
-        meta_path = ROOT / ".hq-ai" / "companion_forge.json"
-        backup = meta_path.read_text(encoding="utf-8") if meta_path.is_file() else None
-        try:
-            data = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.is_file() else {}
-            data["lora_name"] = "test_lora"
-            data["lora_weight"] = 0.6
-            meta_path.parent.mkdir(parents=True, exist_ok=True)
-            meta_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
-            out = art._inject_lora_prompt("base prompt", ROOT)
-            self.assertIn("<lora:test_lora:0.60>", out)
-        finally:
-            if backup is None:
-                if meta_path.is_file():
-                    meta_path.unlink()
-            else:
-                meta_path.write_text(backup, encoding="utf-8")
+        root = self.forge_meta_root()
+        meta_path = root / ".hq-ai" / "companion_forge.json"
+        data = json.loads(meta_path.read_text(encoding="utf-8"))
+        data["lora_name"] = "test_lora"
+        data["lora_weight"] = 0.6
+        meta_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        out = art._inject_lora_prompt("base prompt", root)
+        self.assertIn("<lora:test_lora:0.60>", out)
 
     def test_character_lora_in_prompt(self):
-        meta_path = ROOT / ".hq-ai" / "companion_forge.json"
-        backup = meta_path.read_text(encoding="utf-8") if meta_path.is_file() else None
-        try:
-            data = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.is_file() else {}
-            data["character_lora_name"] = "body_lock"
-            data["character_lora_weight"] = 0.9
-            meta_path.parent.mkdir(parents=True, exist_ok=True)
-            meta_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
-            out = art._inject_lora_prompt("base prompt", ROOT)
-            self.assertIn("<lora:body_lock:0.90>", out)
-        finally:
-            if backup is None:
-                if meta_path.is_file():
-                    meta_path.unlink()
-            else:
-                meta_path.write_text(backup, encoding="utf-8")
+        root = self.forge_meta_root()
+        meta_path = root / ".hq-ai" / "companion_forge.json"
+        data = json.loads(meta_path.read_text(encoding="utf-8"))
+        data["character_lora_name"] = "body_lock"
+        data["character_lora_weight"] = 0.9
+        meta_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        out = art._inject_lora_prompt("base prompt", root)
+        self.assertIn("<lora:body_lock:0.90>", out)
 
     def test_mood_refresh_uses_fewer_steps(self):
         with mock.patch.object(forge, "read_options", return_value={"sd_model_checkpoint": "test.safetensors"}):

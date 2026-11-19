@@ -2,6 +2,7 @@ from unittest.mock import patch
 
 import hq_ai as ai
 import hq_companion_art as art
+import hq_companion_guard as guard
 from tests.test_hq_ai import Base, DEV, DEV2, reply
 
 
@@ -46,7 +47,10 @@ class ChatArtTests(Base):
                 role="admin", owner_id="art-owner",
             )
             self.assertEqual(code, 200, response)
-            self.assertEqual(response["reply"], "Une lumière qui te plairait.")
+            # The reply guard owns the opening now: an article-led line is prefixed,
+            # so the payload cannot start on "Une"; the sentence itself is preserved.
+            self.assertFalse(guard.opens_on_article(response["reply"]), response["reply"])
+            self.assertIn("une lumière qui te plairait.", response["reply"].lower())
             art_id = response["chat_art_id"]
             self.assertTrue(ai.http_get({"chat_art": [art_id], "device_id": [DEV]},
                                         role="admin", owner_id="art-owner")[1]["pending"])

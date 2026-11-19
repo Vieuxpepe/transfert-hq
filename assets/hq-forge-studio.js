@@ -705,7 +705,7 @@
       <div class="forge-seance-refs">${refs.length ? refs.map((id) => `<span class="forge-chip">${esc(id)}</span>`).join("") : `<span class="forge-note">Aucune référence.</span>`}</div>
       <section class="forge-storyboard" aria-label="Storyboard de la séance">
         <div class="forge-storyboard-head"><h3>Storyboard</h3><span class="forge-note">${images.length ? "Dans l’ordre des prises" : "Les prises apparaîtront ici dans l’ordre"}</span></div>
-        ${images.length ? `<ol>${images.slice(0, 12).map((image, index) => `<li><button type="button" class="forge-storyboard-frame" data-sopen="${esc(image.id)}"><img loading="lazy" src="${esc(image.thumb)}" alt="Prise ${index + 1}"/><span>${String(index + 1).padStart(2, "0")}</span></button><small class="forge-triage-tag" data-triage="${esc(image.triage)}">${triageLabel(image.triage)}</small></li>`).join("")}</ol>${images.length > 12 ? `<p class="forge-note">Les 12 premières prises sont ici ; la planche complète reste juste en dessous.</p>` : ""}` : `<div class="forge-storyboard-empty"><div class="forge-storyboard-empty-frames" aria-hidden="true"><span></span><span></span><span></span></div><p>Chaque prise apparaîtra ici dans l’ordre du fil.</p></div>`}
+        ${images.length ? `<ol>${images.slice(0, 12).map((image, index) => `<li><button type="button" class="forge-storyboard-frame" data-sopen="${esc(image.id)}" aria-label="Ouvrir la prise ${index + 1}"><img loading="lazy" src="${esc(image.thumb)}" alt="Prise ${index + 1}"/><span>${String(index + 1).padStart(2, "0")}</span></button><small class="forge-triage-tag" data-triage="${esc(image.triage)}">${triageLabel(image.triage)}</small></li>`).join("")}</ol>${images.length > 12 ? `<p class="forge-note">Les 12 premières prises sont ici ; la planche complète reste juste en dessous.</p>` : ""}` : `<div class="forge-storyboard-empty"><div class="forge-storyboard-empty-frames" aria-hidden="true"><span></span><span></span><span></span></div><p>Chaque prise apparaîtra ici dans l’ordre du fil.</p></div>`}
       </section>
       <label for="forge-seance-note">Notes entre les prises</label>
       <textarea id="forge-seance-note" rows="3" maxlength="1000" placeholder="Ce qui a changé, ce qui reste">${esc(session.note || "")}</textarea>
@@ -713,7 +713,7 @@
       <div class="forge-seance-grid">${images.length ? images.map((image) => `
         <figure class="forge-seance-card" data-id="${esc(image.id)}">
           <label class="forge-seance-check"><input type="checkbox" data-scompare="${esc(image.id)}" ${comparePicks.includes(image.id) ? "checked" : ""}/> comparer</label>
-          <button type="button" class="forge-seance-image" data-sopen="${esc(image.id)}"><img loading="lazy" src="${esc(image.thumb)}" alt="Prise ${esc(image.id)}"/></button>
+          <button type="button" class="forge-seance-image" data-sopen="${esc(image.id)}" aria-label="Ouvrir l'image"><img loading="lazy" src="${esc(image.thumb)}" alt="Prise ${esc(image.id)}"/></button>
           <figcaption><span class="forge-triage-tag" data-triage="${esc(image.triage)}">${triageLabel(image.triage)}</span><span class="forge-note">${esc((image.created || "").slice(0, 16).replace("T", " "))}</span></figcaption>
           <div class="forge-seance-card-actions">
             <button type="button" data-striage="keep" data-sid="${esc(image.id)}">Garder</button>
@@ -1020,7 +1020,7 @@
       const tags = (item.labels && item.labels.tags) || [];
       return `<article class="forge-library-card" data-id="${esc(item.id)}">
         <label class="forge-library-check"><input type="checkbox" data-lcheck="${esc(item.id)}" ${librarySelection.has(item.id) ? "checked" : ""}/></label>
-        <button type="button" class="forge-library-image" data-lopen="${esc(item.id)}"><img loading="lazy" src="${esc(item.thumb)}" alt=""/></button>
+        <button type="button" class="forge-library-image" data-lopen="${esc(item.id)}" aria-label="Ouvrir l'image : ${esc(clip(settings.prompt || "sans prompt", 60))}"><img loading="lazy" src="${esc(item.thumb)}" alt=""/></button>
         <div class="forge-library-copy">
           <p class="forge-library-prompt">${esc(clip(settings.prompt || "Sans prompt", 150))}</p>
           <p class="forge-note">${esc([settings.checkpoint, settings.sampler_name, settings.steps ? settings.steps + " pas" : "", settings.seed != null ? "graine " + settings.seed : "", item.width + "×" + item.height].filter(Boolean).join(" · "))}</p>
@@ -1540,6 +1540,87 @@
     outpaintPoll = setTimeout(() => pollOutpaint(id, kind), 1000);
   }
 
+  /* One compact spine over a long panel: every block worth returning to is one tap
+     away. It moves the page, it never claims to switch views (there is one view).
+     On a phone the settings rail is a bottom sheet and the devices live inside it,
+     so those chips open the sheet first. A chip whose target does not exist yet (the
+     batch monitor) or is already on screen (the fixed tray) is hidden: pressing it
+     could not show anything. */
+  function initNav() {
+    const studio = $("forge-studio");
+    const rail = $("forge-settings-rail");
+    const openButton = $("forge-settings-open");
+    const chips = [...document.querySelectorAll("[data-forge-jump]")];
+    if (!studio || !rail || !chips.length) return;
+    /* These two live in the rail, which is display:none until the sheet opens. */
+    const SHEET_TARGETS = new Set(["forge-settings-rail", "forge-devices"]);
+    const sheetMode = () => {
+      const style = getComputedStyle(rail);
+      return style.display === "none" || style.position === "fixed";
+    };
+    const nextPaint = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    /* A long smooth jump takes about two seconds on a phone; reduced motion asks for
+       the destination immediately instead. */
+    const scrollBehavior = () => window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
+    const showSheet = async () => {
+      if (!sheetMode()) return;
+      if (!studio.classList.contains("settings-open") && openButton) openButton.click();
+      await nextPaint();
+    };
+    const focusTarget = (target) => {
+      const node = target.querySelector('input:not([type="hidden"]):not([disabled]), select:not([disabled]), textarea:not([disabled]), button:not([disabled]), summary');
+      if (node && node.offsetParent !== null) node.focus({ preventScroll: true });
+    };
+    /* A chip is only shown when pressing it can actually reveal something. */
+    const sync = () => {
+      chips.forEach((chip) => {
+        const id = chip.dataset.forgeJump || "";
+        const target = document.getElementById(id);
+        let usable = Boolean(target);
+        if (usable && id === "forge-actionbar") usable = getComputedStyle(target).position !== "fixed";
+        if (usable && !SHEET_TARGETS.has(id)) usable = !target.hidden && getComputedStyle(target).display !== "none";
+        chip.hidden = !usable;
+      });
+    };
+    chips.forEach((chip) => {
+      chip.addEventListener("click", async () => {
+        const id = chip.dataset.forgeJump || "";
+        const target = document.getElementById(id);
+        if (!target) return;
+        if (SHEET_TARGETS.has(id)) await showSheet();
+        if (target.tagName === "DETAILS") target.open = true;
+        target.scrollIntoView({ block: "start", behavior: scrollBehavior() });
+        setTimeout(() => focusTarget(target), 280);
+      });
+    });
+    /* The batch monitor appears only once a batch exists: keep its chip in step. */
+    const batch = $("forge-fleet-batch");
+    if (batch) new MutationObserver(sync).observe(batch, { attributes: true, attributeFilter: ["hidden"] });
+    window.addEventListener("resize", () => requestAnimationFrame(sync), { passive: true });
+    /* Say where the owner is: the chip of the section in the reading band is current.
+       Chips inside the closed sheet never intersect, and the phone tray is fixed (and
+       hidden), so it is skipped by the same visibility test as sync(). */
+    if ("IntersectionObserver" in window) {
+      const seen = new Map();
+      const setCurrent = (id) => chips.forEach((chip) => {
+        const on = chip.dataset.forgeJump === id && !chip.hidden;
+        chip.classList.toggle("is-current", on);
+        if (on) chip.setAttribute("aria-current", "true"); else chip.removeAttribute("aria-current");
+      });
+      const observer = new IntersectionObserver((entries) => {
+        entries.forEach((entry) => seen.set(entry.target.id, entry.isIntersecting));
+        const visible = (chip) => !chip.hidden;
+        const active = chips.filter(visible).map((chip) => chip.dataset.forgeJump).find((id) => seen.get(id));
+        if (active) setCurrent(active);
+      }, { rootMargin: "-12% 0px -68% 0px" });
+      chips.forEach((chip) => {
+        const target = document.getElementById(chip.dataset.forgeJump || "");
+        if (target) observer.observe(target);
+      });
+    }
+    sync();
+  }
+
   window.hqForgeStudio = {
     current: () => currentSeance,
     pickImages: (title, max, selected) => pickImages(title, max, selected),
@@ -1549,6 +1630,7 @@
 
   /* --------------------------------------------------------------- bootstrap */
   composeStudio();
+  initNav();
   entryButtons();
   setMode("generate");
   initBarControls();

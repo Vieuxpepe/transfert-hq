@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
+import hashlib
 import json
 import logging
 import math
@@ -14,9 +15,10 @@ import threading
 import time
 
 import hq_state
-from hq_robotics_arm import (DeviceError, HOME, HttpArm, JOINTS, LIMITS, WORKSPACE, async_box_clearance,
-                             cartesian, device_ip, link_positions, number, pinned_ip, position,
-                             swept_clearance, validate_async_box, validate_path, validate_pose)
+from hq_robotics_arm import (DeviceError, HOME, HttpArm, JOINTS, LIMITS, SerialArm, WORKSPACE,
+                             async_box_clearance, cartesian, device_ip, link_positions, list_serial_ports, number,
+                             pinned_ip, position, serial_port_name, swept_clearance, validate_async_box,
+                             validate_path, validate_pose)
 from hq_robotics_camera import Camera, TRACK, executable
 from hq_robotics_estop import HttpEstop, monitor_ip
 from hq_robotics_ptz import DIRECTIONS as PTZ_DIRECTIONS, Ptz
@@ -66,7 +68,10 @@ LABELS = {
     "stopped": "Arrêt logiciel", "uncertain": "Mouvement incertain",
     "settings": "Réglages enregistrés", "feedback_failed": "Retour matériel indisponible",
     "estop": "Arrêt d’urgence ouvert",
+    "teach_start": "Mode libre activé", "teach_end": "Mode libre terminé",
+    "commissioned": "Mise en service approuvée",
 }
+COMMISSION_GATES = ("G2.1", "G2.2", "G2.3", "G2.4", "G3.1", "G3.2", "G3.3", "G3.4", "G3.5", "G3.6")
 
 
 def approach(start, target, limit):
@@ -83,21 +88,49 @@ def smoother(u):
 
 
 def trapezoid(seconds, ramp):
-    """Fraction of the move done at time t: a short ramp up, constant speed, a short ramp down.
+    """Fraction of the move done at time t: a C2 raised-cosine S-curve ramp up, constant speed, S-curve ramp down.
 
-    A constant-speed cruise looks continuous on the arm; the ramps only remove the abrupt start and stop."""
+    Velocity and acceleration are zero at liftoff and touchdown, and acceleration returns smoothly to zero at
+    the cruise transitions (t=ramp and t=seconds-ramp), removing mechanical jerk at low speeds."""
     ramp = min(ramp, seconds / 2)
     cruise = 1 / (seconds - ramp)  # fraction per second, so the whole move is covered in `seconds`
 
     def fraction(t):
         t = min(max(t, 0.0), seconds)
+        if ramp <= 1e-6:
+            return t / seconds if seconds > 0 else 1.0
         if t < ramp:
-            return .5 * cruise * t * t / ramp
+            return cruise * (.5 * t - ramp / (2 * math.pi) * math.sin(math.pi * t / ramp))
         if t > seconds - ramp:
             left = seconds - t
-            return 1 - .5 * cruise * left * left / ramp
+            return 1 - cruise * (.5 * left - ramp / (2 * math.pi) * math.sin(math.pi * left / ramp))
         return .5 * cruise * ramp + cruise * (t - ramp)
     return fraction
+
+
+def path_length(start, waypoints):
+    """Joint distance of a polyline: the largest joint change of each segment, summed."""
+    points = [start, *waypoints]
+    return sum(max(abs(b[k] - a[k]) for k in JOINTS) for a, b in zip(points, points[1:]))
+
+
+def path_curve(start, waypoints):
+    """Pose at a fraction (0..1) of the joint distance along start -> waypoints."""
+    points = [start, *waypoints]
+    lengths = [max(abs(b[k] - a[k]) for k in JOINTS) for a, b in zip(points, points[1:])]
+    total = sum(lengths)
+
+    def at(fraction):
+        if fraction >= 1 or total <= 0:
+            return waypoints[-1]
+        left = fraction * total
+        for a, b, length in zip(points, points[1:], lengths):
+            if left <= length:
+                share = left / length if length else 1.0
+                return {k: a[k] + (b[k] - a[k]) * share for k in JOINTS}
+            left -= length
+        return waypoints[-1]
+    return at
 
 
 def fit_step(start, target, limit, limits, workspace):
@@ -206,7 +239,7 @@ def settings(raw, previous, *, resolve=False):
     if set(raw) - (set(DEFAULTS) - {"revision"}):
         raise ValueError("Réglage Robotique inconnu")
     cfg = {**previous, **raw}
-    if cfg["mode"] not in ("simulation", "hardware") or cfg["transport"] != "http":
+    if cfg["mode"] not in ("simulation", "hardware") or cfg["transport"] not in ("http", "serial"):
         raise ValueError("Mode ou transport indisponible")
     for key in ("arm_ip", "camera_ip"):
         if not isinstance(cfg[key], str):
@@ -225,6 +258,8 @@ def settings(raw, previous, *, resolve=False):
             raise ValueError("Paramètre de connexion invalide")
     if any(not 32 <= ord(ch) < 127 for ch in cfg["estop_token"]):
         raise ValueError("Jeton du moniteur E-stop invalide")
+    if cfg["serial_port"]:
+        cfg["serial_port"] = serial_port_name(cfg["serial_port"])
     if not isinstance(cfg["camera_tls_sha256"], str):
         raise ValueError("Empreinte TLS SHA-256 invalide")
     cfg["camera_tls_sha256"] = cfg["camera_tls_sha256"].strip().lower()
@@ -271,7 +306,8 @@ class Stream:
 
 
 class Robotics:
-    def __init__(self, root, *, clock=time.monotonic, arm_factory=HttpArm, camera=None, estop_factory=HttpEstop):
+    def __init__(self, root, *, clock=time.monotonic, arm_factory=HttpArm, serial_factory=SerialArm,
+                 camera=None, estop_factory=HttpEstop):
         self.state_dir = hq_state.agent_state_dir(root)
         self.config_path = self.state_dir / "robotics.json"
         self.presets_path = self.state_dir / "robotics-presets.json"
@@ -282,6 +318,7 @@ class Robotics:
         self.camera = camera if camera is not None else Camera(root)
         self.clock = clock
         self.arm_factory = arm_factory
+        self.serial_factory = serial_factory
         self.estop_factory = estop_factory
         self.estop_state = None
         self.estop_at = -math.inf
@@ -311,6 +348,7 @@ class Robotics:
         self.sim_pose = HOME.copy()
         self.uncertain = False
         self.stop_latched = False
+        self.teach_mode = False
         self.last_stop = -math.inf
         self.stop_pending = False
         self.epoch = 0
@@ -367,6 +405,17 @@ class Robotics:
             for zone in zones:
                 if all(zone[axis][0] <= xyz[axis] <= zone[axis][1] for axis in ("x", "y", "z")):
                     refuse("robotics_keepout", f"Zone interdite « {zone['name']} » sur la trajectoire", 409)
+
+    def keepout_volume(self, cfg, start, end):
+        """Whole-arm check (links, gripper, shoulder) over the joint box [start, end]; fails closed."""
+        zones = cfg.get("keepout") or []
+        if not zones:
+            return None
+        clearance = async_box_clearance(start, end, zones)
+        if clearance["collision_zone"] or clearance["clearance_uncertain"]:
+            zone_name = clearance["collision_zone"] or "d'exclusion"
+            refuse("robotics_keepout", f"Zone interdite « {zone_name} » sur le volume balayé", 409)
+        return clearance
 
     def keepout_point(self, cfg, pose):
         zones = cfg.get("keepout") or []
@@ -496,17 +545,90 @@ class Robotics:
         thread = self._supervisor_thread
         if thread and thread.is_alive() and thread is not threading.current_thread():
             thread.join(timeout=1.0)
+        with self.lock:
+            if self.blackbox:
+                try:
+                    self.state_dir.mkdir(exist_ok=True)
+                    hq_state.write_json_atomic(self.blackbox_path, list(self.blackbox))
+                except (OSError, RuntimeError) as err:
+                    logging.getLogger("hq_robotics").warning("blackbox save failed on close: %s", err)
         if hasattr(self.camera, "close"):
             self.camera.close()
 
+    @staticmethod
+    def _arm_endpoint_configured(cfg):
+        if cfg.get("transport") == "serial":
+            return bool(cfg.get("serial_port"))
+        return bool(cfg.get("arm_ip"))
+
+    def _arm_client(self, cfg):
+        if cfg.get("transport") == "serial":
+            return self.serial_factory(cfg["serial_port"], cfg["arm_timeout"])
+        return self.arm_factory(cfg["arm_ip"], cfg["arm_timeout"])
+
     def commissioned(self, cfg):
-        if cfg["mode"] != "hardware" or not cfg["arm_ip"] or not cfg["revision"]:
+        if cfg["mode"] != "hardware" or not self._arm_endpoint_configured(cfg) or not cfg["revision"]:
             return False
         try:
             record = read_object(self.commission_path)
         except Rejected:
             return False
         return record.get("revision") == cfg["revision"] and record.get("profile") == PROFILE
+
+    def commission_info(self, cfg):
+        if not self.commissioned(cfg):
+            return None
+        try:
+            record = read_object(self.commission_path)
+        except Rejected:
+            return None
+        return {
+            "firmware_version": str(record.get("firmware_version") or ""),
+            "operator": str(record.get("operator") or ""),
+            "approved_at": record.get("approved_at"),
+            "gates_signed": all(
+                isinstance(record.get("gates"), dict) and record["gates"].get(g) is True
+                for g in COMMISSION_GATES
+            ),
+        }
+
+    def approve_commission(self, cfg, data, physical):
+        if not physical:
+            refuse("robotics_local_only", "Mise en service réservée au PC HQ", 403)
+        if cfg["mode"] != "hardware" or not self._arm_endpoint_configured(cfg) or not cfg["revision"]:
+            refuse("robotics_commission_config", "Configurer le mode Matériel et l’adresse/port du RoArm avant d’approuver")
+        if self.io.locked() or self.motion or self.lease or self.stop_pending or self.active_stream_id is not None:
+            refuse("robotics_busy", "Terminer le mouvement et désarmer avant la mise en service")
+        if self.stop_latched or self.uncertain or self.requires_inspection.exists():
+            refuse("robotics_inspect", "Inspection et réinitialisation requises avant la mise en service")
+        if not self.feedback:
+            refuse("robotics_feedback_required", "Lire le RoArm avant d’approuver la mise en service")
+        if self._estop_monitored(cfg):
+            estop = self.estop_health(cfg, force=True)
+            if estop.get("healthy") is not True:
+                refuse("robotics_estop", "Moniteur E-stop ouvert ou injoignable")
+        if data.get("confirmed") is not True:
+            refuse("robotics_commission_confirm", "Confirmation explicite requise")
+        fw = str(data.get("firmware_version") or "").strip()
+        op = str(data.get("operator") or "").strip()
+        if not fw or len(fw) > 64 or any(ord(ch) < 32 for ch in fw):
+            refuse("robotics_commission_fields", "Version du firmware RoArm requise (max 64 caractères)")
+        if not op or len(op) > 64 or any(ord(ch) < 32 for ch in op):
+            refuse("robotics_commission_fields", "Nom de l’opérateur requis (max 64 caractères)")
+        gates = data.get("gates")
+        if not isinstance(gates, dict) or not all(gates.get(g) is True for g in COMMISSION_GATES):
+            refuse("robotics_commission_gates", "Toutes les vérifications des portes 2 et 3 (G2.1–G3.6) doivent être cochées")
+        record = {
+            "revision": cfg["revision"],
+            "profile": PROFILE,
+            "firmware_version": fw,
+            "operator": op,
+            "gates": {g: True for g in COMMISSION_GATES},
+            "approved_at": time.time(),
+        }
+        self.write(self.commission_path, record)
+        self.record("commissioned")
+        return {"ok": True, "commissioned": True, "commissioned_info": self.commission_info(cfg)}
 
     def record(self, kind):
         self.history.appendleft({"kind": kind, "label": LABELS[kind], "at": time.time()})
@@ -527,7 +649,7 @@ class Robotics:
             if self.mode == "simulation":
                 start, end, began, deadline = self.motion
                 t = min(1, (now - began) / (deadline - began))
-                t = t*t*(3 - 2*t)
+                t = smoother(t)
                 self.sim_pose = {key: start[key] + (end[key] - start[key]) * t for key in JOINTS}
                 if now >= deadline:
                     self.motion = None
@@ -656,7 +778,10 @@ class Robotics:
         self.capture_blackbox(cfg, feedback, owner, estop)
         return {
             "ok": True, "config": self.public_config(cfg), "physical_local": physical,
-            "commissioned": physical and self.commissioned(cfg), "camera_local": camera_local,
+            "commissioned": physical and self.commissioned(cfg),
+            "commissioned_info": self.commission_info(cfg) if physical else None,
+            "serial_ports": list_serial_ports() if physical else [],
+            "camera_local": camera_local,
             "gateway": bool(executable(self.state_dir.parent)), "camera_live": self.video_live(session),
             "camera_error": self.video_error, "feedback": feedback,
             "last_feedback": (time.time() - (now - self.feedback_at)
@@ -664,11 +789,16 @@ class Robotics:
             "latency_ms": self.feedback.get("latency_ms") if feedback and self.mode == "hardware" else None,
             "shadow": self.shadow_diagnostics(feedback),
             "target": self.target, "moving": bool(self.motion), "blend": blending, "armed": owner,
+            # Elapsed and planned seconds of the move under way, for the page's progress and time left.
+            "motion": ({"elapsed": round(max(0.0, now - self.motion_timing[0]), 2),
+                        "seconds": round(self.motion_timing[1], 2)}
+                       if self.motion and getattr(self, "motion_timing", None) else None),
             "script": dict(self.script_state) if owner and self.script_state else None,
             "occupied": bool(self.lease and not owner),
             "uncertain": uncertain,
             "stop_latched": self.stop_latched,
             "stop_state": stop_state,
+            "teach_mode": bool(getattr(self, "teach_mode", False)),
             "torque_state": torque_state,
             "estop": estop,
             "ticket": self.lease.ticket if owner and now < self.lease.ticket_until else "",
@@ -726,6 +856,8 @@ class Robotics:
     def arm(self, cfg, session, physical, authorized):
         with self.lock:
             self.expire()
+            if getattr(self, "teach_mode", False):
+                refuse("robotics_busy", "Quittez le mode libre avant d’armer le bras")
             if self.lease or self.motion or self.stop_pending or self.active_stream_id is not None or self.io.locked():
                 refuse("robotics_busy", "Poste de commande occupé")
             if self.stop_latched or self.uncertain or (self.mode == "hardware" and self.requires_inspection.exists()):
@@ -749,6 +881,46 @@ class Robotics:
             self._start_estop_supervisor(cfg)
             return {"ok": True, "lease": key}
 
+    def renew(self, cfg, session, key, authorized):
+        with self.lock:
+            self.expire()
+            if not self.owner(session, key) or not authorized():
+                refuse("robotics_disarmed", "Armer les commandes avant de prolonger", 403)
+            if self._estop_monitored(cfg):
+                estop = self.estop_health(cfg, force=True)
+                if estop.get("healthy") is not True:
+                    self.trip_estop(cfg)
+                    refuse("robotics_estop", "Arrêt d’urgence ouvert ou moniteur injoignable")
+            self.lease.expires = self.clock() + LEASE_SECONDS
+            return {"ok": True, "lease": self.lease.key}
+
+    def teach(self, cfg, session, physical, authorized, enable):
+        enable = bool(enable)
+        with self.lock:
+            self.expire()
+            if not authorized():
+                refuse("robotics_authorization", "Autorisation expirée", 403)
+            if self.lease or self.motion or self.stop_pending or self.active_stream_id is not None or self.io.locked():
+                refuse("robotics_busy", "Désarmez et terminez le mouvement avant le mode libre")
+            if self.stop_latched or self.uncertain or (self.mode == "hardware" and self.requires_inspection.exists()):
+                refuse("robotics_inspect", "Inspection sur place et réarmement manuel requis")
+            if cfg["mode"] == "hardware":
+                self.require_physical(cfg, physical)
+                with self.io:
+                    arm = self._arm_client(cfg)
+                    arm.set_torque(not enable)
+                    if not enable:
+                        try:
+                            reading = arm.feedback()
+                            self.feedback = {**reading, "latency_ms": 0}
+                            self.feedback_at = self.clock()
+                            self.target = dict(reading["actual"])
+                        except DeviceError:
+                            pass
+            self.teach_mode = enable
+            self.record("teach_start" if enable else "teach_end")
+            return {"ok": True, "teach_mode": self.teach_mode}
+
     def require_physical(self, cfg, physical):
         if not physical:
             refuse("robotics_local_only", "Commande physique réservée au PC HQ", 403)
@@ -761,7 +933,7 @@ class Robotics:
         return self.feedback
 
     def probe(self, cfg, physical):
-        if not physical or not cfg["arm_ip"] or cfg["mode"] != "hardware":
+        if not physical or not self._arm_endpoint_configured(cfg) or cfg["mode"] != "hardware":
             refuse("robotics_probe_unavailable", "Configurer le RoArm depuis le PC HQ")
         with self.lock:
             self.check_revision(cfg)
@@ -777,7 +949,7 @@ class Robotics:
     def read_feedback(self, cfg, tolerate=False):
         now = self.clock()
         try:
-            value = self.arm_factory(cfg["arm_ip"], cfg["arm_timeout"]).feedback()
+            value = self._arm_client(cfg).feedback()
         except DeviceError:
             with self.lock:
                 self.read_failures += 1
@@ -837,6 +1009,14 @@ class Robotics:
         limits, workspace = cfg["joint_limits"], cfg["workspace"]
         if kind == "home":
             return validate_pose(HOME, limits, workspace)
+        if kind == "goto":
+            # "Aller à ce point": any valid pose, approached like the return home (measured sub-steps on the arm).
+            return validate_pose(data.get("pose"), limits, workspace)
+        if kind == "grasp":
+            # Torque-bounded compliant grasp: keep Base/Shoulder/Elbow where they stand and close/move the gripper.
+            base_pose = self.sim_pose if cfg["mode"] == "simulation" else ((self.feedback or {}).get("actual") or HOME)
+            hand_goal = number(data.get("hand", 180.0), limits["hand"][0], limits["hand"][1])
+            return validate_pose({**base_pose, "hand": hand_goal}, limits, workspace)
         if kind == "cartesian":
             return cartesian(data.get("xyz"), limits, workspace)
         if kind == "preset":
@@ -849,6 +1029,23 @@ class Robotics:
         if kind != "joints":
             raise ValueError("Type de mouvement inconnu")
         return validate_pose(data.get("pose"), limits, workspace)
+
+    def check_floor_guard(self, pose, data):
+        """Enforce optional desk-floor Z_min and mounted tool length when supplied by the UI."""
+        if not isinstance(data, dict):
+            return
+        raw_floor = data.get("floor_z")
+        raw_tool = data.get("tool_offset")
+        if raw_floor is None and raw_tool is None:
+            return
+        floor_z = number(raw_floor if raw_floor is not None else -80.0, -80.0, 200.0)
+        tool_mm = number(raw_tool if raw_tool is not None else 0.0, 0.0, 120.0)
+        if floor_z <= -80.0 and tool_mm <= 0.0:
+            return
+        eff_z = position(pose)["z"] - tool_mm
+        if eff_z < floor_z - 1e-6:
+            refuse("robotics_floor_guard",
+                   f"Garde plancher : pointe outil ({round(eff_z, 1)} mm) sous le plancher Z ({round(floor_z, 1)} mm).")
 
     def move(self, cfg, data, session, physical, authorized, owner):
         key, ticket = data.get("lease"), data.get("ticket")
@@ -884,14 +1081,18 @@ class Robotics:
                 speed = int(min(cfg["speed"], max(1, speed)))
             else:
                 pose = self.resolve_pose(cfg, data)
+                if data.get("kind") not in ("home", "grasp"):
+                    self.check_floor_guard(pose, data)
                 speed = int(number(data.get("speed", cfg["speed"]), 40, cfg["speed"]))
             self.keepout_point(cfg, pose)
             if cfg["mode"] == "simulation":
                 self.keepout_path(cfg, self.sim_pose, pose)
-            elif self.feedback:
+            elif self.feedback and not (script and script.get("waypoints")):
                 self.keepout_path(cfg, self.feedback["actual"], pose)
-            if blending and not (script or data.get("kind") == "home"):
+            if blending and not (script or data.get("kind") in ("home", "goto", "grasp")):
                 refuse("robotics_busy", "Mouvement déjà en cours", 429)
+            grasp_limit = (number(data.get("load_limit", 320), 80, 950)
+                           if data.get("kind") == "grasp" else None)
             self.lease.ticket = ""
             self.last_move = now
             # Dead-man window: every accepted move renews it, an idle arming still lapses.
@@ -900,11 +1101,15 @@ class Robotics:
             if cfg["mode"] == "simulation":
                 start = self.sim_pose.copy()
                 self.keepout_path(cfg, start, pose)
+                self.keepout_volume(cfg, start, pose)
                 validate_path(start, pose, cfg["joint_limits"], cfg["workspace"])
                 delta = max(abs(pose[k] - start[k]) for k in JOINTS)
                 duration = max(.25, delta / (speed * 360 / 4096))
                 self.target = pose
                 self.motion = (start, pose, now, now + duration)
+                self.motion_timing = (now, duration)
+                if grasp_limit is not None:
+                    self.script_state = {"index": "grasp", "gap": 0.0, "contact": False, "hand": round(pose["hand"], 1)}
                 self.record("moving")
                 return
             self.require_physical(cfg, physical)
@@ -914,6 +1119,7 @@ class Robotics:
             if not self.io.acquire(False):
                 refuse("robotics_busy", "Mouvement ou lecture déjà en cours", 429)
         stream = None
+        waypoints = None
         try:
             feedback = self.read_feedback(cfg)
             start = feedback["actual"]
@@ -928,11 +1134,21 @@ class Robotics:
                     refuse("robotics_torque", "Couple matériel indisponible")
                 if not torque and cfg.get("torque_telemetry_required", True):
                     refuse("robotics_torque", "Télémétrie de couple matériel absente")
+                if grasp_limit is not None:
+                    raw_load = (feedback.get("load") or {}).get("hand")
+                    hand_load = abs(float(raw_load)) if isinstance(raw_load, (int, float)) else 0.0
+                    if hand_load >= grasp_limit:
+                        self.target = start.copy()
+                        self.script_state = {"index": "grasp", "gap": 0.0, "contact": True,
+                                             "load": round(hand_load, 1), "hand": round(start["hand"], 1)}
+                        self.record("reached")
+                        return
+                    pose = {**start, "hand": pose["hand"]}
                 finished = whole = False
                 # Allow for servo quantization and independent axes.
                 limits = {k: (lo + .2, hi - .2) for k, (lo, hi) in cfg["joint_limits"].items()}
                 workspace = {k: (lo + 4, hi - 4) for k, (lo, hi) in cfg["workspace"].items()}
-                progress = script["index"] if script else ("home" if data.get("kind") == "home" else None)
+                progress = script["index"] if script else (data.get("kind") if data.get("kind") in ("home", "goto", "grasp") else None)
                 if direct:
                     progress = None
                 if progress is not None:
@@ -940,29 +1156,46 @@ class Robotics:
                     # sub-steps along the straight joint-space line; each still obeys the step limit
                     # and the path checks, shrinking when the pose is close to the workspace edge.
                     target = pose
+                    waypoints = script.get("waypoints") if script else None
                     if script and script.get("fluid"):
-                        # Fluid mode: the whole approved step as one command when its path passes the
-                        # same check; otherwise fall back to the measured sub-steps below.
+                        # Fluid mode: the whole approved step (or a whole shaped leg, as one continuous
+                        # path) when every segment passes the same check; otherwise fall back to the
+                        # measured sub-steps of the first step below.
                         try:
-                            validate_path(start, target, limits, workspace, independent_axes=True)
+                            chain = [start, *(waypoints or [target])]
+                            for a, b in zip(chain, chain[1:]):
+                                validate_path(a, b, limits, workspace, independent_axes=True)
                             pose, gap, whole = target, 0.0, True
                         except ValueError:
-                            pass
+                            waypoints = None
+                            target = script.get("first", target)
+                    else:
+                        waypoints = None
+                        target = script.get("first", target) if script else target
                     if not whole:
                         pose, gap = fit_step(start, target, max(1.0, cfg["step_limit"] - .5), limits, workspace)
-                    self.script_state = {"index": progress, "gap": round(gap, 2)}
-                    finished = bool(script and script["last"] and gap <= NOOP_DEGREES)
+                    shown = script.get("end", progress) if script and whole and waypoints else progress
+                    self.script_state = {"index": shown, "gap": round(gap, 2)}
+                    if grasp_limit is not None:
+                        self.script_state.update(contact=False, hand=round(pose["hand"], 1))
+                    last_step = (script.get("last") if whole and waypoints
+                                 else script.get("first_last", script["last"]) if script else False)
+                    finished = bool(script and last_step and gap <= NOOP_DEGREES)
                     if gap > NOOP_DEGREES and max(abs(pose[k] - start[k]) for k in JOINTS) <= NOOP_DEGREES:
                         refuse("robotics_path_blocked", "Le bras ne peut pas avancer vers la cible sans sortir de l’espace de travail.")
                 delta = max(abs(pose[k] - start[k]) for k in JOINTS)
+                chain = [start, *waypoints] if waypoints else [start, pose]
+                if waypoints:
+                    delta = path_length(start, waypoints)  # a closed shape ends where it began
                 if delta > cfg["step_limit"] and not (direct or whole):
                     refuse("robotics_step_limit", "Cible trop éloignée pour un déplacement physique")
-                self.keepout_path(cfg, start, pose)
-                if cfg.get("keepout"):
-                    clearance = async_box_clearance(start, pose, cfg["keepout"])
-                    if clearance["collision_zone"] or clearance["clearance_uncertain"]:
-                        zone_name = clearance["collision_zone"] or "d'exclusion"
-                        refuse("robotics_keepout", f"Zone interdite « {zone_name} » sur le volume balayé", 409)
+                for a, b in zip(chain, chain[1:]):
+                    self.keepout_path(cfg, a, b)
+                    if cfg.get("keepout"):
+                        clearance = async_box_clearance(a, b, cfg["keepout"])
+                        if clearance["collision_zone"] or clearance["clearance_uncertain"]:
+                            zone_name = clearance["collision_zone"] or "d'exclusion"
+                            refuse("robotics_keepout", f"Zone interdite « {zone_name} » sur le volume balayé", 409)
                 if direct:
                     validate_path(start, pose, cfg["joint_limits"], cfg["workspace"], independent_axes=False)
                     validate_async_box(start, pose, cfg["joint_limits"], cfg["workspace"])
@@ -984,8 +1217,10 @@ class Robotics:
                 if direct or whole:
                     # The arm's controller runs a command at constant speed with abrupt starts and stops
                     # whatever the acceleration setting. Stream a smooth rest-to-rest curve instead.
-                    seconds, stream_spd = self.stream_plan(cfg, start, pose, speed)
-                    self._validate_stream_waypoints(cfg, start, pose, seconds)
+                    seconds, stream_spd = self.stream_plan(cfg, start, pose, speed, distance=delta if waypoints else None)
+                    if self.script_state is not None:
+                        self.script_state["seconds"] = round(seconds, 1)  # the page waits this long, plus a margin
+                    self._validate_stream_waypoints(cfg, start, pose, seconds, waypoints)
                     self.stream_generation += 1
                     stream_id = self.stream_generation
                     self.pending_stream_id = stream_id
@@ -995,6 +1230,7 @@ class Robotics:
                 self.last_settled_pose = None
                 self.last_settled_at = -math.inf
                 self.motion = self.clock() + max(4, seconds + 3)
+                self.motion_timing = (self.clock(), seconds)
                 self.blend, self.blendable = False, progress is not None
                 if direct or whole:
                     if direct:
@@ -1018,7 +1254,7 @@ class Robotics:
         finally:
             self.io.release()
         if stream is not None:
-            self.start_stream(cfg, session, key, *stream, epoch=move_epoch, stream_id=stream_id)
+            self.start_stream(cfg, session, key, *stream, epoch=move_epoch, stream_id=stream_id, waypoints=waypoints)
 
     def _dispatch_arm_move(self, cfg, session, key, epoch, goal, goal_spd, acceleration, *,
                            arm_client=None, authorized=None):
@@ -1028,7 +1264,7 @@ class Robotics:
             if estop.get("healthy") is not True:
                 self.trip_estop(cfg)
                 return False
-        client = arm_client if arm_client is not None else self.arm_factory(cfg["arm_ip"], cfg["arm_timeout"])
+        client = arm_client if arm_client is not None else self._arm_client(cfg)
         safe_spd = int(min(cfg["speed"], max(1, goal_spd)))
         with self.lock:
             if (not self.owner(session, key) or (authorized is not None and not authorized())
@@ -1039,18 +1275,25 @@ class Robotics:
             client.move(goal, safe_spd, acceleration)
             return True
 
-    def _validate_stream_waypoints(self, cfg, start, target, seconds):
+    def _validate_stream_waypoints(self, cfg, start, target, seconds, waypoints=None):
         """Validate every streamed curve waypoint against limits, workspace, and keep-outs."""
         fraction = trapezoid(seconds, STREAM_RAMP)
         steps = max(1, math.ceil(seconds / STREAM_TICK))
+        previous = start
+        curve = path_curve(start, waypoints) if waypoints else None
         for index in range(steps + 1):
             f = fraction(min(seconds, index * STREAM_TICK))
-            waypoint = target if f >= 1 else {k: start[k] + (target[k] - start[k]) * f for k in JOINTS}
+            if curve:
+                waypoint = curve(f)
+            else:
+                waypoint = target if f >= 1 else {k: start[k] + (target[k] - start[k]) * f for k in JOINTS}
             validate_pose(waypoint, cfg["joint_limits"], cfg["workspace"])
             self.keepout_point(cfg, waypoint)
+            self.keepout_volume(cfg, previous, waypoint)
+            previous = waypoint
 
-    def stream_plan(self, cfg, start, target, speed):
-        delta = max(abs(target[k] - start[k]) for k in JOINTS)
+    def stream_plan(self, cfg, start, target, speed, distance=None):
+        delta = distance if distance is not None else max(abs(target[k] - start[k]) for k in JOINTS)
         cap = int(cfg["speed"])
         floor = min(STREAM_SPD_FLOOR, cap)
         peak = max(floor, min(cap, speed * STREAM_PEAK_RATIO))  # cruise speed, steps/s
@@ -1058,7 +1301,8 @@ class Robotics:
         planned_speed = min(cap, max(floor, math.ceil(peak * STREAM_SPD_GAIN)))
         return seconds, planned_speed
 
-    def start_stream(self, cfg, session, key, start, target, seconds, spd, *, epoch=None, stream_id=None):
+    def start_stream(self, cfg, session, key, start, target, seconds, spd, *, epoch=None, stream_id=None,
+                     waypoints=None):
         with self.lock:
             if stream_id is None:
                 if (not self.owner(session, key) or self.stop_pending or self.stop_latched
@@ -1077,9 +1321,11 @@ class Robotics:
         try:
             if self.stream_threaded:
                 threading.Thread(target=self.stream, args=(cfg, session, key, start, target, seconds, spd),
-                                 kwargs={"epoch": epoch, "stream_id": stream_id}, name="robotics-stream", daemon=True).start()
+                                 kwargs={"epoch": epoch, "stream_id": stream_id, "waypoints": waypoints},
+                                 name="robotics-stream", daemon=True).start()
             else:
-                self.stream(cfg, session, key, start, target, seconds, spd, epoch=epoch, stream_id=stream_id)
+                self.stream(cfg, session, key, start, target, seconds, spd, epoch=epoch, stream_id=stream_id,
+                            waypoints=waypoints)
         except Exception:
             with self.lock:
                 if self.active_stream_id == stream_id:
@@ -1087,7 +1333,7 @@ class Robotics:
             raise
         return True
 
-    def stream(self, cfg, session, key, start, target, seconds, spd, *, epoch=None, stream_id=None):
+    def stream(self, cfg, session, key, start, target, seconds, spd, *, epoch=None, stream_id=None, waypoints=None):
         """Send one approved move as goals along a smooth curve, every STREAM_TICK seconds.
 
         Stops sending as soon as the arming is released, a STOP or E-stop or fault latches,
@@ -1098,14 +1344,17 @@ class Robotics:
                 stream_id = self.stream_generation
             self.active_stream_id = stream_id
         try:
-            arm = self.arm_factory(cfg["arm_ip"], cfg["arm_timeout"])
+            arm = self._arm_client(cfg)
             cap = int(cfg["speed"])
             floor = min(STREAM_SPD_FLOOR, cap)
             began, tick = self.clock(), 0
             fraction = trapezoid(seconds, STREAM_RAMP)
+            curve = path_curve(start, waypoints) if waypoints else None
 
             def at(elapsed):
                 f = fraction(elapsed)
+                if curve:
+                    return curve(f)
                 return target if f >= 1 else {k: start[k] + (target[k] - start[k]) * f for k in JOINTS}
             deg_per_step = 360 / 4096
             while True:
@@ -1121,13 +1370,16 @@ class Robotics:
                     if estop.get("healthy") is not True:
                         self.trip_estop(cfg)
                         return False
-                here, goal = at(elapsed), at(elapsed + STREAM_LOOKAHEAD)
-                span = max(.05, min(seconds, elapsed + STREAM_LOOKAHEAD) - min(seconds, elapsed))
+                lookahead = STREAM_LOOKAHEAD + max(0.0, (100 - min(100, spd)) / 60 * 0.14)
+                here, goal = at(elapsed), at(elapsed + lookahead)
+                span = max(.05, min(seconds, elapsed + lookahead) - min(seconds, elapsed))
                 needed = max(abs(goal[k] - here[k]) for k in JOINTS) / span / deg_per_step  # steps/s
                 goal_spd = int(min(cap, spd, max(floor, math.ceil(needed * STREAM_SPD_GAIN))))
+                stream_acc = (max(1, min(cfg["acceleration"], round(cfg["acceleration"] * .5)))
+                              if goal_spd <= 75 else cfg["acceleration"])
                 with self.io:
                     if not self._dispatch_arm_move(cfg, session, key, epoch, goal, goal_spd,
-                                                   cfg["acceleration"], arm_client=arm):
+                                                   stream_acc, arm_client=arm):
                         return False
                     if elapsed < seconds and tick % 5 == 0:
                         measured = self.read_feedback(cfg)["actual"]
@@ -1148,6 +1400,8 @@ class Robotics:
                 self.fault("uncertain")
             return False
         finally:
+            if "arm" in locals() and hasattr(arm, "close"):
+                arm.close()
             with self.lock:
                 if self.active_stream_id == stream_id:
                     self.active_stream_id = None
@@ -1201,7 +1455,7 @@ class Robotics:
             try:
                 if not authorized():
                     refuse("robotics_authorization", "Autorisation expirée", 403)
-                self.arm_factory(cfg["arm_ip"], cfg["arm_timeout"]).emergency_stop()
+                self._arm_client(cfg).emergency_stop()
             finally:
                 self.io.release()
         finally:
@@ -1503,6 +1757,8 @@ class Robotics:
                 except DeviceError as error:
                     self.tapo_session = None  # A stale session: log in again once, then give up.
                     text = str(error)
+                    logging.getLogger("hq_robotics").warning("tapo night %s failed: %s (steps %s)", mode, text,
+                                                             getattr(session, "trace", None))
                     if "refusé" in text or "suspendue" in text:
                         # A wrong password or a lockout: retrying only makes the camera's lockout longer.
                         self.tapo_pause = (self.clock() + 90, text + ". Vérifiez le mot de passe Tapo (cloud), puis attendez.")
@@ -1622,7 +1878,26 @@ class Robotics:
             self.expire()
             if method == "GET":
                 if action == "status":
-                    return self.status(cfg, session, data.get("lease"), physical, local)
+                    payload = self.status(cfg, session, data.get("lease"), physical, local)
+                    sig = hashlib.blake2b(
+                        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode(),
+                        digest_size=8,
+                    ).hexdigest()
+                    if data.get("sig") == sig:
+                        return {"ok": True, "unchanged": True, "sig": sig}
+                    payload["sig"] = sig
+                    return payload
+                if action == "bootstrap":
+                    payload = self.status(cfg, session, data.get("lease"), physical, local)
+                    sig = hashlib.blake2b(
+                        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode(),
+                        digest_size=8,
+                    ).hexdigest()
+                    payload["sig"] = sig
+                    payload["presets"] = self.presets()
+                    payload["recordings"] = self.public_recordings()
+                    payload["routines"] = self.routines()
+                    return payload
                 if action == "presets":
                     return {"ok": True, "presets": self.presets()}
                 if action == "recordings":
@@ -1639,12 +1914,19 @@ class Robotics:
                 refuse("robotics_authorization", "Autorisation expirée", 403)
             if action == "arm":
                 return self.arm(cfg, session, physical, authorized)
+            if action == "renew":
+                return self.renew(cfg, session, data.get("lease"), authorized)
+            if action == "teach":
+                self.teach(cfg, session, physical, authorized, data.get("enable"))
+                with self.lock:
+                    return self.status(self.config(), session, data.get("lease"), physical, local)
             if action == "settings":
                 if not physical:
                     refuse("robotics_local_only", "Réglages réservés au PC HQ", 403)
                 if (self.lease or self.motion or self.uncertain or self.stop_latched or self.io.locked()
                         or self.requires_inspection.exists()):
                     refuse("robotics_busy", "Terminer le mouvement et désarmer avant les réglages")
+                self.teach_mode = False
                 new = settings(data, cfg, resolve=True)
                 new["revision"] = secrets.token_hex(12)
                 self.write(self.config_path, new)
@@ -1659,6 +1941,8 @@ class Robotics:
                 self.camera_required = new["camera_required"]
                 self.record("settings")
                 return {"ok": True, "config": self.public_config(new)}
+            if action == "commission":
+                return self.approve_commission(cfg, data, physical)
             if action.startswith("camera/"):
                 return self.video_command(cfg, action, data, session, local)
             if action == "presets":
@@ -1669,12 +1953,14 @@ class Robotics:
                 return self.change_routines(cfg, data)
             if action == "preview":
                 pose = self.resolve_pose(cfg, data)
+                if data.get("kind") not in ("home", "grasp"):
+                    self.check_floor_guard(pose, data)
                 self.keepout_point(cfg, pose)
                 start = self.sim_pose if cfg["mode"] == "simulation" else (self.feedback or {}).get("actual")
                 clearance = None
                 if start:
                     self.keepout_path(cfg, start, pose)
-                    clearance = async_box_clearance(start, pose, cfg.get("keepout") or [])
+                    clearance = self.keepout_volume(cfg, start, pose)
                 return {
                     "ok": True,
                     "pose": pose,
@@ -1691,7 +1977,7 @@ class Robotics:
                     refuse("robotics_busy", "Poste de commande occupé")
                 self.epoch += 1
                 self.pending_stream_id = None
-                self.uncertain = self.stop_latched = False
+                self.uncertain = self.stop_latched = self.teach_mode = False
                 self.physical_command_sent = False
                 self.commanded_start = None
                 self.last_settled_pose = None

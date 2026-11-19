@@ -14,6 +14,7 @@ import os
 import shutil
 import sys
 import unittest
+from tests.hq_symlink_test_helper import skip_without_symlinks
 from pathlib import Path
 from unittest import mock
 
@@ -256,6 +257,7 @@ class SourceTests(PBase):
         self.assertEqual((unk["state"], unk["state_label"]), ("unknown", "État inconnu"))
         self.assertNotEqual(unk["state"], gone["state"])
 
+    @skip_without_symlinks
     def test_source_pdf_line_under_a_redirected_parent_is_unknown_not_introuvable(self):
         import tempfile
 
@@ -305,6 +307,7 @@ class FileLikeTests(PBase):
         saved = hq_carnet.mutate({"action": "page_save", "id": page["id"], "expected_rev": self.cur(page["id"])["rev"], "content": {"version": 2, "blocks": copy.deepcopy(self.cur(page["id"])["content"]["blocks"]) + [para("encore")]}})["page"]
         self.assertEqual(saved["content"]["blocks"][1]["portal"]["ref"]["id"], "Inbox/Docs/a.pdf")
 
+    @skip_without_symlinks
     def test_non_canonical_targets_are_unknown_never_missing_and_never_followed(self):
         """r2: absent -> missing; symlink / directory / redirected parent (inside or outside the root) -> unknown (non-canonical)."""
         import tempfile
@@ -347,11 +350,13 @@ class FileLikeTests(PBase):
         self.assertEqual((row["state"], row["state_label"]), ("unknown", "État inconnu"))
 
     def test_hostile_file_name_is_data_in_json_never_markup_on_the_wire(self):
-        name = "Inbox/Docs/<img src=x onerror=alert(1)>.pdf"
+        # Angle brackets are not legal in a Windows filename; entity text is still
+        # hostile input, and the response must carry it as data, never decoded markup.
+        name = "Inbox/Docs/&lt;img src=x onerror=alert(1)&gt;.pdf"
         self.put(name)
         row = one("file", name)
-        self.assertEqual(row["title"], "<img src=x onerror=alert(1)>.pdf")  # a plain string: the UI renders text nodes only
-        self.assertIn("%3Cimg", row["open_url"])
+        self.assertEqual(row["title"], "&lt;img src=x onerror=alert(1)&gt;.pdf")  # a plain string: the UI renders text nodes only
+        self.assertIn("%26lt%3Bimg", row["open_url"])
 
 
 class SnapshotAndReviewTests(PBase):
@@ -426,6 +431,7 @@ class DrawingResolverTests(PBase):
         with self.assertRaises(rich.ContentError):
             rich.check_portal({"ref": {"kind": "drawing", "id": "pump-a"}, "view": "card"})
 
+    @skip_without_symlinks
     def test_drawing_swapped_for_a_symlink_is_unknown_and_never_read(self):
         import tempfile
 
@@ -443,6 +449,7 @@ class DrawingResolverTests(PBase):
         self.assertEqual(out["results"][0]["state"], "unknown")
         self.assertEqual(one("drawing", "pump-gone")["state"], "missing")
 
+    @skip_without_symlinks
     def test_missing_drawing_under_a_redirected_drawings_folder_is_unknown(self):
         import tempfile
 
@@ -475,6 +482,7 @@ class DrawingResolverTests(PBase):
         self.assertTrue(fired, "the mutation hook ran in the validation/hash gap")
         return out["results"][0]
 
+    @skip_without_symlinks
     def test_parent_swapped_for_a_redirect_between_validation_and_hash_is_unknown_and_never_read(self):
         import tempfile
 
@@ -503,6 +511,7 @@ class DrawingResolverTests(PBase):
         self.assertFalse(opened, "nothing beyond the redirected parent is opened")
         _ = real_open
 
+    @skip_without_symlinks
     def test_drawing_file_replaced_by_a_symlink_or_deleted_in_the_gap(self):
         import tempfile
 

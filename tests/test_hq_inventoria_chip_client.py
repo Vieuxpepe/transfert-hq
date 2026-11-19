@@ -37,7 +37,7 @@ class InventoriaChipClientContracts(unittest.TestCase):
     def test_left_dock_and_intime_hide(self) -> None:
         self.assertIn("hq-inventoria", self.js)
         self.assertIn("hqSessionIsAdmin", self.js)
-        self.assertIn('view === "intime"', self.js)
+        self.assertIn('doc.body.classList.contains("hq-intime-active")', self.js)
         self.assertIn(".hq-inventoria{", self.css)
         self.assertIn("safe-area-inset-left", self.css)
 

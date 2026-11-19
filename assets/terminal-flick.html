@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
+<title>Terminal — mesure des lancers</title>
+<style>
+  :root{--bg:#0b0f14;--panel:#ffffff;--ink:#10161d;--muted:#5a6875;--line:#d7dee6;--accent:#08724f;--dark:#0b1118}
+  *{box-sizing:border-box}
+  body{margin:0;padding:14px 12px calc(24px + env(safe-area-inset-bottom,0px));
+       font:16px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#eef2f6;color:var(--ink)}
+  h1{margin:0 0 4px;font-size:1.15rem}
+  p{margin:0 0 10px;color:var(--muted);font-size:.9rem}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:12px;margin-bottom:12px}
+  .row{display:flex;gap:10px;flex-wrap:wrap}
+  label{display:flex;flex-direction:column;gap:4px;font-size:.78rem;color:var(--muted);flex:1 1 120px}
+  input[type=number]{font-size:16px;padding:10px;border:1px solid var(--line);border-radius:10px;min-height:44px;width:100%}
+  #out{height:56vh;min-height:180px;overflow:auto;background:var(--dark);color:#dbe7f0;border-radius:10px;
+       padding:12px;font:12.5px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;word-break:break-word;
+       -webkit-overflow-scrolling:touch;overscroll-behavior:contain}
+  #out:empty::before{content:"Zone de test : fais un lancer rapide ici.";color:#7d8b99}
+  table{width:100%;border-collapse:collapse;font-size:.78rem}
+  th,td{text-align:left;padding:6px 4px;border-bottom:1px solid var(--line);white-space:nowrap}
+  th{color:var(--muted);font-weight:600}
+  .status{display:inline-flex;align-items:center;gap:6px;font-size:.82rem;color:var(--muted)}
+  .dot{width:8px;height:8px;border-radius:50%;background:#c33}
+  .dot.ok{background:#08724f}
+  button{font:inherit;font-size:.85rem;min-height:44px;padding:8px 14px;border-radius:999px;border:1px solid var(--line);
+         background:#fff;color:var(--ink)}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  #report{width:100%;min-height:110px;font:12px/1.4 ui-monospace,Menlo,monospace;border:1px solid var(--line);
+          border-radius:10px;padding:8px;background:#f7f9fb}
+</style>
+</head>
+<body>
+<h1>Terminal — mesure des lancers</h1>
+<p>Touche la zone noire et fais des lancers rapides vers le haut, jusqu'au bout. La page note si la page principale bouge pendant l'élan, combien de temps l'élan dure, et quand la retenue se relâche.</p>
+
+<div class="card">
+  <div class="row">
+    <label>Quiet (ms) <input id="quiet" type="number" min="40" max="600" step="10" value="140"/></label>
+    <label>Après le doigt (ms) <input id="floor" type="number" min="0" max="800" step="10" value="260"/></label>
+    <span class="status"><span class="dot" id="dot"></span><span id="native">…</span></span>
+  </div>
+</div>
+
+<div class="card">
+  <div id="out"></div>
+</div>
+
+<div class="card">
+  <table>
+    <thead><tr><th>#</th><th>élan</th><th>retenue</th><th>page poussée</th><th>page libre après</th></tr></thead>
+    <tbody id="rows"></tbody>
+  </table>
+  <div class="row" style="margin-top:10px">
+    <button id="copy" class="primary" type="button">Copier le rapport</button>
+    <button id="reset" type="button">Effacer</button>
+  </div>
+  <textarea id="report" readonly aria-label="Rapport JSON"></textarea>
+</div>
+
+<script>
+(() => {
+  const out = document.getElementById('out');
+  const quietInput = document.getElementById('quiet');
+  const floorInput = document.getElementById('floor');
+  const rows = document.getElementById('rows');
+  const report = document.getElementById('report');
+  const native = CSS.supports && CSS.supports('overscroll-behavior', 'contain');
+  document.getElementById('native').textContent = native ? 'overscroll-behavior natif : rien à régler' : 'sans overscroll-behavior : retenue JS active';
+  document.getElementById('dot').className = 'dot' + (native ? ' ok' : '');
+  for (let i = 1; i <= 200; i++) {
+    out.appendChild(document.createTextNode('ligne ' + i + ' — ' + 'x'.repeat(20) + ' lorem ipsum du terminal\n'));
+  }
+
+  const gestures = [];
+  const now = () => performance.now();
+  let hold = null, raf = 0, lastMove = 0, liftedAt = 0, current = null;
+
+  const quiet = () => Math.max(40, Number(quietInput.value) || 140);
+  const floor = () => Math.max(0, Number(floorInput.value) || 260);
+
+  function finish(g, released) {
+    if (!g) return;
+    g.releasedAt = now();
+    g.holdMs = Math.round(g.releasedAt - g.startAt);
+    g.glideMs = g.lastGlide ? Math.round(g.lastGlide - g.startAt) : 0;
+    g.idleBeforeRelease = g.lastGlide ? Math.round(g.releasedAt - g.lastGlide) : null;
+    g.n = gestures.length + 1;
+    gestures.push(g);
+    render(g);
+  }
+
+  function render(g) {
+    if (!g.row) {
+      g.row = document.createElement('tr');
+      rows.prepend(g.row);
+      while (rows.children.length > 5) rows.lastElementChild.remove();
+    }
+    g.row.innerHTML = '<td>' + g.n + '</td>' +
+      '<td>' + g.glideMs + ' ms</td>' +
+      '<td>' + g.holdMs + ' ms</td>' +
+      '<td>' + g.pushed + '</td>' +
+      '<td>' + (g.freeAfter == null ? '…' : (g.freeAfter ? 'oui' : 'non')) + '</td>';
+    report.value = JSON.stringify({native, quiet: quiet(), floor: floor(), gestures: gestures.slice(-5)
+      .map(x => ({n: x.n, glideMs: x.glideMs, holdMs: x.holdMs, pushed: x.pushed, freeAfter: x.freeAfter}))}, null, 1);
+  }
+
+  function stop() {
+    if (raf) cancelAnimationFrame(raf);
+    raf = 0;
+    if (current) { const g = current; current = null; hold = null; finish(g, true); }
+    else hold = null;
+  }
+
+  function tick() {
+    if (!hold) { raf = 0; return; }
+    const t = now();
+    if (out.scrollTop !== hold.top) { hold.top = out.scrollTop; lastMove = t; current.lastGlide = t; }
+    if (Math.abs(scrollX - hold.x) > 0.5 || Math.abs(scrollY - hold.y) > 0.5) {
+      current.pushed++;
+      window.scrollTo(hold.x, hold.y);
+      lastMove = t;
+    }
+    if (t - lastMove > quiet() && t - liftedAt > floor()) { stop(); return; }
+    raf = requestAnimationFrame(tick);
+  }
+
+  out.addEventListener('touchstart', () => {
+    hold = {x: Math.round(scrollX), y: Math.round(scrollY), top: out.scrollTop};
+    lastMove = liftedAt = now();
+    current = {startAt: now(), pushed: 0, lastGlide: 0, freeAfter: null};
+    if (!raf) raf = requestAnimationFrame(tick);
+  }, {passive: true});
+  out.addEventListener('touchend', () => { liftedAt = now(); }, {passive: true});
+  out.addEventListener('touchcancel', stop, {passive: true});
+  out.addEventListener('wheel', (e) => {
+    if (!e.deltaY) return;
+    const top = out.scrollTop <= 0, end = out.scrollTop + out.clientHeight >= out.scrollHeight - 1;
+    if ((e.deltaY < 0 && top) || (e.deltaY > 0 && end)) e.preventDefault();
+  }, {passive: false});
+  // Whatever happens after the release is the user's own scroll: record whether the page answers.
+  window.addEventListener('scroll', () => {
+    if (hold || !gestures.length) return;
+    const g = gestures[gestures.length - 1];
+    if (g.freeAfter == null && now() - g.releasedAt < 1200) {
+      g.freeAfter = true;
+      render(g);
+    }
+  }, {passive: true});
+
+  document.getElementById('copy').addEventListener('click', async () => {
+    report.value = JSON.stringify({native, quiet: quiet(), floor: floor(), gestures}, null, 1);
+    try { await navigator.clipboard.writeText(report.value); } catch (_) { report.select(); }
+  });
+  document.getElementById('reset').addEventListener('click', () => { gestures.length = 0; rows.textContent = ''; report.value = ''; });
+})();
+</script>
+</body>
+</html>

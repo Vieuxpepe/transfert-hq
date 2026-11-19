@@ -8,7 +8,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import hq_ai as ai  # noqa: E402
+import hq_ai as ai
+from tests import hq_assistant_state  # noqa: E402
 
 DEV = "hqtestdevice01ab"
 DEV2 = "hqtestdevice02xy"
@@ -41,6 +42,7 @@ class Base(unittest.TestCase):
         ai._minute.clear()
         ai._health.clear()
         ai.bind(companion_context_config=lambda: {}, root=self.root, extra_keys=lambda: [], key=lambda: "test-key", now=lambda: self.clock[0], post=post,
+                nvidia_key=lambda: "", nim_fallback=lambda: False, local_llm=lambda: False, local_llm_call=None,
                 companion_persona=lambda: "flirt",
                 client_is_controller=lambda ip: str(ip).startswith("127.") or ip == "::1",
                 nsfw_enabled=lambda: True,
@@ -51,6 +53,10 @@ class Base(unittest.TestCase):
                 save_event=lambda p: self.written.append(("event", p)), projects_apply=lambda d: self.written.append(("projects", d)) or {},
                 inventory_apply=lambda d: self.written.append(("inventory", d)) or {"item": {"id": "itm-9"}},
                 carnet_note=lambda lines: self.written.append(("note", lines)) or {"id": "page-9", "block": "block-9"})
+        # Personhood, visit and relationship stores follow the assistant modules,
+        # not the AI root: keep them in this test's temp root too.
+        hq_assistant_state.bind(self.root)
+        hq_assistant_state.guard(self)  # fails the test if a store writes the checkout
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -569,6 +575,219 @@ class HealthOrderTests(Base):
         with self.assertRaises(ai.AiError):
             ai.generate(("gemini-3.5-flash-lite",), "sys", [{"role": "user", "parts": [{"text": "q"}]}])
         self.assertEqual(ai.model_health("gemini-3.5-flash-lite"), {"samples": 1, "failures": 1, "demoted": False})
+
+
+class LocalLlmTests(Base):
+    """The small LLM on the voice-worker PC: a fallback and a low-quota relief, never for the rest."""
+    Q = [{"role": "user", "parts": [{"text": "q"}]}]
+    DOWN = (503, {"error": {"message": "high demand"}})
+
+    def setUp(self):
+        super().setUp()
+        self.asked = []
+        self.reply = "Bonsoir, Maître."
+
+        def local(messages, temperature, max_tokens, timeout, json_mode=False):
+            self.asked.append((messages, temperature, max_tokens, timeout, json_mode))
+            return self.reply
+
+        ai.bind(local_llm=lambda: True, local_llm_call=local)
+
+    def spend(self, fraction, chain=ai.AMBIENT_CHAIN):
+        with ai._usage_transaction():
+            u = ai.usage()
+            for model in chain:
+                u["count"][model] = int(ai.MODELS[model][2] * fraction)
+            ai._save_usage(u)
+
+    def test_with_quota_left_gemini_answers_and_the_laptop_is_not_asked(self):
+        self.answers = [reply("depuis Gemini")]
+        text, model = ai.generate(ai.AMBIENT_CHAIN, "sys", self.Q, ambient=True)
+        self.assertEqual(text, "depuis Gemini")
+        self.assertNotEqual(model, ai.LOCAL_MODEL)
+        self.assertEqual(self.asked, [])
+
+    def test_when_every_gemini_model_failed_the_laptop_answers(self):
+        self.answers = [self.DOWN] * 12
+        text, model = ai.generate(ai.AMBIENT_CHAIN, "sys", self.Q, ambient=True)
+        self.assertEqual((text, model), ("Bonsoir, Maître.", ai.LOCAL_MODEL))
+        self.assertTrue(self.calls)  # Gemini was tried first
+        self.assertEqual([m["role"] for m in self.asked[0][0]], ["system", "user"])
+        self.assertEqual(self.asked[0][2], 256)
+
+    def test_background_text_too(self):
+        self.answers = [self.DOWN] * 12
+        self.assertEqual(ai.generate(ai.AMBIENT_CHAIN, "sys", self.Q, background=True)[1], ai.LOCAL_MODEL)
+
+    def test_when_google_is_nearly_out_the_laptop_goes_first_and_gemini_is_spared(self):
+        self.spend(0.95)  # 5 % left on every model of the chain, key 1 (the only key)
+        text, model = ai.generate(ai.AMBIENT_CHAIN, "sys", self.Q, ambient=True)
+        self.assertEqual(model, ai.LOCAL_MODEL)
+        self.assertEqual(self.calls, [])
+        self.assertEqual(ai.ambient_used(), 0)
+
+    def test_one_model_with_room_left_keeps_gemini_first(self):
+        self.spend(0.95, chain=("gemini-3.1-flash-lite", "gemma-4-26b-a4b-it"))  # gemini-3.5-flash-lite is still fresh
+        self.answers = [reply("depuis Gemini")]
+        self.assertNotEqual(ai.generate(ai.AMBIENT_CHAIN, "sys", self.Q, ambient=True)[1], ai.LOCAL_MODEL)
+        self.assertEqual(self.asked, [])
+
+    def test_a_spent_ambient_budget_is_answered_by_the_laptop_instead_of_an_error(self):
+        with ai._usage_transaction():
+            u = ai.usage()
+            u["ambient"] = ai.daily_limit("ambient")
+            ai._save_usage(u)
+        self.assertEqual(ai.generate(ai.AMBIENT_CHAIN, "sys", self.Q, ambient=True)[1], ai.LOCAL_MODEL)
+        self.assertEqual(self.calls, [])
+
+    def test_an_unavailable_laptop_changes_nothing(self):
+        self.reply = ""  # offline, busy with voice, breaker open, too slow
+        self.answers = [self.DOWN] * 12
+        with self.assertRaises(ai.AiError):
+            ai.generate(ai.AMBIENT_CHAIN, "sys", self.Q, ambient=True)
+        self.spend(0.95)
+        self.answers = [reply("depuis Gemini")]
+        self.assertNotEqual(ai.generate(ai.AMBIENT_CHAIN, "sys", self.Q, ambient=True)[1], ai.LOCAL_MODEL)
+
+        def boom(*a):
+            raise OSError("down")
+        ai.bind(local_llm_call=boom)
+        self.answers = [reply("depuis Gemini")]
+        self.assertNotEqual(ai.generate(ai.AMBIENT_CHAIN, "sys", self.Q, ambient=True)[1], ai.LOCAL_MODEL)
+
+    def test_never_for_chat_adult_json_search_images_visits_or_big_prompts(self):
+        self.spend(1.0)  # worst case for the exclusions: Google is out and every call fails
+        self.answers = [self.DOWN] * 60
+        image = [{"role": "user", "parts": [{"text": "q"}, {"inlineData": {"mimeType": "image/png", "data": "AAAA"}}]}]
+        cases = [(("sys", self.Q), {}), (("sys", self.Q), {"nsfw": True, "ambient": True}), (("sys", self.Q), {"ambient": True, "json_out": True}),
+                 (("sys", self.Q), {"ambient": True, "search": True}), (("sys", self.Q), {"background": True, "json_out": True}),
+                 (("sys", self.Q), {"ambient": True, "transferania": True}), (("sys", image), {"ambient": True}),
+                 (("x" * 40000, self.Q), {"background": True}), (("sys", self.Q), {"ambient": True, "on_delta": lambda piece: None})]
+        for args, kwargs in cases:
+            try:
+                ai.generate(ai.AMBIENT_CHAIN, *args, **kwargs)
+            except ai.AiError:
+                pass  # only whether the laptop was asked matters
+        self.assertEqual(self.asked, [])
+
+    def test_a_chip_visit_may_use_the_laptop_with_json_mode_when_gemini_failed(self):
+        self.reply = '{"lines": ["a", "b"]}'
+        self.answers = [self.DOWN] * 4
+        text, model = ai.generate(("gemini-3.1-flash-lite",), "sys", self.Q, json_out=True, visit=True, max_tokens=360)
+        self.assertEqual((text, model), ('{"lines": ["a", "b"]}', ai.LOCAL_MODEL))
+        self.assertTrue(self.asked[0][4])  # json_mode reached the worker
+        self.assertIn("JSON", self.asked[0][0][0]["content"])
+
+    def test_a_reply_that_is_not_json_is_refused_and_the_error_stands(self):
+        self.reply = "Bonjour !"
+        self.answers = [self.DOWN] * 4
+        with self.assertRaises(ai.AiError):
+            ai.generate(("gemini-3.1-flash-lite",), "sys", self.Q, json_out=True, visit=True)
+        self.reply = "```json\n{\"a\": 1}\n```"
+        self.answers = [self.DOWN] * 4
+        self.assertEqual(json.loads(ai.generate(("gemini-3.1-flash-lite",), "sys", self.Q, json_out=True, visit=True)[0]), {"a": 1})
+
+    def test_a_spent_visit_budget_goes_to_the_laptop(self):
+        self.reply = '{"ok": true}'
+        with ai._usage_transaction():
+            u = ai.usage()
+            u["visits"] = ai.daily_limit("visit")
+            ai._save_usage(u)
+        self.assertEqual(ai.generate(("gemini-3.1-flash-lite",), "sys", self.Q, json_out=True, visit=True)[1], ai.LOCAL_MODEL)
+        self.assertEqual(self.calls, [])
+
+    def test_off_by_default(self):
+        ai.bind(local_llm=lambda: False)
+        self.spend(1.0)
+        self.answers = [self.DOWN] * 12
+        with self.assertRaises(ai.AiError):
+            ai.generate(ai.AMBIENT_CHAIN, "sys", self.Q, ambient=True)
+        self.assertEqual(self.asked, [])
+
+
+class NimFallbackTests(Base):
+    Q = [{"role": "user", "parts": [{"text": "q"}]}]
+
+    def setUp(self):
+        super().setUp()
+        self.nim_calls = []
+        self.nim_reply = (200, {"choices": [{"message": {"content": "réponse nim"}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 20}})
+
+        def post(url, body, headers, timeout):
+            if "integrate.api.nvidia.com" in url:
+                self.nim_calls.append((body, headers))
+                return self.nim_reply
+            self.calls.append(url)
+            return 503, {"error": {"message": "high demand"}}
+
+        ai.bind(post=post, nvidia_key=lambda: "nvapi-test", nim_fallback=lambda: True)
+
+    def test_deep_call_overflows_to_mistral_with_low_reasoning(self):
+        history = [{"role": "user", "parts": [{"text": "a"}]}, {"role": "model", "parts": [{"text": "b"}]}, {"role": "user", "parts": [{"text": "c"}]}]
+        text, model = ai.generate(ai.DEEP_CHAIN, "sys", history)
+        self.assertEqual((text, model), ("réponse nim", ai.NIM_DEEP_MODEL))
+        body, headers = self.nim_calls[0]
+        self.assertEqual(body["reasoning_effort"], "low")
+        self.assertEqual([m["role"] for m in body["messages"]], ["system", "user", "assistant", "user"])
+        self.assertEqual(headers["Authorization"], "Bearer nvapi-test")
+        self.assertEqual(ai.usage()["count"][ai.NIM_DEEP_MODEL], 1)
+
+    def test_background_call_uses_bolt_with_thinking_off_and_counts_ambient(self):
+        text, model = ai.generate(ai.AMBIENT_CHAIN, "sys", self.Q, ambient=True)
+        self.assertEqual(model, ai.NIM_QUICK_MODEL)
+        self.assertEqual(self.nim_calls[0][0]["chat_template_kwargs"], {"thinking": False})
+        self.assertEqual(ai.usage()["count"][ai.NIM_QUICK_MODEL], 1)
+        self.assertEqual(ai.ambient_used(), len(self.calls) + 1)  # each Gemini attempt and the NIM call count against the ambient budget
+
+    def test_json_fences_are_stripped(self):
+        self.nim_reply = (200, {"choices": [{"message": {"content": "```json\n{\"a\": 1}\n```"}, "finish_reason": "stop"}]})
+        text, _model = ai.generate(ai.DEEP_CHAIN, "sys", self.Q, json_out=True)
+        self.assertEqual(json.loads(text), {"a": 1})
+
+    def test_never_used_when_off_or_for_adult_search_images_or_plain_chat(self):
+        with self.assertRaises(ai.AiError):
+            ai.generate(ai.ASK_CHAIN, "sys", self.Q)  # a plain ask is not eligible
+        with self.assertRaises(ai.AiError):
+            ai.generate(ai.DEEP_CHAIN, "sys", self.Q, nsfw=True)
+        with self.assertRaises(ai.AiError):
+            ai.generate(ai.SEARCH_CHAIN, "sys", self.Q, search=True)
+        with self.assertRaises(ai.AiError):
+            ai.generate(ai.DEEP_CHAIN, "sys", [{"role": "user", "parts": [{"text": "q"}, {"inlineData": {"mimeType": "image/png", "data": "AAAA"}}]}])
+        ai.bind(nim_fallback=lambda: False)
+        with self.assertRaises(ai.AiError):
+            ai.generate(ai.DEEP_CHAIN, "sys", self.Q)
+        self.assertEqual(self.nim_calls, [])
+
+    def test_a_failing_nim_reply_reports_the_gemini_failure(self):
+        self.nim_reply = (503, {})
+        with self.assertRaises(ai.AiError) as ctx:
+            ai.generate(ai.DEEP_CHAIN, "sys", self.Q)
+        self.assertEqual(ctx.exception.code, "busy")
+        self.assertEqual(ai.model_health(ai.NIM_DEEP_MODEL)["failures"], 1)
+
+
+class ReplyLanguageTests(unittest.TestCase):
+    def setUp(self):  # the per-request mechanism; the English-only policy has its own tests
+        import os
+        from unittest import mock
+        patcher = mock.patch.dict(os.environ, {"HQ_ENGLISH_ONLY": "0"})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_english_pinned_characters_get_the_directive_in_every_prompt_builder(self):
+        from unittest import mock
+        with mock.patch("hq_voice_phonon.language_directive", side_effect=lambda c: f"LANGUAGE OVERRIDE for {c}"):
+            for who in ("else", "transferania"):
+                self.assertIn(f"LANGUAGE OVERRIDE for {who}", ai.build_sister_system(who, nsfw=False, view="accueil", device_id="d" * 12))
+            self.assertIn("LANGUAGE OVERRIDE for else", ai.build_else_system("chat", "warm", nsfw=False, view="accueil", device_id="d" * 12))
+            self.assertIn("LANGUAGE OVERRIDE for else", ai.build_else_system("chat", "warm", nsfw=False, view="accueil", device_id="d" * 12, context_core=True))
+        with mock.patch("hq_voice_phonon.language_directive", return_value=""):
+            self.assertNotIn("LANGUAGE OVERRIDE", ai.build_sister_system("else", nsfw=False, view="accueil", device_id="d" * 12))
+
+    def test_speech_language_follows_the_reply_language(self):
+        from unittest import mock
+        with mock.patch("hq_voice_phonon.reply_language", side_effect=lambda c: "en" if c == "else" else None):
+            self.assertEqual((ai.speech_language("else"), ai.speech_language("transferania")), ("en", "fr"))
 
 
 if __name__ == "__main__":

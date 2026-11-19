@@ -194,11 +194,13 @@ class MoodTests(Base):
         self.assertEqual((m["soft"], m["why"]), (life.baseline(9)[0], "return"), "a new day starts fresh: last night's pépin is gone, only « contente de te revoir »")
 
     def test_quirks_and_life_rule_in_the_system(self):
+        import hq_language
         self.ambient()
         system, _ = self.prompt()
         self.assertIn("GOÛTS STABLES", system)
         self.assertIn("HUMEUR DU JOUR", "\n".join(self.prompt()))
-        self.assertTrue(system.rstrip().endswith(ai.PRIORITE), "priority stays last")
+        core = system.removesuffix(hq_language.DIRECTIVE) if hq_language.english_only() else system
+        self.assertTrue(core.rstrip().endswith(ai.PRIORITE), "priority stays last before language policy")
 
 
 if __name__ == "__main__":

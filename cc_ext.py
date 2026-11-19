@@ -2838,12 +2838,32 @@ def _decode_output(chunk: bytes) -> str:
         return chunk.decode(_output_codec(), "replace")
 
 
+# Characters cp1252 produces from the 0x80-0x9F range and French text never carries: a transcript that
+# holds one was decoded with the wrong code page (before the OEM fix) and can be re-decoded safely.
+_MOJIBAKE_MARKS = frozenset("‚ƒ„†‡ˆ‰Š‹ŒŽ˜™š›œžŸ")
+
+
+def _repair_saved_output(text: str) -> str:
+    """Re-decode a transcript saved before the OEM fix: back to its bytes, then UTF-8 or the console code page."""
+    if not text or not (_MOJIBAKE_MARKS & set(text)):
+        return text
+    try:
+        raw = text.encode("cp1252", "replace")  # the code page the old decoder wrongly used
+    except (LookupError, UnicodeError):
+        return text
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return raw.decode(_output_codec(), "replace")
+
+
 def _drain(job: _TerminalJob) -> None:
     try:
         stream = job.proc.stdout if job.proc else None
         if stream is not None:
             for chunk in iter(stream.readline, b""):
-                job.write(_decode_output(chunk))
+                # readline keeps the Windows "\r\n": store LF only, or WebKit renders the CR as an extra break.
+                job.write(_decode_output(chunk).replace("\r\n", "\n").rstrip("\r"))
             stream.close()
     except (OSError, ValueError):
         pass
@@ -2901,6 +2921,7 @@ def _persist_job(job: _TerminalJob) -> None:
             truncated = True
         doc = {
             "version": 1,
+            "charset": "auto",  # written after the OEM fix: never re-decoded on read
             "job_id": job.id,
             "kind": job.kind,
             "label": job.label,
@@ -2990,6 +3011,11 @@ def _persisted_doc(job_id: str) -> dict | None:
         doc = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
+    if isinstance(doc, dict) and str(doc.get("charset") or "") != "auto" and isinstance(doc.get("output"), str):
+        fixed = _repair_saved_output(doc["output"])
+        if fixed != doc["output"]:
+            doc["output"] = fixed
+            doc["total"] = len(fixed)
     return doc if isinstance(doc, dict) else None
 
 

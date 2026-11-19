@@ -33,6 +33,11 @@ class ClientDebugSmoke(unittest.TestCase):
         cls.saved = (B.ROOT, B.SESSIONS_PATH, B.CONFIG_PATH, dict(B.CONFIG), dict(B._DIAG_STATE))
         B.ROOT = cls.root
         B.SESSIONS_PATH = cls.root / "bridge_sessions.json"
+        # This file also runs as a bare script (verify_bridge_smoke step 1), where
+        # tests/__init__ never sandboxes: move the visit telemetry off the checkout.
+        import hq_assistant_visits
+
+        hq_assistant_visits.bind_state_root(cls.root)
         B.CONFIG_PATH = Path(cls.tmp) / "bridge_config.json"
         B.CONFIG_PATH.write_text(json.dumps({"pin": ""}), encoding="utf-8")
         B.CONFIG.update(

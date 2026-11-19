@@ -3,29 +3,87 @@
   position: fixed;
   left: 12px;
   bottom: 12px;
-  z-index: 60;
+  /* Above the navigation rail (z-index 80): a translucent, blurred rail over the
+     panel made its left third unreadable. Sheets (120+) still cover it. */
+  z-index: 86;
   border: 1px solid rgba(255,255,255,.18);
   border-radius: 999px;
   background: rgba(18,18,22,.82);
   color: #f4efe7;
-  font: 600 12px/1 system-ui, sans-serif;
+  font: 600 11px/1 system-ui, sans-serif;
   padding: 10px 14px;
   cursor: pointer;
   backdrop-filter: blur(10px);
   box-shadow: 0 8px 24px rgba(0,0,0,.24);
 }
 .hq-self-open:hover { border-color: rgba(255,255,255,.4); }
+/* It is a real navigation entry: a rail row on the wide layout, a tab on phones.
+   Nothing floats over the page, so no content or control sits under it. */
+.bottom-nav .hq-self-open {
+  position: static;
+  left: auto;
+  right: auto;
+  bottom: auto;
+  z-index: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  min-height: 52px;
+  padding: 6px 2px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--muted);
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  font: inherit;
+  font-size: var(--text-xs);
+  font-weight: 700;
+  line-height: 1.2;
+  text-align: center;
+  cursor: pointer;
+}
+.bottom-nav .hq-self-open:hover {
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+.bottom-nav .hq-self-open .nav-svg { width: 20px; height: 20px; }
+@media (min-width: 900px) {
+  .bottom-nav .hq-self-open {
+    flex-direction: row;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 10px;
+    min-height: 0;
+    padding: 6px 10px;
+    font-size: .82rem;
+    font-weight: 650;
+    text-align: left;
+  }
+  .bottom-nav .hq-self-open .nav-svg { width: 18px; height: 18px; }
+  .hq-self-panel { left: 12px; }
+}
+/* The dev-only debug chip (#hq-debug-panel) is pinned to the same bottom-left
+   corner with a far higher z-index, so it swallowed every click on this button.
+   The chip keeps its corner and its own collapse; the product control steps above
+   it instead of fighting it for the same pixels. */
+body.hq-self-debug-chip .hq-self-open { bottom: var(--hq-self-chip-clear, 72px); }
+body.hq-self-debug-chip .hq-self-panel { bottom: calc(var(--hq-self-chip-clear, 72px) + 46px); }
 .hq-self-panel {
   position: fixed;
   left: 12px;
   bottom: 58px;
-  z-index: 61;
+  z-index: 87;
   width: min(430px, calc(100vw - 24px));
   max-height: min(76vh, 720px);
   overflow: auto;
   border: 1px solid rgba(255,255,255,.16);
   border-radius: 18px;
-  background: rgba(16,16,20,.97);
+  /* Opaque: at 0.97 the dashboard behind ghosted through the body text. */
+  background: #101014;
   color: #f4efe7;
   box-shadow: 0 20px 60px rgba(0,0,0,.45);
   padding: 16px;
@@ -33,7 +91,14 @@
 }
 .hq-self-panel[hidden] { display: none; }
 .hq-self-head { display: flex; gap: 10px; align-items: center; justify-content: space-between; }
-.hq-self-head h2 { font-size: 16px; margin: 0; letter-spacing: .02em; }
+.hq-self-head h2 {
+  font-size:var(--text-lg);
+  margin: 0;
+  letter-spacing: .02em;
+  /* The page's generic h2 colour is dark-on-light; on this dark panel it painted
+     the title almost invisible. */
+  color: inherit;
+}
 .hq-self-head button, .hq-self-actions button {
   border: 1px solid rgba(255,255,255,.18);
   background: rgba(255,255,255,.06);
@@ -54,9 +119,9 @@
   color: inherit;
 }
 .hq-self-section { border-top: 1px solid rgba(255,255,255,.1); margin-top: 13px; padding-top: 11px; }
-.hq-self-section h3 { margin: 0 0 7px; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: #c9c1b5; }
+.hq-self-section h3 { margin: 0 0 7px; font-size:var(--text-xs); letter-spacing: .1em; text-transform: uppercase; color: #c9c1b5; }
 .hq-self-kv { margin: 3px 0; }
-.hq-self-muted { color: #a9a29a; font-size: 12px; }
+.hq-self-muted { color: #a9a29a; font-size: var(--text-sm); }
 .hq-self-chip { display: inline-block; border: 1px solid rgba(255,255,255,.14); border-radius: 999px; padding: 2px 7px; margin: 2px 4px 2px 0; font-size: 11px; }
 .hq-self-item { padding: 7px 0; border-bottom: 1px solid rgba(255,255,255,.06); }
 .hq-self-item:last-child { border-bottom: 0; }
@@ -65,3 +130,11 @@
 .hq-self-bar { height: 4px; border-radius: 99px; background: rgba(255,255,255,.1); overflow: hidden; margin-top: 4px; }
 .hq-self-bar i { display: block; height: 100%; background: #c9a86a; }
 .hq-self-error { color: #ffb4a8; }
+/* On phones the navigation is a fixed bottom bar (--nav-h plus the safe area).
+   The pair used to sit inside the bar's first row at z-index 86, so a tab under
+   it could not be tapped. Lift it above the bar, like the other floating
+   controls; the panel keeps its 46 px clearance above the button. */
+@media (max-width: 899px) {
+  .hq-self-open { bottom: calc(var(--nav-h, 64px) + 12px + env(safe-area-inset-bottom, 0px)); }
+  .hq-self-panel { bottom: calc(var(--nav-h, 64px) + 58px + env(safe-area-inset-bottom, 0px)); }
+}

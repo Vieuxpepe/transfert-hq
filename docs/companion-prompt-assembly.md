@@ -40,11 +40,50 @@ source of billed token counts.
 | Summary | Existing summary lifecycle | Choices, explicit reasons, corrections, open/resolved threads |
 | Conversation | Whole paired exchanges | Latest continuity and older user-topic relevance |
 | Internal state | `hq_personhood.state_line` / `regime` / `withholds_initiative` | Her own decaying energy/tension/warmth, the last thing that moved it, and the bounded `régime` that turns it into brevity, openness or a closed subject; one `behavior` block, never identity. While the grade is tense every unprompted offer is withheld at its own source — follow-up, absence callback, motif callback, visit continuity, her open-thread/self-note/contested/value note, a follow-up registered from her own question, and the spontaneous ambient lines (Transferania and Else); records stay pending and nothing is reserved, explicit recall and requested reflections stay open by design, and a personhood read that raises fails open |
-| Delivery | `delivery_hint` | Cadence and at most one contextual habit; no repeated identity catalog |
+| Delivery | `delivery_hint` | Cadence, the opening she must not repeat, the social chat shape, and at most one contextual habit; no repeated identity catalog |
 
 The intensity comparison has one home in the full core, independently of edited
 humour fields. A neutral reply does not repeat stable temperament in the dynamic
 response plan. User-provided evidence remains data, not a new system instruction.
+
+## Chat aliveness
+
+The mandatory chat core is size-bound (the configured budget must fit instructions
+plus the current message), so aliveness is split by ownership rather than grown in
+the core. `CHAT_WARM` / `CHAT_FLIRT` keep their compact size and state the chat
+contract in one line each: a réplique rather than a report, a reaction before the
+answer, a precise detail, a held position, variation between turns, and for flirt
+initiative that drops on a refusal, silence or serious subject. `CHAT_REGISTER`
+carries the same contract for callers that build a non-core prompt, and still
+allows an occasional emoji.
+
+Delivery owns the per-turn moves, so they are selectable evidence rather than
+mandatory instructions:
+
+| Part | Source | Contents |
+| --- | --- | --- |
+| Cadence | `voice_hint` | Short/long cadence plus the opening not to repeat, taken from her own previous line (`opening_avoid`, first word only); no extra history, no user fact derived |
+| Shape | `shape_hint` | Social turns only: react before informing, a precise detail over a synthesis, one held position, at most one question; a repair turn corrects cleanly instead |
+| Habit | `quirk_hint` | The existing single contextual habit |
+
+Identity, temperament, family and intensity are not restated in any of the three,
+and a task or comfort turn keeps its own behaviour hint instead of the social shape.
+
+The mandatory core also had to get back inside the tight budgets the evaluation
+uses (`tight_budget` at 6 000 B, the personhood-share case at 6 200 B): the
+duplicated « incarnation » and sister sentences in `CHARACTER_SHEET`, `LIFE_RULE`
+and the core memory rule were compressed to their non-redundant content (family
+canon, Live2D incarnation and the stable tastes stay). The warm chat core is now
+about 5 900 B, so a small budget is spent on evidence (corrections, real events)
+rather than on repeated instructions.
+
+Reproduce the chat behaviour without a model call:
+
+```bash
+python scripts/verify_chat_aliveness.py      # 6 scripted turns, payload evidence
+python -m unittest tests.test_chat_aliveness -q
+python scripts/verify_live_chat_prompt.py    # read-only probe of the running bridge
+```
 
 ## Selection and serialization
 

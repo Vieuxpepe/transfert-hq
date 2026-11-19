@@ -333,9 +333,99 @@ class LearningTests(DjBase):
     def test_history_off_sends_no_taste_brief(self):
         hq_music.update_taste({"history_sharing": False})
         hq_music.record_feedback("Artist 7", "Song 7", True, action="like", uri="spotify:track:7")
+        import hq_musica_profile as mp
+        mp.save_overrides({"boosted_artists": ["Artist 6"], "custom_notes": "Secret note"})
         with mock.patch("hq_ai.generate", return_value=(json.dumps({"tracks": ["c1", "c2", "c3"], "intro": "x"}), "m")) as gen:
             dj.plan_segment()
-        self.assertNotIn("Goûts appris", gen.call_args.args[2][0]["parts"][0]["text"])
+        user_msg = gen.call_args.args[2][0]["parts"][0]["text"]
+        self.assertNotIn("Goûts appris", user_msg)
+        self.assertNotIn("Dossier musical approfondi", user_msg)
+
+    def test_plan_uses_deep_profile_overrides_and_fatigue(self):
+        import hq_musica_profile as mp
+        active_key = dj._PART_TO_RULE_KEY.get(dj.daypart(), "soirée")
+        mp.save_overrides({
+            "boosted_artists": ["Artist 6"],
+            "boosted_genres": ["darksynth"],
+            "pinned_tracks": ["Artist 6 - Song 6"],
+            "mood_rules_override": {active_key: "Tension sombre et cinématique"},
+            "target_bpm_range": {"min": 130, "max": 165},
+            "language_preferences": ["en", "de"],
+            "context_tags": ["night-drive", "coding"],
+            "novelty_target": 0.28,
+            "custom_notes": "Priorité aux textures industrielles",
+        })
+        analysis = {
+            "version": 2,
+            "analyzed_utc": "2026-11-15T12:00:00Z",
+            "history_sharing": True,
+            "artist_affinities": [{"name": "Artist 6", "score": 85.0, "tier": "core_pillar", "trajectory": "surging",
+                                   "genres": ["darksynth", "ebm"]}],
+            "genre_profile": {"top_genres": [{"genre": "darksynth", "score": 10.0}], "surging_genres": ["ebm"], "macro_families": []},
+            "fatigue_profile": {
+                "overplay_fatigue": [{"name": "Artist 1", "historical_plays": 12, "recent_14d": 0, "dj_skipped": 2, "recommended_rest_days": 14}],
+                "track_burnout": [{"name": "Song 2", "artists": ["Artist 2"], "historical_plays": 8, "recommended_rest_days": 14}],
+                "true_dislikes": [],
+                "track_feedback_rejects": [],
+            },
+            "novelty_profile": {"optimal_familiarity": 0.65, "manual_target_familiarity": 0.28},
+            "circadian_profile": {"dayparts": {active_key: {"top_artists": ["Artist 6", "Artist 8"], "share_pct": 40.0}}},
+            "track_signatures": {"top_tracks": []},
+            "acoustic_fingerprint": {},
+            "lyrical_profile": {},
+            "sonic_axes": {"aggression": {"score": 82}},
+        }
+        mp._save_analysis(analysis)
+        hq_musica.save_beat_grid({"key": "6", "source": "live", "bpm": 145, "offset": 0.2,
+                                  "energy": [0.8, 0.9], "energy_step": 1})
+
+        profile = dj.taste_profile()
+        self.assertEqual(profile["boosted_artists"], ["Artist 6"])
+        self.assertEqual(profile["boosted_genres"], ["darksynth"])
+        self.assertEqual(profile["context_tags"], ["night-drive", "coding"])
+        self.assertEqual(profile["language_preferences"], ["en", "de"])
+        self.assertIn("Artist 1", profile["fatigued"])
+        self.assertEqual(profile["target_familiarity"], 0.28)
+        self.assertGreater(profile["scores"]["artist 6"], 0)
+
+        rich_pools = {
+            "top": [row(i) for i in range(1, 18)],
+            "discovery": [row(i, pool="discovery") for i in range(20, 26)],
+        }
+        with mock.patch.object(dj, "candidate_pools", return_value=rich_pools) as cand, \
+             mock.patch("hq_ai.generate", return_value=(json.dumps({"tracks": ["c1", "c2", "c3"], "intro": "x"}), "m")) as gen:
+            dj.plan_segment()
+
+        hint = cand.call_args.kwargs["taste_hint"]
+        self.assertIn("Artist 6", hint)
+        self.assertIn("darksynth", hint)
+        self.assertIn("ebm", hint)
+        self.assertIn("night-drive", hint)
+        user_msg = gen.call_args.args[2][0]["parts"][0]["text"]
+        self.assertIn("Artist 6", user_msg)
+        self.assertIn("Tension sombre et cinématique", user_msg)
+        self.assertIn("Priorité aux textures industrielles", user_msg)
+        self.assertIn("Dossier musical approfondi", user_msg)
+        self.assertIn('"bpm": 145', user_msg)
+        self.assertIn('"genres": ["darksynth", "ebm"]', user_msg)
+        self.assertNotIn('"Song 1"', user_msg)   # Artist 1 in overplay_fatigue rested
+        self.assertNotIn('"Artist 1"', user_msg)
+        self.assertNotIn('"Song 2"', user_msg)   # Song 2 in track_burnout rested
+        self.assertIn('"Song 6"', user_msg)      # Boosted Artist 6 included and prioritized
+        self.assertIn('"aime": true', user_msg)
+
+        # Duels also exclude fatigued contenders on rested passes and inject dossier context
+        duel_pools = {
+            "classics": [row(1, pool="classics")] + [row(i, pool="classics") for i in range(3, 8)],
+            "discovery": [row(i, pool="discovery") for i in range(20, 25)],
+        }
+        with mock.patch.object(dj, "candidate_pools", return_value=duel_pools) as dcand, \
+             mock.patch("hq_ai.generate", return_value=(json.dumps({"intro": "x", "line_b": "y", "prediction": "a"}), "m")) as dgen:
+            duel_seg = dj.plan_duel()
+        self.assertIn("night-drive", dcand.call_args.kwargs["taste_hint"])
+        self.assertNotEqual(duel_seg["tracks"][0]["artists"][0], "Artist 1")
+        duel_prompt = dgen.call_args.args[2][0]["parts"][0]["text"]
+        self.assertIn("Profil musical du Maître", duel_prompt)
 
 
 class PrepTests(DjBase):
@@ -429,6 +519,13 @@ class PlaybackPlaylistTests(unittest.TestCase):
 
 
 class LanguageTests(DjBase):
+    def setUp(self):  # the per-request mechanism; the English-only policy has its own tests
+        super().setUp()
+        import os
+        patcher = mock.patch.dict(os.environ, {"HQ_ENGLISH_ONLY": "0"})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_english_voice_makes_an_english_show(self):
         with mock.patch("hq_voice_phonon.reply_language", return_value="en"):
             self.assertEqual(dj.show_language(), "en")
@@ -548,6 +645,314 @@ class SeamlessTests(DjBase):
             dj.go("s")
         self.assertIn("play", order)
         self.assertEqual(out["announce"]["drops"], ["drop-" + "c" * 20 + ".mp3"])
+
+
+class UpgradesTests(DjBase):
+    def test_cross_segment_continuity_and_two_turn_sister_banter(self):
+        dj.request_guest("else")
+        first_payload = {
+            "title": "Ouverture synth", "theme": "synthwave", "tracks": ["c1", "c2", "c3", "c4"],
+            "intro": "On démarre!", "lines": {"c2": "Belle montée."},
+            "guest_line": "Calibrage parfait, Maître.", "guest_reply": "Toujours au millimètre, Else!",
+        }
+        second_payload = {
+            "title": "Montée nocturne", "theme": "rock", "tracks": ["c1", "c2", "c3", "c4"],
+            "intro": "On continue sur l'élan!", "lines": {"c2": "Toujours plus haut."}, "guest_line": "", "guest_reply": "",
+        }
+        with mock.patch("hq_ai.generate", return_value=(json.dumps(first_payload), "m")), \
+             mock.patch.object(dj, "make_drop", side_effect=lambda txt, character="musica", **kw: f"drop-{character}-{'a' * 15}.mp3"[:29] if False else "drop-" + ("b" if character == "else" else ("c" if "Else" in txt else "a")) + "0" * 19 + ".mp3"), \
+             mock.patch.object(dj, "_spawn"), mock.patch.object(dj, "_fade_out_and_pause"):
+            out = dj.start({})
+        seg = dj._state()["segment"]
+        self.assertEqual(seg["arc"], "ouverture")
+        self.assertEqual(seg["guest"]["who"], "else")
+        self.assertEqual(seg["guest"]["reply"], "Toujours au millimètre, Else!")
+        self.assertEqual(len(out["announce"]["drops"]), 3)
+        self.assertEqual(len(dj._intro_drops(seg)), 3)
+        self.assertIn("Toujours au millimètre, Else!", dj._intro_text(seg))
+
+        seen_prompts = []
+        with mock.patch("hq_ai.generate", side_effect=lambda *a, **k: (seen_prompts.append(a[2][0]["parts"][0]["text"]), (json.dumps(second_payload), "m"))[1]):
+            next_seg = dj.plan_segment(show="dj", state=dj._state())
+        self.assertEqual(next_seg["arc"], "montée")
+        self.assertIn("Ouverture synth", seen_prompts[0])
+
+    def test_persistent_session_steer_and_clear(self):
+        dj.set_session_steer({"text": "synthwave sombre"})
+        self.assertEqual(dj.public_state()["session_steer"]["label"], "synthwave sombre")
+        seen_prompts = []
+        with mock.patch("hq_ai.generate", side_effect=lambda *a, **k: (seen_prompts.append(a[2][0]["parts"][0]["text"]), (json.dumps({
+            "title": "Nuit", "theme": "synth", "tracks": ["c1", "c2", "c3"], "intro": "Go.", "lines": {}, "guest_line": "",
+        }), "m"))[1]):
+            dj.plan_segment(show="dj", state=dj._state())
+        self.assertIn("synthwave sombre", seen_prompts[0])
+        dj.set_session_steer({"clear": True})
+        self.assertIsNone(dj.public_state()["session_steer"])
+
+    def test_similar_now_and_skip_reason_without_blacklisting(self):
+        payload = {"title": "Dans la même veine", "theme": "similaire", "tracks": ["c1", "c2", "c3"],
+                   "intro": "On prolonge ce son.", "lines": {}, "guest_line": ""}
+        with mock.patch.object(dj, "make_drop", return_value=None), mock.patch.object(dj, "_spawn"), \
+             mock.patch.object(dj, "_fade_out_and_pause"), \
+             mock.patch("hq_ai.generate", return_value=(json.dumps(payload), "m")):
+            dj.start({})
+            with mock.patch.object(dj, "candidate_pools", return_value={"similar": [row(20, "similar"), row(21, "similar"), row(22, "similar")]}) as cp:
+                out = dj.similar_now({})
+            self.assertEqual(cp.call_args.kwargs["seed_track"]["uri"], "spotify:track:99")
+            self.assertEqual(out["segment"]["title"], "Dans la même veine")
+
+            with mock.patch.object(hq_music, "record_feedback"):
+                dj.record_skip("spotify:track:20")
+            st = dj.record_skip_reason({"reason": "too_slow"})
+            self.assertEqual(st["mood"]["energy"], 4)
+            st2 = dj.record_skip_reason({"reason": "overplayed"})
+            self.assertEqual(st2["last_skipped"]["reason"], "overplayed")
+            self.assertIn("spotify:track:20", dj._state()["session_rest_uris"])
+
+    def test_show_facts_calendar_and_session_gap_no_titles(self):
+        with mock.patch.object(hq_music, "mood_suggestion", return_value={"events_today": 2, "next_event": {"start": "18:30", "title": "SECRET_TITLE"}, "minutes": 45}):
+            facts = dj._show_facts("dj", True, {"last_ended_at": 1.0, "active": False})
+        self.assertIn("18:30", facts)
+        self.assertNotIn("SECRET_TITLE", facts)
+        self.assertIn("Retour d'émission", facts)
+
+    def test_play_on_pc_uses_wasapi_duck_and_falls_back_to_api_ramp(self):
+        import contextlib
+        import hq_music_audio_duck as audio_duck
+
+        drop_name = "drop-" + "d" * 20 + ".mp3"
+        (Path(self.tmp.name) / "dj-cache").mkdir(parents=True, exist_ok=True)
+        (Path(self.tmp.name) / "dj-cache" / drop_name).write_bytes(b"mp3")
+
+        @contextlib.contextmanager
+        def ok_duck(**kw):
+            yield True
+
+        @contextlib.contextmanager
+        def no_duck(**kw):
+            yield False
+
+        with mock.patch.object(audio_duck, "duck_spotify", side_effect=ok_duck), \
+             mock.patch.object(subprocess, "run"), \
+             mock.patch.object(dj, "_ramp") as ramp:
+            dj._play_on_pc([drop_name], {"id": "dev", "volume_percent": 70})
+        ramp.assert_not_called()
+
+        with mock.patch.object(audio_duck, "duck_spotify", side_effect=no_duck), \
+             mock.patch.object(subprocess, "run"), \
+             mock.patch.object(dj, "_ramp") as ramp:
+            dj._play_on_pc([drop_name], {"id": "dev", "volume_percent": 70})
+        self.assertEqual(ramp.call_count, 2)
+
+
+class PipelineTests(DjBase):
+    """Stage timings, busy/queue/cancel, the polled snapshot, the cache budget and the reactive replan."""
+
+    def setUp(self):
+        super().setUp()
+        # Another case's preparation thread (they gate on events) must not make this one look busy.
+        self.addCleanup(self.quiet_prep)
+        dj._bg.clear()
+
+    def quiet_prep(self):
+        import time
+        end = time.time() + 5
+        while time.time() < end and dj._prep.get("running"):
+            time.sleep(0.02)
+        with dj._lock:
+            dj._prep.clear()
+
+    def wait_until(self, condition, timeout=5.0):
+        import time
+        end = time.time() + timeout
+        while time.time() < end:
+            if condition():
+                return True
+            time.sleep(0.01)
+        self.fail("condition never became true")
+
+    def seg(self, ids=(1, 2, 3), sid="one"):
+        return {"id": sid, "show": "dj", "title": sid, "theme": "", "intro": "Intro", "intro_drop": None,
+                "guest": None, "tracks": [dict(row(i), line=f"ligne {i}", drop=None) for i in ids],
+                "premiere_uris": [], "joke": None}
+
+    def test_prep_records_stage_timings_and_the_last_run(self):
+        import threading
+        gate = threading.Event()
+
+        def slow_plan(**_kwargs):
+            dj._progress("pools")
+            gate.wait(5)
+            dj._progress("writing")
+            return self.seg()
+
+        with mock.patch.object(dj, "plan_segment", side_effect=slow_plan), \
+             mock.patch.object(dj, "make_drop", return_value=None), mock.patch.object(dj, "_spawn"), \
+             mock.patch.object(dj, "_air", return_value={"ok": True}), mock.patch.object(hq_spotify, "player_action"):
+            dj.begin("start", {"show": "dj"})
+            self.wait_until(lambda: (dj.prep_view() or {}).get("stage") == "pools")
+            gate.set()
+            self.wait_until(lambda: not dj.prep_view()["running"])
+        view = dj.prep_view()
+        self.assertIn("pools", view["timings"])
+        self.assertGreaterEqual(view["timings"]["pools"], 0.0)
+        self.assertIn("drop_hits", view["stats"])
+        last = dj.public_state()["last_prep"]
+        self.assertIsNone(last["error"])
+        self.assertIn("total", last)
+
+    def test_a_second_request_is_queued_or_refused_never_silent(self):
+        import threading
+        gate = threading.Event()
+        with mock.patch.object(dj, "plan_segment", side_effect=lambda **k: (gate.wait(5), self.seg())[1]), \
+             mock.patch.object(dj, "make_drop", return_value=None), mock.patch.object(dj, "_spawn"), \
+             mock.patch.object(dj, "_air", return_value={"ok": True}), \
+             mock.patch.object(dj, "_fade_out_and_pause"), mock.patch.object(hq_spotify, "player_action"):
+            out = dj.begin("start", {"show": "dj"})
+            self.assertTrue(out["prep"]["running"])
+            same = dj.begin("start", {"show": "dj"})  # the button again: idempotent, and it says so
+            self.assertTrue(same["busy"])
+            self.assertEqual(same["prep"]["id"], out["prep"]["id"])
+            with self.assertRaises(dj.DjError) as caught:
+                dj.begin("start", {"show": "matinale"})
+            self.assertEqual(caught.exception.code, "dj_busy")
+            queued = dj.begin("steer", {"text": "du jazz"})
+            self.assertEqual(queued["queued"], "steer")
+            self.assertTrue(dj.prep_view()["queued"])
+            gate.set()
+            self.wait_until(lambda: dj._state().get("steers"))
+            self.wait_until(lambda: not dj.prep_view()["running"])
+        self.assertEqual(dj._state()["steers"][-1]["text"], "du jazz")  # the queued request really ran
+
+    def test_cancel_stops_the_preparation_at_its_checkpoint(self):
+        import threading
+        gate = threading.Event()
+
+        def slow_plan(**_kwargs):
+            dj._progress("pools")
+            gate.wait(5)
+            return self.seg()
+
+        with mock.patch.object(dj, "plan_segment", side_effect=slow_plan), \
+             mock.patch.object(dj, "make_drop", return_value=None), mock.patch.object(dj, "_spawn"), \
+             mock.patch.object(hq_spotify, "player_action"):
+            dj.begin("start", {"show": "dj"})
+            self.wait_until(lambda: (dj.prep_view() or {}).get("stage") == "pools")
+            self.assertTrue(dj.cancel_prep()["cancelled"])
+            gate.set()
+            self.wait_until(lambda: not dj.prep_view()["running"])
+        self.assertEqual(dj.prep_view()["code"], "dj_cancelled")
+        self.assertFalse(dj._state()["active"])  # nothing went on air
+        self.assertFalse(dj.cancel_prep()["cancelled"])
+
+    def test_the_polled_state_is_reused_until_something_writes(self):
+        dj.public_state()
+        with mock.patch.object(dj, "_state", wraps=dj._state) as probe:
+            dj.public_state()
+            dj.public_state()
+        self.assertEqual(probe.call_count, 0)  # the file is not re-read on every poll
+        dj._save_state(dj._state())
+        with mock.patch.object(dj, "_state", wraps=dj._state) as probe:
+            dj.public_state()
+        self.assertEqual(probe.call_count, 1)  # a write invalidates it at once
+
+    def test_voice_status_is_served_stale_while_it_refreshes(self):
+        dj._voice_cache.update(value={"engine_now": "old"}, at=0.0, busy=False)
+        with mock.patch.object(dj, "voice_status", return_value={"engine_now": "new"}) as probe:
+            self.assertEqual(dj.voice_status_cached(), {"engine_now": "old"})  # a poll never blocks on the probe
+            self.wait_until(lambda: dj._voice_cache["value"] == {"engine_now": "new"})
+        self.assertGreaterEqual(probe.call_count, 1)
+
+    def test_the_cache_is_pruned_by_size_and_spares_the_archives(self):
+        import os
+        cache = dj._cache_dir()  # <root>/.hq-music/dj-cache
+        names = []
+        for i in range(6):
+            path = cache / ("drop-" + f"{i:020d}" + ".mp3")
+            path.write_bytes(b"x" * 1000)
+            os.utime(path, (1000 + i, 1000 + i))  # i=0 is the oldest
+            names.append(path.name)
+        with mock.patch.object(dj, "CACHE_MAX_BYTES", 3500), \
+             mock.patch.object(dj, "_exported_drops", return_value=set()):
+            dj._prune_cache(keep=10, force=True)
+        self.assertEqual(sorted(p.name for p in cache.glob("drop-*.mp3")), names[3:])
+
+    def test_the_mix_normalises_loudness_and_ducks_the_bed(self):
+        with mock.patch.object(dj.subprocess, "run") as run:
+            dj._mix(Path(self.tmp.name) / "v.wav", jingle=Path("j.wav"), bed=Path("b.wav"),
+                    out=Path(self.tmp.name) / "x.mp3")
+        mix = " ".join(run.call_args_list[0].args[0])
+        encode = " ".join(run.call_args_list[-1].args[0])
+        self.assertIn("sidechaincompress", mix)
+        # An unreadable measure falls back to the single-pass chain, still at the -16 LUFS target.
+        self.assertIn("loudnorm=I=-16.0", encode)
+        self.assertIn("alimiter", encode)
+
+    def test_the_mix_applies_the_measured_gain_to_the_finished_drop(self):
+        # ebur128 on the raw PCM: -18.5 LUFS, true peak -8 dBFS -> a +2.5 dB gain reaches the target.
+        measured = mock.Mock(stderr="    I:         -18.5 LUFS\n    Peak:       -8.0 dBFS\n")
+        with mock.patch.object(dj.subprocess, "run", return_value=measured) as run:
+            dj._mix(Path(self.tmp.name) / "v.wav", jingle=None, bed=None, out=Path(self.tmp.name) / "x.mp3")
+        encode = " ".join(run.call_args_list[-1].args[0])
+        self.assertIn("volume=2.50dB", encode)
+        self.assertIn(f"alimiter=limit={dj.LIMIT_LINEAR}", encode)
+
+    def test_a_peaky_drop_keeps_its_level_and_the_limiter_holds_the_ceiling(self):
+        # -17.5 LUFS with peaks at -1.9 dBFS: the gain still reaches the target, alimiter shaves the peaks.
+        # Capping the gain here instead is what put a real intro at -20.4 LUFS.
+        measured = mock.Mock(stderr="    I:         -17.5 LUFS\n    Peak:       -1.9 dBFS\n")
+        with mock.patch.object(dj.subprocess, "run", return_value=measured) as run:
+            dj._mix(Path(self.tmp.name) / "v.wav", jingle=None, bed=None, out=Path(self.tmp.name) / "x.mp3")
+        encode = " ".join(run.call_args_list[-1].args[0])
+        self.assertIn("volume=1.50dB", encode)
+        self.assertIn("alimiter=limit=" + str(dj.LIMIT_LINEAR), encode)
+
+    def test_the_drop_key_follows_the_mastering_revision(self):
+        st = dj.settings()
+        key, _text = dj._drop_key("Salut", "musica", None, False, "en", "warm", "phonon", st)
+        with mock.patch.object(dj, "MIX_REV", dj.MIX_REV + 1):
+            other, _text = dj._drop_key("Salut", "musica", None, False, "en", "warm", "phonon", st)
+        self.assertNotEqual(key, other)  # an old drop is never replayed with the previous chain
+
+    def test_two_mood_skips_replan_the_segment(self):
+        with mock.patch.object(dj, "plan_segment", return_value=self.seg()), \
+             mock.patch.object(dj, "make_drop", return_value=None), mock.patch.object(dj, "_spawn") as spawn, \
+             mock.patch.object(hq_spotify, "player_action"):
+            dj.start({})
+            dj.go()
+            spawn.reset_mock()
+            with mock.patch.object(hq_music, "record_feedback"):
+                dj.record_skip_reason({"reason": "wrong_mood"})
+                spawn.assert_not_called()  # one skip is not a pattern
+                dj.record_skip_reason({"reason": "too_slow"})
+        self.assertEqual(spawn.call_args.args[0], "reactive-replan")
+        fired = dj._state()["last_reactive"]
+        self.assertEqual(fired["reason"], "too_slow")
+        self.assertEqual(fired["segment"], dj._state()["segment"]["id"])
+
+    def test_a_failed_plan_does_not_consume_the_next_reaction(self):
+        state = dj._state()
+        state.update(active=True, segment={**self.seg(), "skip_reasons": ["wrong_mood"]},
+                     last_reactive={"segment": "other", "at": 0.0})
+        self.assertTrue(dj._note_mood_skip(state, "wrong_mood"))
+        state["segment"]["skip_reasons"] = ["wrong_mood"]
+        self.assertFalse(dj._note_mood_skip(state, "wrong_mood"))  # once per segment
+
+
+class LocalPlaybackTests(unittest.TestCase):
+    """A file in the Lecteur makes the show step aside, like a foreign Spotify track."""
+
+    def test_local_play_steps_aside(self):
+        with mock.patch.object(dj, "_state", return_value={"active": True, "segment": {"id": "s"}}), \
+                mock.patch.object(dj, "_save_state") as save:
+            answer = dj.local_playback(True)
+        self.assertTrue(answer["left"])
+        self.assertFalse(answer["active"])
+        self.assertTrue(save.called)
+
+    def test_no_show_no_change(self):
+        with mock.patch.object(dj, "_state", return_value={"active": False}):
+            self.assertFalse(dj.local_playback(True)["left"])
 
 
 if __name__ == "__main__":

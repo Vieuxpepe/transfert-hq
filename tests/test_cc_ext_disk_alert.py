@@ -37,14 +37,28 @@ def guarded_mkdir(test_root: Path):
     run_backup() creates its destination with Path.mkdir before copying anything, so
     this stops a test from ever writing a real backup (e.g. to D: on a Windows PC
     where D:/Backups/Transfert is an absolute, existing path)."""
-    root = os.path.abspath(str(test_root))
+    roots = [os.path.abspath(str(test_root))]
+    # tests/__init__.py puts the bridge state in a temp root, so a path derived
+    # from iphone_bridge.ROOT is a sandbox path, never a real backup target.
+    try:
+        from tests import hq_bridge_state
+
+        sandbox = hq_bridge_state.current_root()
+        if sandbox:
+            roots.append(os.path.abspath(str(sandbox)))
+    except Exception:  # noqa: BLE001 — the guard still holds for the test root alone
+        pass
 
     def mkdir(path, *args, **kwargs):
         target = os.path.abspath(str(path))
-        try:
-            inside = os.path.commonpath([root, target]) == root
-        except ValueError:  # different drives on Windows
-            inside = False
+        inside = False
+        for root in roots:
+            try:
+                if os.path.commonpath([root, target]) == root:
+                    inside = True
+                    break
+            except ValueError:  # different drives on Windows
+                continue
         if not inside:
             raise AssertionError(f"test tried to create a directory outside its temp dir: {path}")
         return REAL_MKDIR(path, *args, **kwargs)

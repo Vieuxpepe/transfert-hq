@@ -117,6 +117,71 @@ file after a removal.
 - Images are checked (PNG signature, size, dimensions) and stored in the normal
   HQ gallery with worker and batch provenance. The gallery quota applies; a
   full gallery fails the remaining images without deleting anything.
+- The Galerie header and the Corbeille state the use against that quota (images
+  and bytes); the bin counts, so a rejected image keeps its slot until it is put
+  back or deleted.
+- `POST /api/forge/gallery/<img-id>/delete` is the one permanent delete. The
+  Corbeille offers it per image behind a confirmation and refreshes both the bin
+  and the gallery. `GET /api/forge/gallery/export` downloads a ZIP of
+  `meta.json` + `original.png` per image; `?ids=img-…` exports only that
+  selection, which is what Archiver downloads before moving the images to the
+  bin (above 64 MiB it only downloads and says the images stay). A full export
+  records a backup marker, and the Galerie header states when the last full
+  backup was taken and how many images came after it. `POST
+  /api/forge/gallery/import` streams the upload to `.tmp`, refuses 413/507
+  before writing, dedupes on the SHA-256 stored in each `meta.json`, and
+  restores through the same validation, re-encode and quota;
+  `.../import/verify` reads every member (CRC) and counts it without storing.
+  Thumbnails are rebuilt, invalid entries are skipped and counted, and a full
+  gallery stops the import without touching the images already there. `POST
+  /api/forge/gallery/trash/empty` permanently deletes only images whose triage
+  is `reject`. The vault is never included.
+- The export is written to a temporary file under `.hq-forge/exports/` and
+  streamed from it, so a full 2 GiB gallery is never held in memory or read
+  twice; the file is deleted after the reply and stale ones after six hours.
+  Its limit is the free space of the gallery's volume minus 32 MiB, not a fixed
+  cap. `GET /api/forge/gallery/export/plan` and the Galerie header state the
+  projected archive size and that limit before a download starts; a gallery that
+  cannot fit is refused with 507 and nothing is written. Only one export runs at a
+  time, and the page switches to a direct browser download above 64 MiB so the
+  archive is not buffered in page memory either.
+- `POST /api/forge/batches/<batch-id>/pause` and `/resume` stop and restart
+  dispatch. A task already on a device still finishes; the batch says En pause
+  until it is resumed.
+- `POST /api/forge/batches/<batch-id>/tasks/<task-id>/cancel` cancels one image:
+  a queued one is dropped, one already on a device gets a deferred cancellation
+  and finishes there. Forge is still never interrupted.
+- The Laboratoire compares a setting from 8 measurements (3 for the planner),
+  unchanged rules otherwise.
+
+## Probe cost and caching (2026-11-14)
+
+A closed loopback Forge is refused by Windows after about two seconds, and the studio asks status,
+catalogue and devices as it opens: the tab paid that wait three times before painting anything.
+
+- `hq_forge` remembers the "Forge is not there" verdict for `OFFLINE_TTL_SEC` (8 s); status and
+  catalogue answer from it instantly. `_local_view` in the fleet memo is 8 s too (it was 3 s,
+  shorter than the 6 s devices poll, so every poll re-probed a dead Forge).
+- Only the **connect** is short (`CONNECT_TIMEOUT_SEC`, 0.6 s). The read timeout is unchanged, so a
+  slow render never looks offline, and a live Forge is never mistaken for a missing one.
+- `status()` and `catalog()` issue their read-only GETs together with `_fanout` — four for status
+  (samplers, progress, pending tasks, options), four for the catalogue (models, samplers,
+  schedulers, upscalers) — so a Forge that is busy rendering answers in one queue wait instead of
+  four. The results are taken back in declaration order, so error precedence is the same as the
+  serial version, and upscalers stay optional: a failed read only costs Hires. fix. Nothing writes
+  to Forge here; `/sdapi/v1/options` is only ever read.
+- `_CONNECT_GATE` (4) caps simultaneous sockets to Forge: Windows answers a full accept queue with
+  a refusal, which is indistinguishable from a closed port, so a burst of tabs or polls could
+  otherwise declare a healthy Forge offline.
+- `GET /api/forge/status?fresh=1` and `GET /api/forge/catalog?fresh=1` bypass the verdict; the
+  "start Forge" poll uses them so a launching Forge is seen within one tick.
+- Gallery **thumbnails** are immutable for their image id: `Cache-Control: private, max-age=31536000,
+  immutable`. The original keeps `private, no-store`. `_send` now lets a caller's `Cache-Control`
+  replace its default instead of adding a second header, where `no-store` would always win.
+- Measured on this PC, Forge closed: status 2.05 s -> 0.02 s cached (0.7 s cold), catalogue
+  2.14 s -> 0.02 s, devices 2.05 s -> 0.04 s; the six requests the tab fires when it opens went
+  from ~6 s to 0.11 s. Against a stub taking 300 ms per endpoint, `status()` went 1.38 s -> 0.31 s
+  in-process; `catalog()` 1.50 s -> 0.32 s the same way.
 
 ## Diagnostics on the device cards
 
@@ -241,3 +306,33 @@ When the reference device itself is in the unreadable or too-large case, the oth
 - No route. A page-side display choice (`#forge-studio.is-couch`, toggle « Mode canapé » / « Quitter le mode canapé », `aria-pressed`): prompt, destination, Générer, results and gallery only, with larger type and 56-64 px targets. Hidden settings still apply to jobs (tested), and a note says so.
 - Only the on/off choice is kept on the device (`localStorage.hqForgeCouch = "1"`); no prompt is stored.
 - Auth and sessions are untouched: the script sends no request, sets no timer, never reads or writes cookies, and the studio's idle lock and session code never read the flag (static and browser tests). Without a session the API still answers 401.
+
+## Laptop worker for small SD 1.5 images (2026-11-15)
+
+`vieuxpeepee-1` (RTX 2060, 6 GB) shares its GPU with the Musica voice (Chatterbox, ~3.8 GB), so it only takes **small SD 1.5 jobs**.
+Measured with Chatterbox loaded, 20 steps, one image (Euler a, xformers, no memory flags):
+
+| Size | Time |
+|------|------|
+| 384x384 | 2.2 s |
+| 512x512 | 3.5-4.3 s |
+| 512x768 | 6.0 s |
+| 768x768 | 11.2 s |
+
+A batch of six 512x512 took 33 s. A voice sentence made during such a batch took 13.7 s (4-5 s otherwise), so voice slows about
+three times while images are generated back to back. The WebUI left running adds ~0.9 GB of VRAM and does not slow voice.
+SDXL does not fit this way: `--medvram-sdxl` beside Chatterbox thrashed (32 s per step), and `--lowvram` needed ~50-80 s per image
+whatever the size, because it streams the weights every step.
+
+- **WebUI**: the old A1111 v1.10.1 in `C:\Users\autm_\stable-diffusion-webui`, started by `C:\TransfertWorker\run-sd15-webui.cmd`
+  with `--api --nowebui --server-name 127.0.0.1 --port 7861` (`--nowebui` alone binds 0.0.0.0, and the old launcher uses `--listen`:
+  never use either here), `--data-dir C:\AI\SD15\data` (its own settings: the old install's are untouched),
+  `--ckpt-dir C:\AI\SD15` (the only checkpoint: `v1-5-pruned-emaonly.safetensors`, 4.27 GB) and `--skip-prepare-environment`
+  (no network install at start). The routes the worker reads all answer: sd-models, samplers, schedulers, upscalers, loras, progress.
+- **Tasks** (logon + a 5-minute repeat, ignore-new, 3 restarts): `TransfertSd15WebUI` (enabled) and `TransfertForgeWorker`
+  (`run-forge-worker.cmd`, `hq_forge_worker.py run --forge-port 7861`), **disabled until the pairing**.
+- **Pairing** (needs the admin PIN, so it is the owner's step): in HQ, Forge Studio > Appareils de génération > Ajouter un appareil >
+  Créer un code à usage unique; then on the laptop run `C:\TransfertWorker\pair-forge-worker.cmd`, paste the code (hidden; it is
+  never written to a file). It pairs, enables `TransfertForgeWorker` and starts it.
+- **What HQ will send**: only jobs for the one model the laptop has, by exact name. The main Forge must have the same checkpoint for
+  a batch to be shared with it. Private (vault) generation never goes to workers. Keep jobs small (up to 768x768, no hires).

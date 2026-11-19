@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import math
 import os
 import re
 import shutil
+import tempfile
 import threading
+import time
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -31,8 +35,27 @@ MAX_EDGE = 2048
 MAX_BYTES = 20 * 1024 * 1024
 THUMB_EDGE = 384
 PAGE_MAX = 48
+# One backup archive, written to a temporary file on the gallery's own volume (entries
+# are streamed from disk, never held in memory) and bounded by that volume's free space
+# instead of a fixed cap: a full 2 GiB gallery must still be exportable. The plan route
+# reports the projected size and that limit before a download starts.
+# Restore follows the quota instead of a fixed 512 MiB: a full 2 GiB gallery must be
+# restorable. The upload is streamed to disk by the bridge and checked against the
+# remaining slots/bytes before the first image is written, so a refused restore leaves
+# nothing behind.
+IMPORT_MAX = 3 * 1024 * 1024 * 1024
+RESTORE_OVERHEAD = 16 * 1024
+BACKUP_FILE = "backup.json"
+EXPORT_MARGIN = 32 * 1024 * 1024
+EXPORT_TTL_SEC = 6 * 60 * 60
+EXPORT_DIR = "exports"
+ZIP_MANIFEST = "gallery.json"
+ZIP_MAX_ENTRIES = QUOTA_IMAGES * 2 + 4
 
 _LOCK = threading.Lock()
+# One archive at a time: two concurrent 2 GiB exports would each pass the free-space
+# check and then fill the disk together. Generation keeps running (this is not _LOCK).
+_EXPORT_LOCK = threading.Lock()
 _quota_bytes = QUOTA_BYTES
 _quota_images = QUOTA_IMAGES
 
@@ -355,6 +378,7 @@ def store(root: Path, raw: bytes, settings: dict, *, origin: dict | None = None)
                 "width": width,
                 "height": height,
                 "bytes": len(png),
+                "sha256": hashlib.sha256(png).hexdigest(),
                 "settings": safe,
             }
             if provenance:
@@ -480,7 +504,7 @@ def page(root: Path, *, limit: int = 24, cursor: str | None = None, view: str = 
             "settings": {"checkpoint": stored.get("checkpoint"), "steps": stored.get("steps")},
         })
     next_cursor = public[-1]["id"] if len(rows) > limit and public else None
-    return {"images": public, "next_cursor": next_cursor}
+    return {"images": public, "next_cursor": next_cursor, "usage": usage(root)}
 
 
 HISTORY_FIELDS = ("prompt", "negative_prompt", "checkpoint", "sampler_name", "scheduler", "width", "height",
@@ -561,6 +585,401 @@ def delete(root: Path, image_id: str) -> dict:
     return {"deleted": image_id}
 
 
+def _wanted_ids(ids) -> set[str] | None:
+    """None means the whole gallery. A subset must come from the caller's own ids, so
+    every entry is validated before it can steer a file read."""
+    if ids is None:
+        return None
+    if not isinstance(ids, (list, tuple, set)) or len(ids) > QUOTA_IMAGES:
+        raise GalleryError("bad_id")
+    wanted = set()
+    for item in ids:
+        if not isinstance(item, str) or not IMG_RE.fullmatch(item):
+            raise GalleryError("bad_id")
+        wanted.add(item)
+    return wanted
+
+
+def _export_bytes(root: Path, ids=None) -> tuple[int, int]:
+    """(images, bytes that will enter the ZIP): original.png + meta.json only, the
+    thumbnails are rebuilt on import. Sizes are read from the directory entries, so no
+    pixel is loaded just to announce the size of a backup. ids limits the archive to a
+    selection (archive-and-free), still without loading any pixel."""
+    wanted = _wanted_ids(ids)
+    base = gallery_dir(root)
+    if not base.is_dir() or base.is_symlink():
+        return 0, 0
+    images = 0
+    total = 0
+    for child in base.iterdir():
+        if child.is_symlink() or not child.is_dir() or not IMG_RE.fullmatch(child.name):
+            continue
+        if wanted is not None and child.name not in wanted:
+            continue
+        original = child / "original.png"
+        meta = child / "meta.json"
+        if not original.is_file() or original.is_symlink() or not meta.is_file() or meta.is_symlink():
+            continue
+        try:
+            size = original.stat().st_size + meta.stat().st_size
+        except OSError:
+            continue
+        images += 1
+        total += size
+    return images, total
+
+
+def _free_bytes(root: Path) -> int:
+    try:
+        return int(shutil.disk_usage(Path(root)).free)
+    except OSError:
+        return 0
+
+
+def export_limit(root: Path) -> int:
+    """Largest archive the gallery's own volume can still hold: its free space minus a
+    working margin, so building the ZIP never fills the disk the gallery lives on."""
+    base = Path(root) / ".hq-forge"
+    return max(0, _free_bytes(base if base.is_dir() else root) - EXPORT_MARGIN)
+
+
+def export_plan(root: Path, ids=None) -> dict:
+    """What a backup would write and where its limit stands, before anything starts."""
+    images, needed = _export_bytes(root, ids)
+    limit = export_limit(root)
+    return {"images": images, "bytes": needed, "limit_bytes": limit,
+            "allowed": images > 0 and needed <= limit}
+
+
+def mark_backup(root: Path, plan: dict) -> dict:
+    """Remember the last gallery archive whose bytes were fully delivered to the client.
+    Call only after a successful HTTP body write; never when export archive creation alone
+    finished or when the stream aborted mid-transfer."""
+    payload = {"at": _now(), "images": int(plan.get("images") or 0), "bytes": int(plan.get("bytes") or 0)}
+    base = Path(root) / ".hq-forge"
+    base.mkdir(parents=True, exist_ok=True)
+    _atomic_bytes(base / BACKUP_FILE, json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+    return payload
+
+
+def backup_status(root: Path) -> dict:
+    """Last backup plus the images created since it, read from meta only (no pixels)."""
+    path = Path(root) / ".hq-forge" / BACKUP_FILE
+    at, images, size = None, 0, 0
+    if path.is_file() and not path.is_symlink():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            data = {}
+        if isinstance(data.get("at"), str) and 0 < len(data["at"]) <= 40:
+            at = data["at"]
+            try:
+                images = int(data.get("images") or 0)
+                size = int(data.get("bytes") or 0)
+            except (TypeError, ValueError):
+                images = size = 0  # a corrupt marker reads as an old backup, never a 500
+    since = 0
+    base = gallery_dir(root)
+    if base.is_dir() and not base.is_symlink():
+        for child in base.iterdir():
+            if child.is_symlink() or not IMG_RE.fullmatch(child.name):
+                continue
+            try:
+                created = _meta(root, child.name).get("created")
+            except GalleryError:
+                continue
+            if not at or (isinstance(created, str) and created > at):
+                since += 1
+    return {"at": at, "images": images, "bytes": size, "since_images": since}
+
+
+def usage(root: Path) -> dict:
+    """Images and bytes against the fixed quota. The bin counts too: its images still
+    occupy the gallery until they are put back or deleted. The export figures let the
+    page state the backup limit before the owner asks for a ZIP; the backup block says
+    when the last full archive left and how many images are newer."""
+    images, used = _usage(root)
+    export_images, export_bytes = _export_bytes(root)
+    return {"images": images, "bytes": used, "quota_images": _quota_images, "quota_bytes": _quota_bytes,
+            "export_images": export_images, "export_bytes": export_bytes, "export_limit_bytes": export_limit(root),
+            "backup": backup_status(root)}
+
+
+def empty_trash(root: Path) -> dict:
+    """Permanent delete of every rejected image, one folder at a time. Only images
+    carrying the reversible reject flag are touched; the gallery and the vault never
+    are. Returns how many slots were freed."""
+    base = gallery_dir(root)
+    if not base.is_dir() or base.is_symlink():
+        return {"deleted": 0}
+    removed = 0
+    for child in list(base.iterdir()):
+        if child.is_symlink() or not IMG_RE.fullmatch(child.name):
+            continue
+        try:
+            if triage_of(_meta(root, child.name)) != "reject":
+                continue
+            shutil.rmtree(_child(root, child.name))
+        except (GalleryError, OSError):
+            continue
+        removed += 1
+    return {"deleted": removed}
+
+
+def _export_dir(root: Path) -> Path:
+    base = Path(root) / ".hq-forge" / EXPORT_DIR
+    base.mkdir(parents=True, exist_ok=True)
+    if base.is_symlink():
+        raise GalleryError("disk")
+    return base.resolve()
+
+
+def cleanup_exports(root: Path, max_age: int = EXPORT_TTL_SEC) -> None:
+    """A crashed download must not leave an archive behind forever. Only this module's
+    own temporary files are touched."""
+    base = Path(root) / ".hq-forge" / EXPORT_DIR
+    if not base.is_dir() or base.is_symlink():
+        return
+    cutoff = time.time() - max_age
+    for child in base.iterdir():
+        if child.is_symlink() or not child.name.startswith("export-") or not child.name.endswith(".zip"):
+            continue
+        try:
+            if child.stat().st_mtime < cutoff:
+                child.unlink(missing_ok=True)
+        except OSError:
+            continue
+
+
+def export_archive(root: Path, ids=None) -> Path:
+    """Write the normal gallery (or the selected ids) to a ZIP on disk and return its
+    path; the caller streams it and deletes it. Each member is copied from its file by
+    zipfile, so the archive never exists in memory and the images are not read twice.
+    Nothing from the vault is ever included."""
+    wanted = _wanted_ids(ids)
+    if not _EXPORT_LOCK.acquire(blocking=False):
+        raise GalleryError("busy")
+    try:
+        cleanup_exports(root)
+        plan = export_plan(root, ids)
+        if plan["images"] == 0:
+            raise GalleryError("empty")
+        if not plan["allowed"]:
+            raise GalleryError("too_large")
+        target = _export_dir(root) / ("export-" + os.urandom(8).hex() + ".zip")
+        base = gallery_dir(root)
+        try:
+            with zipfile.ZipFile(target, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
+                archive.writestr(ZIP_MANIFEST, json.dumps(
+                    {"kind": "hq-forge-gallery", "version": 1, "exported": _now(), "images": plan["images"]},
+                    ensure_ascii=False))
+                for child in sorted(base.iterdir()):
+                    if child.is_symlink() or not IMG_RE.fullmatch(child.name):
+                        continue
+                    if wanted is not None and child.name not in wanted:
+                        continue
+                    original = child / "original.png"
+                    meta = child / "meta.json"
+                    if not original.is_file() or original.is_symlink() or not meta.is_file() or meta.is_symlink():
+                        continue
+                    try:
+                        archive.write(meta, child.name + "/meta.json")
+                        archive.write(original, child.name + "/original.png")
+                    except FileNotFoundError:
+                        # The gallery moved while this long write was running: a backup
+                        # that silently misses an image would be worse than a retry.
+                        raise GalleryError("changed") from None
+        except OSError:
+            target.unlink(missing_ok=True)
+            raise GalleryError("disk") from None
+        except Exception:
+            target.unlink(missing_ok=True)
+            raise
+        return target
+    finally:
+        _EXPORT_LOCK.release()
+
+
+def _restore_meta(root: Path, image_id: str, source: dict) -> None:
+    """Keep the backup's date and sort flag. The id, the pixels and the settings stay
+    HQ's own: store() already validated and re-encoded them."""
+    with _LOCK:
+        data = _meta(root, image_id)
+        created = source.get("created")
+        if isinstance(created, str) and 0 < len(created) <= 40 and created.isascii():
+            data["created"] = created
+        flag = source.get("triage")
+        if flag in TRIAGE and flag != "none":
+            data["triage"] = flag
+        _atomic_bytes(_child(root, image_id) / "meta.json", json.dumps(data, ensure_ascii=False).encode("utf-8"))
+
+
+def _zip_pairs(archive: zipfile.ZipFile) -> tuple[list[tuple[str, dict]], int, int]:
+    """Group a backup's members by image id, refusing anything outside the two known
+    names. Returns (complete pairs, incomplete images, uncompressed bytes)."""
+    infos = archive.infolist()
+    if not infos or len(infos) > ZIP_MAX_ENTRIES:
+        raise GalleryError("bad_zip")
+    members: dict[str, dict] = {}
+    total = 0
+    for info in infos:
+        if info.is_dir() or info.filename == ZIP_MANIFEST:
+            continue
+        parts = info.filename.split("/")
+        if len(parts) != 2 or not IMG_RE.fullmatch(parts[0]) or parts[1] not in ("meta.json", "original.png"):
+            raise GalleryError("bad_zip")
+        limit = MAX_BYTES + 65536 if parts[1] == "original.png" else 2 * 1024 * 1024
+        size = int(info.file_size)
+        if size < 0 or size > limit:
+            raise GalleryError("bad_zip")
+        total += size
+        if total > IMPORT_MAX:
+            raise GalleryError("bad_zip")
+        members.setdefault(parts[0], {})[parts[1]] = info
+    pairs: list[tuple[str, dict]] = []
+    incomplete = 0
+    for image_id in sorted(members):
+        pair = members[image_id]
+        if "meta.json" in pair and "original.png" in pair:
+            pairs.append((image_id, pair))
+        else:
+            incomplete += 1
+    return pairs, incomplete, total
+
+
+def _restore_plan(root: Path, pairs: list, total: int, skipped: int) -> dict:
+    images, used = _usage(root)
+    needed = total + RESTORE_OVERHEAD * len(pairs)
+    remaining_images = max(0, _quota_images - images)
+    remaining_bytes = max(0, _quota_bytes - used)
+    return {"images": len(pairs), "bytes": total, "needed_bytes": needed, "skipped": skipped,
+            "remaining_images": remaining_images, "remaining_bytes": remaining_bytes,
+            "allowed": bool(pairs) and len(pairs) <= remaining_images and needed <= remaining_bytes}
+
+
+def restore_plan_path(root: Path, path: Path) -> dict:
+    """Read only the archive's directory and compare it with the remaining quota: a
+    restore that cannot fit is refused before the first image is written."""
+    try:
+        with zipfile.ZipFile(path) as archive:
+            pairs, skipped, total = _zip_pairs(archive)
+    except (zipfile.BadZipFile, ValueError, OSError):
+        raise GalleryError("bad_zip") from None
+    return _restore_plan(root, pairs, total, skipped)
+
+
+def _hash_index(root: Path) -> set[str]:
+    """Content hashes already in the gallery, to skip duplicates on restore. New metas
+    carry their own sha256; older images are read once (the whole gallery is <= 2 GiB)."""
+    known: set[str] = set()
+    base = gallery_dir(root)
+    if not base.is_dir() or base.is_symlink():
+        return known
+    for child in base.iterdir():
+        if child.is_symlink() or not IMG_RE.fullmatch(child.name):
+            continue
+        try:
+            data = _meta(root, child.name)
+        except GalleryError:
+            continue
+        digest = data.get("sha256")
+        if isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest):
+            known.add(digest)
+            continue
+        original = child / "original.png"
+        if not original.is_file() or original.is_symlink():
+            continue
+        try:
+            hasher = hashlib.sha256()
+            with original.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    hasher.update(chunk)
+            known.add(hasher.hexdigest())
+        except OSError:
+            continue
+    return known
+
+
+def import_zip_path(root: Path, path: Path, *, verify: bool = False, preflight: bool = True, dedupe: bool = True) -> dict:
+    """Restore a backup already streamed to disk. The plan is checked against the
+    remaining quota first, so a refused restore is atomic. Valid images go through
+    store() (HQ's own ids and size rules); byte-identical duplicates are skipped. In
+    verify mode every member is read so its CRC is checked, and nothing is stored."""
+    try:
+        archive = zipfile.ZipFile(path)
+    except (zipfile.BadZipFile, ValueError, OSError):
+        raise GalleryError("bad_zip") from None
+    with archive:
+        pairs, skipped, total = _zip_pairs(archive)
+        plan = _restore_plan(root, pairs, total, skipped)
+        if verify:
+            checked = 0
+            for _image_id, pair in pairs:
+                try:
+                    data = json.loads(archive.read(pair["meta.json"]).decode("utf-8"))
+                    if not isinstance(data, dict):
+                        raise ValueError("meta")
+                    _settings(data.get("settings"))
+                    _origin(data.get("origin"))
+                    if not archive.read(pair["original.png"]):
+                        raise ValueError("empty")
+                except (KeyError, OSError, ValueError, UnicodeError, zipfile.BadZipFile, GalleryError):
+                    skipped += 1
+                    continue
+                checked += 1
+            return {"verified": checked, "imported": 0, "duplicates": 0, "skipped": skipped,
+                    "quota": False, "plan": plan}
+        if preflight and not plan["allowed"]:
+            raise GalleryError("quota" if len(pairs) > plan["remaining_images"] else "too_large")
+        known = _hash_index(root) if dedupe else set()
+        imported = duplicates = 0
+        full = False
+        for _image_id, pair in pairs:
+            try:
+                data = json.loads(archive.read(pair["meta.json"]).decode("utf-8"))
+                raw = archive.read(pair["original.png"])
+                if not isinstance(data, dict):
+                    raise GalleryError("bad_image")
+                settings = _settings(data.get("settings"))
+                origin = _origin(data.get("origin"))
+            except (KeyError, OSError, ValueError, UnicodeError, zipfile.BadZipFile, GalleryError):
+                skipped += 1
+                continue
+            digest = hashlib.sha256(raw).hexdigest()
+            if dedupe and digest in known:
+                duplicates += 1
+                continue
+            try:
+                saved = store(root, raw, settings, origin=origin)
+            except GalleryError as exc:
+                if exc.code == "quota":
+                    full = True
+                    break
+                skipped += 1
+                continue
+            _restore_meta(root, saved["id"], data)
+            known.add(digest)
+            imported += 1
+    return {"imported": imported, "skipped": skipped, "duplicates": duplicates, "quota": full, "plan": plan}
+
+
+def import_zip(root: Path, payload: bytes) -> dict:
+    """Backwards-compatible in-memory entry point for the unit tests. The HTTP route
+    streams to disk and uses import_zip_path; this wrapper keeps the original partial
+    quota semantics for callers that already hold the archive in memory."""
+    if not isinstance(payload, (bytes, bytearray)) or not payload or len(payload) > IMPORT_MAX:
+        raise GalleryError("bad_zip")
+    base = Path(root) / ".hq-forge"
+    base.mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(prefix="restore-", suffix=".zip", dir=str(base))
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(bytes(payload))
+        return import_zip_path(root, Path(name), preflight=False, dedupe=False)
+    finally:
+        Path(name).unlink(missing_ok=True)
+
+
 def serve_file(root: Path, raw: str):
     prefix = "/api/forge/gallery/"
     if not raw.startswith(prefix):
@@ -576,4 +995,7 @@ def serve_file(root: Path, raw: str):
         payload, ctype, disposition = file_bytes(root, image_id, kind)
     except GalleryError:
         return 404, {"error": "Introuvable"}, "application/json", None
-    return 200, payload, ctype, [("Content-Disposition", disposition), ("Cache-Control", "private, no-store")]
+    # A thumbnail never changes for its image id, so the browser may keep it: private keeps it out of
+    # shared caches and the lifetime makes reopening the gallery free. The original stays no-store.
+    cache = "private, max-age=31536000, immutable" if kind == "thumb" else "private, no-store"
+    return 200, payload, ctype, [("Content-Disposition", disposition), ("Cache-Control", cache)]

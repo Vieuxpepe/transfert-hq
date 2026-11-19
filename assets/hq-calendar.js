@@ -15,6 +15,23 @@
     ["other", "Autre"],
   ];
   let categoryRows = CATS;
+  /* Shown in the guide (desktop only): every key listed here is handled by navKey below. */
+  const KEY_ROWS = [
+    ["←  →", "Jour ou période précédente / suivante"],
+    ["↑  ↓", "Heure ou ligne précédente / suivante"],
+    ["Page ↑ ↓", "Période précédente / suivante"],
+    ["Entrée", "Ouvrir le jour ou l’événement"],
+    ["E", "Parcourir les événements (Maj : arrière)"],
+    ["Échap", "Fermer, ou revenir au titre"],
+    ["T", "Aujourd’hui"],
+    ["N", "Nouvel événement"],
+    ["F", "Rechercher"],
+    ["G", "Aller à une date"],
+    ["1 – 4", "Jour, semaine, mois, agenda"],
+    ["Ctrl + Entrée", "Enregistrer depuis l’éditeur"],
+    ["Ctrl + Z", "Annuler la dernière modification"],
+    ["H", "Ce guide"],
+  ];
   const REMINDERS = [
     [0, "À l'heure"],
     [5, "5 min"],
@@ -67,8 +84,9 @@
   let undoBusy = false;
   const pendingMoves = new Map();
   const dropEffects = new Map();
-  const DROP_GLIDE_MS = 220;
-  const DROP_EFFECT_MS = 780;
+  const DROP_GLIDE_MS = 600;   // a slow engine may take a few hundred ms to redraw the dropped event
+  const DROP_EFFECT_MS = 780;   // how long the drop glow itself plays
+  const DROP_MEMORY_MS = 2400;  // a confirming refresh this soon still belongs to the same drop
   let drag = null;           // the grid drag in progress (create, move or resize)
   let renderPending = false; // a refresh arrived during a drag: draw once the drag ends
   let lastPoint = null;      // where the owner last pressed: sheets grow out of that point
@@ -83,6 +101,13 @@
   let morphFrom = "";        // id of the event the open detail sheet grew out of
   let sheetSeq = 0;          // bumped by every close: a morph still on its way does not reopen a closed sheet
   let peekOpen = null;       // the long-press day preview
+  let pendingGridFocus = null; // an hour cell to focus once the period it lives in has been drawn
+  const gridCursor = new Map(); // dayKey -> hour: the one tab stop each timeline column keeps
+  const pressed = new Set(); // pointers held on the calendar: a rebuild under them would eat the click
+  let pressAt = 0;           // when the oldest of them went down, so a lost pointerup cannot stall the app
+  let pressFlush = 0;        // the render deferred until the last finger or mouse button lifts
+  let scrubbing = false;     // the day strip is being slid: that drag draws under the finger, on purpose
+  let lastSignature = "";    // what the stage was drawn from: an identical refresh touches nothing
   const MAGNET = 8;          // minutes: a dragged edge clicks onto a neighbour's edge or the now line
   const ZOOM_MIN = 0.6;
   const ZOOM_MAX = 2.4;
@@ -233,6 +258,49 @@
     return all.find((item) => item.id === id) || null;
   }
 
+  /* A projected occurrence is read as a normal event, but writes always target the
+     one stored series record. */
+  function seriesRecord(item) {
+    if (!item || !item.series_id) return item;
+    const record = Object.assign({}, item, {
+      id: item.series_id,
+      start: item.series_start || item.start,
+      end: item.series_end || item.end,
+    });
+    delete record.series_id;
+    delete record.series_start;
+    delete record.series_end;
+    return record;
+  }
+
+  function isRecurring(item) {
+    return !!(item && (item.series_id || item.recurrence));
+  }
+
+  function recurrenceLabel(recurrence) {
+    if (!recurrence) return "";
+    let label = WHEN[recurrence.frequency] || "Récurrent";
+    if (recurrence.frequency === "weekly" && (recurrence.weekdays || []).length) {
+      label += " · " + recurrence.weekdays.map((day) => DOW[day]).join(", ");
+    }
+    if (recurrence.count) label += " · " + recurrence.count + " occurrences";
+    else if (recurrence.until) {
+      const until = parseLocalDateKey(recurrence.until);
+      label += " · jusqu’au " + (until ? fmtDay(until) : recurrence.until);
+    } else label += " · sans fin";
+    return label;
+  }
+
+  function occurrenceIdFor(event, startHint) {
+    if (!event || !event.id || !event.recurrence) return event && event.id;
+    const raw = String(startHint || event.start || "");
+    if (!/^\d{4}-\d{2}-\d{2}/.test(raw)) return event.id;
+    const day = raw.slice(0, 10);
+    const time = String(event.start || "").slice(11, 16) || raw.slice(11, 16);
+    const suffix = event.all_day ? day.replace(/-/g, "") : day.replace(/-/g, "") + "T" + time.replace(":", "");
+    return event.id + "@" + suffix;
+  }
+
   function rangeFor() {
     const anchor = state.anchor || todayLocal();
     if (state.view === "day") {
@@ -294,6 +362,13 @@
   }
 
   let refreshGen = 0;
+  /* The last input was the keyboard. A period change made that way hands the cursor to the new
+     period's grid instead of leaving focus on the document. */
+  let keyboardIntent = false;
+  /* The last hour a grid cell held: a keyboard switch made after a refresh dropped focus still lands there. */
+  let lastGridHour = 9;
+  /* The hour the cursor had when the date jump was opened: a keyboard jump carries it. */
+  let dateJumpHour = null;
 
   function dayScroll() {
     const node = document.querySelector("#hq-cal-app .hq-cal-scroll");
@@ -343,7 +418,7 @@
     if (!align && rect.top >= top && rect.top < bottom && rect.bottom <= bottom) return;
     scroll.scrollTo({
       top: scroll.scrollTop + rect.top - top - Math.min(36, (bottom - top) / 4),
-      behavior: "smooth",
+      behavior: calm() ? "auto" : "smooth",
     });
   }
 
@@ -377,7 +452,7 @@
     if (!event) return;
     revealTimelineNode(scroll, event, true);
     if (scroll.getBoundingClientRect().top + 150 > window.innerHeight) {
-      scroll.scrollIntoView({ block: "start", behavior: "smooth" });
+      scroll.scrollIntoView({ block: "start", behavior: calm() ? "auto" : "smooth" });
     }
     event.focus({ preventScroll: true });
   }
@@ -385,6 +460,7 @@
   async function refresh(mode, staged) {
     const root = document.getElementById("hq-cal-app");
     if (!root || typeof api !== "function") return;
+    root.dataset.busy = "1"; // the app is waiting on HQ: the suites wait on this, never on a clock
     const gen = ++refreshGen;
     const samePeriod = state.prevView === state.view && sameDay(state.prevAnchor, state.anchor);
     const previous = mode === "keep" || (!mode && samePeriod) ? dayScroll() : null;
@@ -414,6 +490,19 @@
           return refresh(mode);
         }
       }
+      // A refresh that brings back exactly what is already on screen is a no-op: nothing under the
+      // pointer or the keyboard is replaced, the live bits are repainted, and the clock is re-based.
+      const signature = dataSignature(data);
+      if ((mode === "keep" || mode === "start") && signature === lastSignature
+        && root.querySelector(".hq-cal-stage")) {
+        state.landed = "";
+        settle(root);
+        paintTz();
+        paintLive();
+        markIdle(root);
+        return;
+      }
+      lastSignature = signature;
       const landed = state.landed;
       render(!!staged && !root.querySelector(".hq-cal-stage"), () => {
         if (kept != null) {
@@ -424,6 +513,7 @@
       });
     } catch (err) {
       if (gen !== refreshGen) return;
+      markIdle(root);
       root.querySelector(".hq-cal-load-error")?.remove();
       const retry = h("button", { type: "button", class: "secondary", text: "Réessayer" });
       retry.addEventListener("click", () => {
@@ -545,7 +635,8 @@
     const now = liveNow();
     const today = serverToday();
     if (!now) return null;
-    const mine = items().filter((item) => !item.read_only && !item.all_day && itemStart(item) && itemEnd(item) && sameDay(itemStart(item), today));
+    const mine = items().filter((item) => !item.read_only && !item.all_day && !isRecurring(item)
+      && itemStart(item) && itemEnd(item) && sameDay(itemStart(item), today));
     const ended = mine.filter((item) => itemEnd(item) <= now);
     return { now, ended, remaining: mine.length - ended.length, done: ended.filter((item) => item.done).length };
   }
@@ -680,6 +771,7 @@
     if (item.all_day) parts.push("Journée");
     else if (item.start && String(item.start).indexOf("T") !== -1) parts.push(spanLabel(item));
     else if (item.when) parts.push(WHEN[item.when] || "Conditionnel");
+    if (item.recurrence) parts.push("Série · " + recurrenceLabel(item.recurrence));
     if (item.read_only) parts.push(item.source === "icloud" ? "iCloud, lecture seule" : "Horaire HQ, lecture seule");
     else {
       const cat = categoryRows.find((row) => row[0] === (item.category || "other"));
@@ -689,17 +781,278 @@
     return parts.join(" · ");
   }
 
+  /* What a render draws from: view, period, filters and the events themselves. When a refresh
+     brings the same signature, the DOM is already right and is not touched at all. */
+  function dataSignature(data) {
+    if (!data) return "";
+    const items = (data.items || []).map((item) => [item.id, item.rev, item.done ? 1 : 0, item.start, item.end,
+      item.title, item.category, item.location, item.read_only ? 1 : 0].join("~")).join("|");
+    const conditional = (data.conditional || []).map((item) => [item.id, item.rev, item.done ? 1 : 0, item.title].join("~")).join("|");
+    const next = data.next ? [data.next.id, data.next.start].join("~") : "";
+    const catalog = (data.categories || []).map((row) => [row.id, row.label, row.color].join("~")).join("|");
+    return [data.server_date || "", data.schedule_category || "", data.malformed ? 1 : 0,
+      (data.streak && data.streak.days) || 0, items, conditional, next, catalog,
+      state.view, dateKey(state.anchor || todayLocal()), threeDay() ? 3 : 7,
+      [...state.categories].sort().join(","), state.activity && state.view !== "month" ? 1 : 0].join("::");
+  }
+
+  function markIdle(root) {
+    const node = root || document.getElementById("hq-cal-app");
+    if (node) delete node.dataset.busy;
+  }
+
+  /* Empty the app for a rebuild, but leave the quick-add form exactly where it is: detaching a
+     focused input is how a refresh eats what someone was in the middle of typing. */
+  function keepQuick(root) {
+    const form = quickForm && quickForm.parentNode === root ? quickForm : null;
+    for (const node of [...root.childNodes]) if (node !== form) node.remove();
+    return form;
+  }
+
+  /* A genuine data change keeps the stage: its slots, its scroll and the node holding focus stay
+     put. Only the leaves the data owns are diffed — an event keeps its node, a deleted one leaves. */
+  function keepForRebuild(root, stage) {
+    const form = quickForm && quickForm.parentNode === root ? quickForm : null;
+    const bar = root.querySelector(".hq-cal-bar");
+    for (const node of [...root.childNodes]) if (node !== form && node !== stage && node !== bar) node.remove();
+    return form;
+  }
+
+  function stageViewOf(stage) {
+    if (!stage) return "";
+    if (stage.querySelector(".hq-cal-day")) return "day";
+    if (stage.querySelector(".hq-cal-week")) return "week";
+    if (stage.querySelector(".hq-cal-month")) return "month";
+    if (stage.querySelector(".hq-cal-agenda")) return "agenda";
+    return "";
+  }
+
+  function allDayRows(day) {
+    return visibleItems().filter((item) => item.all_day && overlapsDay(item, day));
+  }
+
+  function weekDays() {
+    const start = weekStart(state.anchor);
+    return Array.from({ length: weekSpan() }, (_, index) => addLocalDays(start, index));
+  }
+
+  function paintChipInPlace(node, item) {
+    node.className = "hq-cal-chip " + catClass(item) + landedClass(item) + (isRecurring(item) ? " is-series" : "");
+    node.dataset.help = previewHelp(item);
+    node.textContent = item.title || "Sans titre";
+  }
+
+  /* Chips keep their nodes across a data change; only a gone chip leaves and a new one arrives. */
+  function reconcileChips(lane, rows) {
+    const existing = new Map([...lane.children]
+      .filter((node) => node.classList && node.classList.contains("hq-cal-chip") && node.dataset.id)
+      .map((node) => [node.dataset.id, node]));
+    const kept = new Set();
+    rows.forEach((item) => {
+      const node = existing.get(item.id);
+      if (node) paintChipInPlace(node, item);
+      else lane.appendChild(chip(item));
+      kept.add(item.id);
+    });
+    existing.forEach((node, id) => { if (!kept.has(id)) node.remove(); });
+  }
+
+  function reconcileAllCell(cell, rows) {
+    reconcileChips(cell, rows.slice(0, 2));
+    cell.querySelectorAll(".hq-cal-more").forEach((node) => node.remove());
+    if (rows.length > 2) cell.appendChild(allMore(parseLocalDateKey(cell.dataset.allday), rows.length - 2));
+  }
+
+  function reconcileTimed(col, day) {
+    col.querySelectorAll(".hq-cal-now, .hq-cal-marker").forEach((node) => node.remove());
+    placeTimed(col, day, 1, true);
+    placeNow(col, day);
+    if (state.activity) placeMarkers(col, day);
+  }
+
+  function reconcileStrip(stage) {
+    const old = stage.querySelector(".hq-cal-weekstrip");
+    if (!old) return;
+    const active = document.activeElement?.closest?.(".hq-cal-weekstrip button");
+    const day = active ? active.dataset.day : "";
+    old.replaceWith(weekStrip());
+    if (day) stage.querySelector('.hq-cal-weekstrip button[data-day="' + CSS.escape(day) + '"]')?.focus({ preventScroll: true });
+  }
+
+  function reconcileTools(stage) {
+    const old = stage.querySelector(".hq-cal-timeline-controls");
+    if (old) old.replaceWith(timelineTools());
+  }
+
+  function reconcileHint(stage, days) {
+    const old = stage.querySelector(".hq-cal-hint");
+    const next = dayHint(days);
+    if (old && next) {
+      if (old.outerHTML !== next.outerHTML) old.replaceWith(next);
+      return;
+    }
+    if (old) { old.remove(); return; }
+    if (!next) return;
+    const before = stage.querySelector(".hq-cal-allday") || stage.querySelector(".hq-cal-scroll");
+    if (before && before.parentNode) before.parentNode.insertBefore(next, before);
+  }
+
+  function reconcileWeekHead(head, day) {
+    const today = sameDay(day, serverToday());
+    head.classList.toggle("is-today", today);
+    if (today) head.setAttribute("aria-current", "date"); else head.removeAttribute("aria-current");
+    head.classList.remove("has-ring", "is-complete");
+    head.style.removeProperty("--p");
+    head.setAttribute("aria-label", fmtDay(day));
+    markRing(head, day);
+  }
+
+  function reconcileWeekAllRow(stage, days) {
+    const top = stage.querySelector(".hq-cal-week-top");
+    if (!top) return;
+    const has = days.some((day) => visibleItems().some((item) => item.all_day && overlapsDay(item, day)));
+    const old = top.querySelector(".hq-cal-allweek");
+    if (has && !old) top.appendChild(allWeekRow(days));
+    else if (!has && old) old.remove();
+  }
+
+  function reconcileMonth(stage) {
+    const wrap = stage.querySelector(".hq-cal-month");
+    if (!wrap) return false;
+    const today = serverToday();
+    const narrow = narrowMonth();
+    [...wrap.querySelectorAll(".hq-cal-mcell")].forEach((cell) => {
+      const mday = cell.querySelector(".hq-cal-mday");
+      const day = mday && parseLocalDateKey(mday.dataset.day);
+      if (!day) return;
+      const rows = visibleItems().filter((item) => overlapsDay(item, day));
+      const isToday = sameDay(day, today);
+      cell.classList.toggle("is-today", isToday);
+      cell.classList.toggle("is-anchor", sameDay(day, state.anchor));
+      if (isToday) mday.setAttribute("aria-current", "date"); else mday.removeAttribute("aria-current");
+      mday.setAttribute("aria-label", fmtDay(day) + (rows.length ? " · " + rows.length + (rows.length === 1 ? " élément" : " éléments") : ""));
+      cell.querySelectorAll(".hq-cal-dots").forEach((node) => node.remove());
+      if (narrow) {
+        cell.querySelectorAll(".hq-cal-chip, .hq-cal-more").forEach((node) => node.remove());
+        if (rows.length) {
+          const dots = h("span", { class: "hq-cal-dots", "aria-hidden": "true" });
+          const shown = rows.length > 3 ? 2 : rows.length;
+          rows.slice(0, shown).forEach((item) => dots.appendChild(h("span", { class: "hq-cal-dot " + catClass(item) + landedClass(item) })));
+          if (rows.length > shown) dots.appendChild(h("span", { class: "hq-cal-dot-more", text: "+" + (rows.length - shown) }));
+          cell.appendChild(dots);
+        }
+        return;
+      }
+      const limit = monthChipLimit();
+      reconcileChips(cell, rows.slice(0, limit));
+      cell.querySelectorAll(".hq-cal-more").forEach((node) => node.remove());
+      if (rows.length > limit) {
+        const extra = rows.length - limit;
+        cell.appendChild(h("button", { type: "button", class: "hq-cal-more", "data-cal": "pick-day", "data-day": dateKey(day),
+          "aria-label": extra === 1 ? "1 autre" : extra + " autres", text: "+" + extra }));
+      }
+    });
+    return true;
+  }
+
+  function adoptAgendaRows(next, old) {
+    const keyOf = (node) => node.classList && node.classList.contains("hq-cal-row") && node.dataset.id
+      ? (node.dataset.day || "") + "|" + node.dataset.id : "";
+    const keep = new Map();
+    [...old.querySelectorAll(".hq-cal-row[data-id]")].forEach((node) => keep.set(keyOf(node), node));
+    [...next.querySelectorAll(".hq-cal-row[data-id]")].forEach((node) => {
+      const prev = keep.get(keyOf(node));
+      if (prev) node.replaceWith(prev);
+    });
+  }
+
+  function reconcileAgenda(stage) {
+    const wrap = stage.querySelector(".hq-cal-agenda");
+    if (!wrap) return false;
+    const active = document.activeElement?.closest?.(".hq-cal-agenda .hq-cal-row");
+    const key = active ? (active.dataset.day || "") + "|" + active.dataset.id : "";
+    const fresh = agendaView();
+    adoptAgendaRows(fresh, wrap);
+    wrap.replaceChildren(...fresh.childNodes);
+    if (key) {
+      const [day, id] = key.split("|");
+      wrap.querySelector('.hq-cal-row[data-day="' + CSS.escape(day) + '"][data-id="' + CSS.escape(id) + '"]')?.focus({ preventScroll: true });
+    }
+    return true;
+  }
+
+  function reconcileStage(stage) {
+    if (!stage) return false;
+    if (state.view === "day") {
+      const key = dateKey(state.anchor);
+      const col = stage.querySelector('[data-col-day="' + key + '"]');
+      if (!col) return false;
+      reconcileTimed(col, state.anchor);
+      const lane = stage.querySelector('[data-allday="' + key + '"]');
+      if (lane) reconcileChips(lane, allDayRows(state.anchor));
+      reconcileHint(stage, [state.anchor]);
+      reconcileStrip(stage);
+      reconcileTools(stage);
+      return true;
+    }
+    if (state.view === "week") {
+      const days = weekDays();
+      days.forEach((day) => {
+        const key = dateKey(day);
+        const col = stage.querySelector('[data-col-day="' + key + '"]');
+        if (col) reconcileTimed(col, day);
+        const head = stage.querySelector('.hq-cal-weekhead [data-day="' + key + '"]');
+        if (head) reconcileWeekHead(head, day);
+        const cell = stage.querySelector('.hq-cal-allcell[data-allday="' + key + '"]');
+        if (cell) reconcileAllCell(cell, allDayRows(day));
+      });
+      reconcileWeekAllRow(stage, days);
+      reconcileHint(stage, days);
+      reconcileTools(stage);
+      return true;
+    }
+    if (state.view === "month") return reconcileMonth(stage);
+    if (state.view === "agenda") return reconcileAgenda(stage);
+    return false;
+  }
+
+  /* A refresh that draws nothing new still ends whatever entrance was playing, rather than
+     rebuilding the stage just to drop one class. */
+  function settle(root) {
+    const stage = root.querySelector(".hq-cal-stage");
+    if (stage) stage.classList.remove("is-next", "is-prev", "is-view", "is-zoom", "is-scrub", "is-swipe-next", "is-swipe-prev");
+    root.querySelectorAll(".is-moving").forEach((node) => node.classList.remove("is-moving"));
+    state.anim = "";
+  }
+
+  /* A pointer is up. If a render was asked for while it was held (a tick, a visibility change),
+     draw once now — unless a refresh is already on its way, which will draw the fresher state. */
+  function releasePress(ev) {
+    pressed.delete(ev.pointerId);
+    if (!pressed.size) scrubbing = false;
+    if (pressed.size) return;
+    clearTimeout(pressFlush);
+    pressFlush = setTimeout(() => {
+      const root = document.getElementById("hq-cal-app");
+      if (!renderPending || !root || root.dataset.busy || drag || (swipe && swipe.locked)) return;
+      renderKeep();
+    }, 0);
+  }
+
   function render(staged, done) {
     const root = document.getElementById("hq-cal-app");
     if (!root) return;
-    if (drag || (swipe && swipe.locked)) {
+    if (pressed.size && performance.now() - pressAt > 30000) pressed.clear(); // a pointerup lost on the way out
+    if (drag || (swipe && swipe.locked) || (pressed.size && !scrubbing)) {
       renderPending = true; // never rebuild the grid under a press, a drag or a swipe
+      lastSignature = ""; // the screen still shows older data: the next refresh must draw it
       return;
     }
+    renderPending = false;
     if (window.hqHideHelp) window.hqHideHelp();
     for (const [id, effect] of dropEffects) {
       const elapsed = performance.now() - effect.started;
-      if (elapsed >= DROP_EFFECT_MS) dropEffects.delete(id);
+      if (elapsed >= DROP_MEMORY_MS) dropEffects.delete(id);
       else if (effect.painted && elapsed < DROP_GLIDE_MS) {
         const face = dropFace(root, id, effect.day);
         if (face) effect.from = face.getBoundingClientRect();
@@ -707,47 +1060,98 @@
     }
     // Same view, same period, no slide: whatever moved glides from where it was.
     const before = !state.anim && state.prevView === state.view && sameDay(state.prevAnchor, state.anchor) ? snapshot(root) : null;
+    // A genuine data change repaints in place: the stage, its scroll and the cell holding focus stay;
+    // only the leaves the data owns are diffed.
+    const oldStage = root.querySelector(".hq-cal-stage");
+    const inPlace = !!oldStage && !staged && !state.anim
+      && state.prevView === state.view && sameDay(state.prevAnchor, state.anchor)
+      && stageViewOf(oldStage) === state.view;
+    const keptScroll = inPlace ? oldStage.querySelector(".hq-cal-scroll") : null;
+    const keptTop = keptScroll ? keptScroll.scrollTop : null;
     const active = document.activeElement;
     const control = active?.closest(".hq-cal-bar [data-cal]");
     const toolbarFocus = control && root.contains(control) ? control : null;
     const timelineFocus = active?.closest(".hq-cal-timeline-controls") ? active : null;
-    root.textContent = "";
+    const gridFocus = captureGridFocus(active, root); // a refresh must not drop the cell you were on
+    // A keyboard day/period change: carry the cursor into the new period's grid, at the hour the
+    // old cell had or the 09:00 default.
+    const switched = !!state.prevView && (state.prevView !== state.view || !sameDay(state.prevAnchor, state.anchor));
+    const hourNow = focusedHour();
+    if (Number.isInteger(hourNow)) lastGridHour = hourNow;
+    const activeInStage = !!(active && oldStage && oldStage.contains(active));
+    // Carry the cursor on a keyboard period change. If a refresh already dropped focus to the body,
+    // the last grid hour is still the right place: the next key must move inside the new period, not
+    // from nowhere. Escape leaves focus on the title (not the body), so it keeps its behavior.
+    let switchFocus = null;
+    if (switched && keyboardIntent && !pendingGridFocus) {
+      if (activeInStage) switchFocus = { hour: Number.isInteger(hourNow) ? hourNow : 9 };
+      else if (active === document.body || !active) switchFocus = { hour: lastGridHour };
+    }
+    // The quick-add field is built once and stays connected through every refresh: a rebuild must
+    // not take the sentence (or the caret) out from under the person typing it. The toolbar is the
+    // same surface: a background refresh may repaint its state, never replace the bar or a control
+    // under a pointer, so a click in flight has nowhere to fall.
+    const keptBar = inPlace ? root.querySelector(".hq-cal-bar") : null;
+    const form = inPlace ? keepForRebuild(root, oldStage) : keepQuick(root);
     paintTz();
-    const bar = toolbar();
-    root.appendChild(bar);
-    if (quickForm) root.appendChild(quickForm);
-    if (toolbarFocus) {
+    const bar = keptBar || toolbar();
+    if (keptBar) syncToolbar(keptBar);
+    else root.insertBefore(bar, form || oldStage); // before the field, so the order is still bar → quick add → grid
+    if (!form && quickForm) root.appendChild(quickForm); // a failed first load detached it
+    if (toolbarFocus && (!bar.contains(toolbarFocus) || !toolbarFocus.offsetParent)) {
       const replacement = toolbarFocus.closest(".hq-cal-options") ? bar.querySelector(".hq-cal-options-trigger")
         : [...bar.querySelectorAll("[data-cal]")].find(node => node.dataset.cal === toolbarFocus.dataset.cal && node.dataset.view === toolbarFocus.dataset.view);
       (replacement || bar.querySelector(".hq-cal-date-trigger"))?.focus({ preventScroll: true });
     }
-    if (state.categories.size) root.appendChild(categorySummary());
+    if (state.categories.size) {
+      const summary = categorySummary();
+      if (inPlace) root.insertBefore(summary, oldStage); else root.appendChild(summary);
+    }
     const legend = legendPanel();
     legend.hidden = !state.legend;
-    root.appendChild(legend);
+    if (inPlace) root.insertBefore(legend, oldStage); else root.appendChild(legend);
     const next = nextUp();
     const glances = state.view === "day" || state.view === "week"; // the status line rides beside the grid tools there
-    if (!glances) root.appendChild(next);
+    if (!glances) {
+      if (inPlace) root.insertBefore(next, oldStage); else root.appendChild(next);
+    }
     const recap = recapCard();
-    if (!glances) root.appendChild(recap);
+    if (!glances) {
+      if (inPlace) root.insertBefore(recap, oldStage); else root.appendChild(recap);
+    }
     if (state.data && state.data.malformed) {
-      root.appendChild(h("p", { class: "hint", text: "Fichier calendrier illisible — il n'a pas été écrasé." }));
+      const bad = h("p", { class: "hint", text: "Fichier calendrier illisible — il n'a pas été écrasé." });
+      if (inPlace) root.insertBefore(bad, oldStage); else root.appendChild(bad);
+    }
+    // The status line is rebuilt below: free its old wrapper but keep the tools node it borrowed.
+    if (inPlace && glances) {
+      const row = oldStage.querySelector(".hq-cal-glance");
+      if (row) {
+        const controls = row.querySelector(".hq-cal-timeline-controls");
+        if (controls) row.replaceWith(controls); else row.remove();
+      }
     }
     const finish = () => {
-      if (!root.isConnected || (staged && document.body.dataset.view !== "calendrier")) return;
-      const stage = h("div", { class: "hq-cal-stage" + (state.anim ? " is-" + state.anim : "") });
-      if (state.anim === "zoom" && state.zoomFrom) stage.style.transformOrigin = state.zoomFrom.x + "px " + state.zoomFrom.y + "px";
-      if (state.view === "day") stage.appendChild(dayView());
-      else if (state.view === "week") {
-        const first = weekStart(state.anchor);
-        const hint = threeDay() || state.categories.size
-          ? dayHint(Array.from({ length: weekSpan() }, (_, index) => addLocalDays(first, index))) : null;
-        if (hint) stage.appendChild(hint);
-        stage.append(timelineTools(), weekView());
+      if (!root.isConnected || (staged && document.body.dataset.view !== "calendrier")) return markIdle(root);
+      const stage = inPlace ? oldStage : h("div", { class: "hq-cal-stage" + (state.anim ? " is-" + state.anim : ""),
+      role: "region", "aria-label": stageLabel() });
+      if (!inPlace) {
+        if (state.anim === "zoom" && state.zoomFrom) stage.style.transformOrigin = state.zoomFrom.x + "px " + state.zoomFrom.y + "px";
+        if (state.view === "day") stage.appendChild(dayView());
+        else if (state.view === "week") {
+          const first = weekStart(state.anchor);
+          const hint = threeDay() || state.categories.size
+            ? dayHint(Array.from({ length: weekSpan() }, (_, index) => addLocalDays(first, index))) : null;
+          if (hint) stage.appendChild(hint);
+          stage.append(timelineTools(), weekView());
+        }
+        else if (state.view === "month") stage.appendChild(monthView());
+        else stage.appendChild(agendaView());
+        root.appendChild(stage);
+      } else {
+        settle(root);
+        reconcileStage(stage);
       }
-      else if (state.view === "month") stage.appendChild(monthView());
-      else stage.appendChild(agendaView());
-      root.appendChild(stage);
       if (glances) {
         const controls = stage.querySelector(".hq-cal-timeline-controls");
         const status = next.nodeType === 1 ? next : recap.nodeType === 1 ? recap : null;
@@ -777,8 +1181,23 @@
       paintLive();
       if (before) requestAnimationFrame(() => glide(before)); // after the caller has put the scroll back
       maybeCelebrate();
+      if (keptScroll && keptTop != null) keptScroll.scrollTop = keptTop;
       if (done) done();
+      if (pendingGridFocus) {
+        const pending = pendingGridFocus;
+        pendingGridFocus = null;
+        moveGridFocus(pending.day, pending.hour);
+      } else if (switchFocus) {
+        focusSwitchedPeriod(switchFocus.hour);
+      } else if (gridFocus) restoreGridFocus(gridFocus);
+      // A keyboard-driven rebuild must never strand focus on the body: if the usual captures found
+      // nothing (a refresh landed mid-switch), put the cursor back in the timeline at the last hour.
+      if (document.activeElement === document.body && keyboardIntent && (state.view === "day" || state.view === "week")) {
+        focusSwitchedPeriod(lastGridHour);
+      }
       for (const [id, effect] of dropEffects) paintDrop(root, id, effect);
+      announcePeriod();
+      markIdle(root);
     };
     if (staged) requestAnimationFrame(finish);
     else finish();
@@ -836,7 +1255,7 @@
     const face = dropFace(root, id, effect.day);
     if (!face || typeof face.animate !== "function") return;
     const elapsed = performance.now() - effect.started;
-    if (elapsed >= DROP_EFFECT_MS) return;
+    if (elapsed >= DROP_MEMORY_MS) return;
     effect.painted = true;
     const end = face.getBoundingClientRect();
     const from = effect.from;
@@ -972,10 +1391,11 @@
   }
 
   /* After a save: show the event's day if it is off screen, and let the event land there. */
-  function landOn(event) {
+  function landOn(event, focusStart) {
     if (!event || !event.id) return refresh("keep");
-    const day = parseLocalDateKey(String(event.start || "").slice(0, 10));
-    state.landed = event.id;
+    const hint = focusStart || event.start;
+    const day = parseLocalDateKey(String(hint || "").slice(0, 10));
+    state.landed = occurrenceIdFor(event, hint);
     if (day && !dayVisible(day)) {
       state.userMoved = true;
       state.anim = day < state.anchor ? "prev" : "next";
@@ -1065,8 +1485,93 @@
 
   /* Header: ‹ period › on one line, the four views as one segmented row, then a row with the two
      display toggles (Activité, Légende) on the left and Aujourd'hui / + Événement on the right. */
+  function todayShortcut() {
+    return h("button", { type: "button", class: "secondary hq-cal-today", "data-cal": "today",
+      "aria-keyshortcuts": "t", "data-help": "Revient à aujourd'hui.", text: "Aujourd'hui" });
+  }
+
+  /* Repaint the stable toolbar in place: only its state changes, never its identity. */
+  function syncToolbar(bar) {
+    const index = Math.max(0, VIEW_ORDER.indexOf(state.view));
+    const from = VIEW_ORDER.indexOf(state.prevView);
+    const moving = state.anim === "view" && from >= 0 && from !== index;
+    const views = bar.querySelector(".hq-cal-views");
+    if (views) {
+      views.classList.toggle("is-moving", moving);
+      if (views.style.getPropertyValue("--i") !== String(index)) views.style.setProperty("--i", String(index));
+      const fromValue = String(moving ? from : index);
+      if (views.style.getPropertyValue("--from") !== fromValue) views.style.setProperty("--from", fromValue);
+    }
+    const labels = new Map(VIEWS.map(([id, label]) => [id, label]));
+    for (const button of bar.querySelectorAll(".hq-cal-view")) {
+      const id = button.dataset.view;
+      const text = id === "week" && threeDay() ? "3 jours" : labels.get(id) || button.textContent;
+      if (button.textContent !== text) button.textContent = text;
+      const pressed = state.view === id ? "true" : "false";
+      if (button.getAttribute("aria-pressed") !== pressed) button.setAttribute("aria-pressed", pressed);
+    }
+    const navCopy = {
+      day: ["Jour précédent", "Jour suivant", "Recule d'un jour.", "Avance d'un jour."],
+      week: threeDay()
+        ? ["Trois jours plus tôt", "Trois jours plus tard", "Recule de trois jours.", "Avance de trois jours."]
+        : ["Semaine précédente", "Semaine suivante", "Recule d'une semaine.", "Avance d'une semaine."],
+      month: ["Mois précédent", "Mois suivant", "Recule d'un mois.", "Avance d'un mois."],
+      agenda: ["Agenda précédent", "Agenda suivant", "Recule de trente jours.", "Avance de trente jours."],
+    }[state.view] || ["Période précédente", "Période suivante", "Recule.", "Avance."];
+    [["prev", 0], ["next", 1]].forEach(([kind, i]) => {
+      const button = bar.querySelector('[data-cal="' + kind + '"]');
+      if (!button) return;
+      if (button.getAttribute("aria-label") !== navCopy[i]) button.setAttribute("aria-label", navCopy[i]);
+      if (button.getAttribute("data-help") !== navCopy[i + 2]) button.setAttribute("data-help", navCopy[i + 2]);
+    });
+    const period = titleText();
+    const anchor = state.anchor || todayLocal();
+    const accessible = state.view === "day" ? period + " " + anchor.getFullYear() : period;
+    const trigger = bar.querySelector(".hq-cal-date-trigger");
+    if (trigger) {
+      const label = "Aller à une date · " + accessible;
+      if (trigger.getAttribute("aria-label") !== label) trigger.setAttribute("aria-label", label);
+      const texts = [period, compactPeriod(anchor)];
+      trigger.querySelectorAll(".hq-cal-date-label").forEach((span, i) => {
+        if (span.textContent !== texts[i]) span.textContent = texts[i];
+      });
+    }
+    const optionsTrigger = bar.querySelector(".hq-cal-options-trigger");
+    if (optionsTrigger) {
+      const expanded = String(state.optionsOpen);
+      if (optionsTrigger.getAttribute("aria-expanded") !== expanded) optionsTrigger.setAttribute("aria-expanded", expanded);
+    }
+    const list = bar.querySelector(".hq-cal-option-list");
+    if (list && list.hidden !== !state.optionsOpen) list.hidden = !state.optionsOpen;
+    const cat = bar.querySelector('[data-cal="categories"]');
+    if (cat) {
+      const text = state.categories.size ? "Catégories (" + state.categories.size + ")" : "Catégories";
+      if (cat.textContent !== text) cat.textContent = text;
+    }
+    const activity = bar.querySelector('[data-cal="activity"]');
+    if (activity) {
+      const pressed = state.activity ? "true" : "false";
+      if (activity.getAttribute("aria-pressed") !== pressed) activity.setAttribute("aria-pressed", pressed);
+    }
+    const legend = bar.querySelector('[data-cal="legend"]');
+    if (legend) {
+      const expanded = state.legend ? "true" : "false";
+      if (legend.getAttribute("aria-expanded") !== expanded) legend.setAttribute("aria-expanded", expanded);
+    }
+    const sound = bar.querySelector('[data-cal="sound"]');
+    if (sound) {
+      const pressed = state.sound ? "true" : "false";
+      if (sound.getAttribute("aria-pressed") !== pressed) sound.setAttribute("aria-pressed", pressed);
+    }
+    const viewsRow = bar.querySelector(".hq-cal-views-row");
+    const today = bar.querySelector(".hq-cal-today");
+    if (showsToday()) {
+      if (today) today.remove();
+    } else if (viewsRow && !today) viewsRow.appendChild(todayShortcut());
+  }
+
   function toolbar() {
-    const bar = h("div", { class: "hq-cal-bar" });
+    const bar = h("div", { class: "hq-cal-bar", role: "toolbar", "aria-label": "Calendrier : navigation et vues" });
     const index = Math.max(0, VIEW_ORDER.indexOf(state.view));
     const from = VIEW_ORDER.indexOf(state.prevView);
     const moving = state.anim === "view" && from >= 0 && from !== index;
@@ -1076,7 +1581,7 @@
       "aria-label": "Affichage",
       style: "--i:" + index + ";--from:" + (moving ? from : index),
     });
-    VIEWS.forEach(([id, label, help]) => {
+    VIEWS.forEach(([id, label, help], i) => {
       views.appendChild(
         h("button", {
           type: "button",
@@ -1084,6 +1589,7 @@
           "data-cal": "view",
           "data-view": id,
           "data-help": help,
+          "aria-keyshortcuts": String(i + 1),
           "aria-pressed": state.view === id ? "true" : "false",
           text: id === "week" && threeDay() ? "3 jours" : label,
         })
@@ -1104,7 +1610,8 @@
     const anchor = state.anchor || todayLocal();
     const accessiblePeriod = state.view === "day" ? period + " " + anchor.getFullYear() : period;
     const dateTrigger = h("button", { type: "button", class: "hq-cal-date-trigger", "data-cal": "jump-date",
-      "aria-label": "Aller à une date · " + accessiblePeriod, "aria-haspopup": "dialog", "aria-controls": "hq-cal-date-jump" });
+      "aria-label": "Aller à une date · " + accessiblePeriod, "aria-haspopup": "dialog", "aria-controls": "hq-cal-date-jump",
+      "aria-keyshortcuts": "g" });
     dateTrigger.appendChild(h("span", { class: "hq-cal-date-label has-short-date", text: period }));
     dateTrigger.appendChild(h("span", { class: "hq-cal-date-label hq-cal-short-date", text: compactPeriod(anchor), "aria-hidden": "true" }));
     dateTrigger.appendChild(h("span", { class: "hq-cal-date-chevron", "aria-hidden": "true" }));
@@ -1139,7 +1646,8 @@
       type: "button", class: "hq-cal-toggle", "data-cal": "history", "aria-haspopup": "dialog", text: "Historique des modifications",
     }));
     optionList.appendChild(h("button", {
-      type: "button", class: "hq-cal-toggle", "data-cal": "gestures", "aria-haspopup": "dialog", text: "Gestes",
+      type: "button", class: "hq-cal-toggle", "data-cal": "gestures", "aria-haspopup": "dialog",
+      text: coarsePointer() ? "Gestes" : "Gestes et raccourcis",
     }));
     optionList.appendChild(h("button", {
       type: "button",
@@ -1159,22 +1667,21 @@
       text: "Sons",
     }));
     const search = h("button", { type: "button", class: "hq-cal-toggle hq-cal-icon hq-cal-search-trigger", "data-cal": "search",
-      "aria-label": "Rechercher un événement", "aria-haspopup": "dialog" }, [h("span", { text: "Rechercher" })]);
+      "aria-label": "Rechercher un événement", "aria-keyshortcuts": "f", "aria-haspopup": "dialog" },
+      [h("span", { text: "Rechercher" })]);
     actions.append(options, search, h("button", {
       type: "button",
       class: "hq-cal-create",
       "data-cal": "create",
       "aria-label": "Nouvel événement",
+      "aria-keyshortcuts": "n",
       "data-help": "Crée un événement manuel dans le calendrier.",
       text: "+ Événement",
     }));
     top.appendChild(actions);
     const viewsRow = h("div", { class: "hq-cal-views-row" });
     viewsRow.appendChild(views);
-    if (!showsToday()) {
-      viewsRow.appendChild(h("button", { type: "button", class: "secondary hq-cal-today", "data-cal": "today",
-        "data-help": "Revient à aujourd'hui.", text: "Aujourd'hui" }));
-    }
+    if (!showsToday()) viewsRow.appendChild(todayShortcut());
     bar.append(top, viewsRow);
     return bar;
   }
@@ -1228,7 +1735,7 @@
   }
 
   function dayView() {
-    const wrap = h("div", {});
+    const wrap = h("div", { role: "group", "aria-label": "Vue jour · " + fmtDay(state.anchor) });
     wrap.appendChild(weekStrip());
     wrap.appendChild(timelineTools());
     const hint = dayHint([state.anchor]);
@@ -1270,13 +1777,20 @@
     const close = h("button", { type: "button", class: "secondary", text: "Fermer" });
     const card = h("div", { class: "hq-sheet-card hq-cal-picker", role: "dialog", "aria-modal": "true",
       "aria-labelledby": "hq-cal-gestures-title", tabindex: "-1" }, [
-      h("h3", { id: "hq-cal-gestures-title", text: "Gestes du calendrier" }),
+      h("h3", { id: "hq-cal-gestures-title", text: touch ? "Gestes du calendrier" : "Gestes et raccourcis" }),
       h("div", { class: "hq-cal-gesture-steps" }, [
         h("div", {}, [h("strong", { text: "Créer" }), h("span", { text: touch ? "Touche une heure libre. Maintiens puis glisse pour choisir la durée." : "Clique ou glisse sur une heure libre." })]),
         h("div", {}, [h("strong", { text: "Déplacer" }), h("span", { text: touch ? "Glisse la poignée à points. Sur un bloc étroit, maintiens le bloc puis glisse." : "Glisse le bloc vers l’heure ou le jour voulu." })]),
         h("div", {}, [h("strong", { text: "Durée" }), h("span", { text: "Tire la barre au bas du bloc." })]),
-        h("p", { text: touch ? "Balaye la grille pour changer de jour." : "Utilise ← et → pour changer de période." }),
+        touch ? h("p", { text: "Balaye la grille pour changer de jour." }) : null,
         h("p", { text: "Tu peux aussi ouvrir un événement et choisir « Changer l’horaire »." }),
+      ]),
+      touch ? null : h("section", { class: "hq-cal-keys", "aria-label": "Raccourcis clavier" }, [
+        h("h4", { class: "hq-cal-keys-title", text: "Clavier" }),
+        ...KEY_ROWS.map(([keys, label]) => h("div", { class: "hq-cal-key-row" }, [
+          h("kbd", { class: "hq-cal-key", text: keys }),
+          h("span", { text: label }),
+        ])),
       ]),
       close,
     ]);
@@ -1353,7 +1867,8 @@
   }
 
   function allDayLane(day) {
-    const lane = h("div", { class: "hq-cal-allday", "data-allday": dateKey(day) });
+    const lane = h("div", { class: "hq-cal-allday", "data-allday": dateKey(day), role: "group",
+      "aria-label": "Journée entière · " + fmtDay(day) });
     const rows = visibleItems().filter((item) => item.all_day && overlapsDay(item, day));
     if (!rows.length) return lane; // empty: hidden by CSS, no filler line
     rows.forEach((item) => lane.appendChild(chip(item)));
@@ -1364,10 +1879,12 @@
     const title = item.title || "Sans titre";
     const node = h("button", {
       type: "button",
-      class: "hq-cal-chip " + catClass(item) + landedClass(item),
+      class: "hq-cal-chip " + catClass(item) + landedClass(item) + (isRecurring(item) ? " is-series" : ""),
       "data-cal": "open",
       "data-id": item.id,
       "data-help": previewHelp(item),
+      "aria-label": title + (item.all_day ? " · journée" : item.start && String(item.start).includes("T") ? " · " + spanLabel(item) : "")
+        + (isRecurring(item) ? " · série" : ""),
       text: title,
     });
     return node;
@@ -1382,10 +1899,11 @@
   }
 
   function dayTimeline(day) {
-    const scroll = h("div", { class: "hq-cal-scroll" });
+    const scroll = h("div", { class: "hq-cal-scroll", role: "group", "aria-label": "Grille horaire · " + fmtDay(day) });
     const grid = h("div", { class: "hq-cal-day" });
     const labels = h("div", { class: "hq-cal-hours" });
     const col = h("div", { class: "hq-cal-col", "data-col-day": dateKey(day) });
+    const cursor = cursorHour(day);
     for (let hour = 0; hour < 24; hour += 1) {
       labels.appendChild(h("div", { class: "hq-cal-hourlabel", text: pad(hour) + ":00" }));
       col.appendChild(
@@ -1395,6 +1913,7 @@
           "data-cal": "slot",
           "data-day": dateKey(day),
           "data-hour": String(hour),
+          "tabindex": hour === cursor ? "0" : "-1",
           "aria-label": "Créer à " + pad(hour) + ":00",
         })
       );
@@ -1417,44 +1936,29 @@
   }
 
   function columnPx() {
-    return 46 * 24 * state.zoom;
+    const cal = document.querySelector(".hq-cal");
+    const hour = cal ? parseFloat(getComputedStyle(cal).getPropertyValue("--cal-hh")) : NaN;
+    return (Number.isFinite(hour) && hour > 0 ? hour : 48) * 24 * state.zoom;
   }
 
+  /* A short event keeps its true visual height, but its button gets a 44 px halo centred on the block.
+     Only the painted face and explicit handles take pointers; the halo itself lets empty slot rims
+     underneath keep their own action. */
   function assignHitSlop(placed) {
-    const pxPerMin = columnPx() / 1440;
-    const targetPx = 44;
-    const gapPx = 2;
-    const groups = new Map();
+    const colPx = columnPx();
+    const pxPerMin = colPx / 1440;
     placed.forEach((entry) => {
-      const list = groups.get(entry.col) || [];
-      list.push(entry);
-      groups.set(entry.col, list);
-    });
-    groups.forEach((rows) => {
-      rows.sort((a, b) => a.startMin - b.startMin || a.endMin - b.endMin);
-      rows.forEach((entry, index) => {
-        const prevEnd = index > 0 ? rows[index - 1].endMin : 0;
-        const nextStart = index + 1 < rows.length ? rows[index + 1].startMin : 1440;
-        const aboveRoom = Math.max(0, ((entry.startMin - prevEnd) * pxPerMin) / 2 - (index > 0 ? gapPx / 2 : 0));
-        const belowRoom = Math.max(0, ((nextStart - entry.endMin) * pxPerMin) / 2 - (index + 1 < rows.length ? gapPx / 2 : 0));
-        const visualPx = Math.max(1, (entry.endMin - entry.startMin) * pxPerMin);
-        const need = Math.max(0, targetPx - visualPx);
-        let above = Math.min(aboveRoom, need / 2);
-        let below = Math.min(belowRoom, need - above);
-        const leftover = need - above - below;
-        if (leftover > 0) {
-          const addAbove = Math.min(Math.max(0, aboveRoom - above), leftover);
-          above += addAbove;
-          below += Math.min(Math.max(0, belowRoom - below), leftover - addAbove);
-        }
-        entry.hitAbovePx = above;
-        entry.hitBelowPx = below;
-        entry.visualPx = visualPx;
-      });
+      const visualPx = Math.max(1, (entry.endMin - entry.startMin) * pxPerMin);
+      const targetPx = Math.max(44, visualPx);
+      const topPx = entry.startMin * pxPerMin;
+      const centered = topPx - (targetPx - visualPx) / 2;
+      entry.visualPx = visualPx;
+      entry.hitHeightPx = targetPx;
+      entry.hitTopPx = Math.max(0, Math.min(colPx - targetPx, centered));
     });
   }
 
-  function placeTimed(col, day, columns) {
+  function placeTimed(col, day, columns, reuse) {
     const dayStart = makeLocalDate(day.getFullYear(), day.getMonth() + 1, day.getDate());
     const dayEnd = addLocalDays(dayStart, 1);
     const placed = layoutOverlaps(
@@ -1469,39 +1973,51 @@
       })
     );
     const coarse = coarsePointer();
-    if (coarse) assignHitSlop(placed);
+    assignHitSlop(placed);
     const colPx = columnPx();
     const now = liveNow();
+    // reuse: the same event keeps the very node it had; only what differs is painted into it.
+    const existing = reuse
+      ? new Map([...col.children].filter((node) => node.classList && node.classList.contains("hq-cal-event") && node.dataset.id)
+        .map((node) => [node.dataset.id, node]))
+      : null;
+    const kept = new Set();
     placed.forEach(entry => {
       const width = 100 / entry.cols;
-      const spanMin = Math.max(1, entry.endMin - entry.startMin);
       const top = (entry.startMin / 1440) * 100;
-      const height = (spanMin / 1440) * 100;
-      let hitTop = top;
-      let hitHeight = coarse ? height : Math.max(height, 1.6);
+      const visualPx = entry.visualPx;
+      const visualHeight = (visualPx / colPx) * 100;
+      const hitTop = (entry.hitTopPx / colPx) * 100;
+      const hitHeight = (entry.hitHeightPx / colPx) * 100;
+      const faceTop = Math.max(0, Math.min(hitHeight, top - hitTop));
+      const short = visualPx + 0.5 < entry.hitHeightPx;
+      const faceLayout = coarse || short;
+      const sliver = visualPx < 22;
+      const compact = visualPx < 35;
+      const openable = short && !sliver;
       const past = !!(now && itemEnd(entry.item) && itemEnd(entry.item) <= now);
       const live = !!(now && !past && itemStart(entry.item) <= now);
       const checkable = canCheck(entry.item, now);
       const canDrag = movable(entry.item);
-      const compact = height * colPx / 100 < 35;
-      const button = h("button", {
-        type: "button",
-        class: "hq-cal-event" + (coarse ? "" : " " + catClass(entry.item)) + (past ? " is-past" : "") + landedClass(entry.item)
-          + (canDrag ? " is-movable" : "") + (entry.item.done ? " is-done" : "") + (checkable ? " has-check" : "")
-          + (state.burst === entry.item.id ? " is-burst" : "") + (live ? " is-live" : "") + (compact ? " is-compact" : ""),
-        "data-cal": "open",
-        "data-id": entry.item.id,
-        "data-help": previewHelp(entry.item),
-        "aria-label": previewHelp(entry.item),
-      });
-      if (coarse) {
-        const abovePct = ((entry.hitAbovePx || 0) / colPx) * 100;
-        const belowPct = ((entry.hitBelowPx || 0) / colPx) * 100;
-        hitTop = top - abovePct;
-        hitHeight = height + abovePct + belowPct;
-        const face = h("span", { class: "hq-cal-face " + catClass(entry.item) }, [eventLabel(entry)]);
-        face.style.top = (abovePct / hitHeight) * 100 + "%";
-        face.style.height = (height / hitHeight) * 100 + "%";
+      let button = existing ? existing.get(entry.item.id) : null;
+      if (!button) button = h("button", { type: "button" });
+      button.className = "hq-cal-event " + catClass(entry.item) + (faceLayout ? " is-halo" : "")
+        + (past ? " is-past" : "") + landedClass(entry.item)
+        + (canDrag ? " is-movable" : "") + (entry.item.done ? " is-done" : "") + (checkable ? " has-check" : "")
+        + (state.burst === entry.item.id ? " is-burst" : "") + (live ? " is-live" : "") + (compact ? " is-compact" : "")
+        + (openable ? " is-openable" : "");
+      button.dataset.cal = "open";
+      button.dataset.id = entry.item.id;
+      button.dataset.help = previewHelp(entry.item);
+      button.setAttribute("aria-label", previewHelp(entry.item));
+      button.replaceChildren();
+      if (faceLayout) {
+        const face = h("span", {
+          class: "hq-cal-face " + catClass(entry.item) + (sliver ? " is-sliver" : ""),
+        }, [eventLabel(entry)]);
+        face.style.top = (faceTop / hitHeight) * 100 + "%";
+        face.style.height = (visualHeight / hitHeight) * 100 + "%";
+        if (openable) face.appendChild(h("span", { class: "hq-cal-short-open", "aria-hidden": "true" }));
         button.appendChild(face);
       } else {
         button.appendChild(eventLabel(entry));
@@ -1515,23 +2031,29 @@
         button.dataset.from = String(itemStart(entry.item).getTime());
         button.dataset.to = String(itemEnd(entry.item).getTime());
         button.style.setProperty("--fill", liveFill(button, now).toFixed(4));
+      } else {
+        delete button.dataset.from;
+        delete button.dataset.to;
+        button.style.removeProperty("--fill");
       }
       if (canDrag) {
         const handle = h("span", { class: "hq-cal-move-grip", "data-grip": "move", "aria-hidden": "true" });
-        if (coarse) handle.style.top = ((top - hitTop) / hitHeight) * 100 + "%";
+        if (faceLayout) handle.style.top = (faceTop / hitHeight) * 100 + "%";
         button.appendChild(handle);
         // Bottom edge: drag to change the end. On touch it sits at the bottom of the visible face.
         const grip = h("span", { class: "hq-cal-resize", "data-grip": "end", "aria-hidden": "true" });
-        if (coarse) grip.style.top = "calc(" + (((top - hitTop) + height) / hitHeight) * 100 + "% - 14px)";
+        if (faceLayout) grip.style.top = "calc(" + (((faceTop + visualHeight) / hitHeight) * 100) + "% - 14px)";
         button.appendChild(grip);
       }
       if (checkable) {
         const check = checkMark(entry.item);
-        if (coarse) check.style.top = ((top - hitTop) / hitHeight) * 100 + "%";
+        if (faceLayout) check.style.top = (faceTop / hitHeight) * 100 + "%";
         button.appendChild(check);
       }
-      col.appendChild(button);
+      if (!button.isConnected) col.appendChild(button);
+      if (existing) kept.add(entry.item.id);
     });
+    if (existing) existing.forEach((node, id) => { if (!kept.has(id)) node.remove(); });
     return columns;
   }
 
@@ -1544,7 +2066,7 @@
   /* A started event the owner wrote can be ticked off. */
   function canCheck(item, now) {
     const start = itemStart(item);
-    return !!(item && !item.read_only && start && now && start <= now);
+    return !!(item && !item.read_only && !isRecurring(item) && start && now && start <= now);
   }
 
   function checkMark(item) {
@@ -1634,16 +2156,34 @@
     return makeLocalDate(day.getFullYear(), day.getMonth() + 1, day.getDate(), Number(match[1]), Number(match[2]));
   }
 
+  /* The all-day row of the week, built the same way for its first paint and for a later data change. */
+  function allWeekRow(days) {
+    const all = h("div", { class: "hq-cal-allweek", role: "group", "aria-label": "Journées entières de la semaine" });
+    all.appendChild(h("div", { class: "hq-cal-hourlabel", text: "Jour" }));
+    days.forEach((day) => {
+      const cell = h("div", { class: "hq-cal-allcell" + (sameDay(day, serverToday()) ? " is-today" : ""), "data-allday": dateKey(day) });
+      const rows = visibleItems().filter((item) => item.all_day && overlapsDay(item, day));
+      rows.slice(0, 2).forEach((item) => cell.appendChild(chip(item)));
+      if (rows.length > 2) cell.appendChild(allMore(day, rows.length - 2));
+      all.appendChild(cell);
+    });
+    return all;
+  }
+
+  function allMore(day, extra) {
+    return h("button", { type: "button", class: "hq-cal-more", "data-cal": "pick-day", "data-day": dateKey(day),
+      "aria-label": "Voir les événements du " + fmtDay(day), text: "+" + extra });
+  }
+
   function weekView() {
-    const scroll = h("div", { class: "hq-cal-scroll" });
     const span = weekSpan();
+    const first = weekStart(state.anchor);
+    const scroll = h("div", { class: "hq-cal-scroll", role: "group",
+      "aria-label": "Vue semaine · " + fmtDay(first) + " au " + fmtDay(addLocalDays(first, span - 1)) });
     const board = h("div", { class: "hq-cal-week" + (span === 3 ? " is-three" : "") });
     const head = h("div", { class: "hq-cal-weekhead" });
-    const all = h("div", { class: "hq-cal-allweek" });
     const grid = h("div", { class: "hq-cal-weekgrid" });
-    let hasAllDay = false;
     head.appendChild(h("div", {}));
-    all.appendChild(h("div", { class: "hq-cal-hourlabel", text: "Jour" }));
     const labels = h("div", { class: "hq-cal-hours" });
     for (let hour = 0; hour < 24; hour += 1) {
       labels.appendChild(h("div", { class: "hq-cal-hourlabel", text: pad(hour) + ":00" }));
@@ -1666,16 +2206,8 @@
       }
       markRing(headBtn, day);
       head.appendChild(headBtn);
-      const cell = h("div", { class: "hq-cal-allcell" + (current ? " is-today" : ""), "data-allday": dateKey(day) });
-      const allDay = visibleItems().filter(item => item.all_day && overlapsDay(item, day));
-      hasAllDay ||= allDay.length > 0;
-      allDay.slice(0, 2).forEach(item => cell.appendChild(chip(item)));
-      if (allDay.length > 2) {
-        cell.appendChild(h("button", { type: "button", class: "hq-cal-more", "data-cal": "pick-day", "data-day": dateKey(day),
-          "aria-label": "Voir les événements du " + fmtDay(day), text: "+" + (allDay.length - 2) }));
-      }
-      all.appendChild(cell);
       const col = h("div", { class: "hq-cal-weekcol" + (current ? " is-today" : ""), "data-col-day": dateKey(day) });
+      const cursor = cursorHour(day);
       for (let hour = 0; hour < 24; hour += 1) {
         col.appendChild(
           h("button", {
@@ -1684,6 +2216,7 @@
             "data-cal": "slot",
             "data-day": dateKey(day),
             "data-hour": String(hour),
+            "tabindex": hour === cursor ? "0" : "-1",
             "aria-label": "Créer le " + dateKey(day) + " à " + pad(hour) + ":00",
           })
         );
@@ -1693,13 +2226,15 @@
       if (state.activity) placeMarkers(col, day);
       grid.appendChild(col);
     }
-    board.append(h("div", { class: "hq-cal-week-top" }, [head, hasAllDay ? all : null]), grid);
+    const days = Array.from({ length: span }, (_, index) => addLocalDays(start, index));
+    const hasAllDay = days.some((day) => visibleItems().some((item) => item.all_day && overlapsDay(item, day)));
+    board.append(h("div", { class: "hq-cal-week-top" }, [head, hasAllDay ? allWeekRow(days) : null]), grid);
     scroll.appendChild(board);
     return scroll;
   }
 
   function monthView() {
-    const wrap = h("div", { class: "hq-cal-month" });
+    const wrap = h("div", { class: "hq-cal-month", role: "group", "aria-label": "Vue mois · " + titleText() });
     DOW.forEach((label) => wrap.appendChild(h("div", { class: "hq-cal-dow", text: label })));
     const first = makeLocalDate(state.anchor.getFullYear(), state.anchor.getMonth() + 1, 1);
     const start = startOfLocalWeek(first);
@@ -1748,7 +2283,7 @@
   }
 
   function agendaView() {
-    const wrap = h("div", { class: "hq-cal-agenda" });
+    const wrap = h("div", { class: "hq-cal-agenda", role: "group", "aria-label": "Vue agenda · 30 prochains jours" });
     let any = false;
     for (let i = 0; i < 30; i += 1) {
       const day = addLocalDays(state.anchor, i);
@@ -1771,6 +2306,7 @@
           class: "hq-cal-row " + catClass(item) + landedClass(item) + (item.done ? " is-done" : "") + (state.burst === item.id ? " is-burst" : ""),
           "data-cal": "open",
           "data-id": item.id,
+          "data-day": dateKey(day),
           "data-help": previewHelp(item),
         });
         button.appendChild(h("time", { text: when }));
@@ -1997,7 +2533,7 @@
   }
 
   function onClick(ev) {
-    const button = ev.target.closest("[data-cal]");
+    let button = ev.target.closest("[data-cal]");
     if (!button || !button.closest("#hq-cal-app")) return;
     const kind = button.dataset.cal;
     if (kind === "options") {
@@ -2016,11 +2552,7 @@
       return;
     }
     if (kind === "view") {
-      if ((button.dataset.view || "week") === state.view) return;
-      state.anim = "view";
-      state.view = button.dataset.view || "week";
-      try { localStorage.setItem("hq_cal_view", state.view); } catch (_) {}
-      refresh();
+      switchView(button.dataset.view || "week");
       return;
     }
     if (kind === "prev" || kind === "next") {
@@ -2035,7 +2567,7 @@
       positionTimeline("snap", true);
       const scroll = dayScroll();
       if (scroll && scroll.getBoundingClientRect().top + 120 > window.innerHeight) {
-        scroll.scrollIntoView({ block: "start", behavior: "smooth" });
+        scroll.scrollIntoView({ block: "start", behavior: calm() ? "auto" : "smooth" });
       }
       const line = scroll?.querySelector(".hq-cal-now");
       if (line) {
@@ -2104,7 +2636,7 @@
       return;
     }
     if (kind === "create") {
-      openEditor(blankDraft(state.anchor, 9));
+      newEvent();
       return;
     }
     if (kind === "pick-day") {
@@ -2154,6 +2686,35 @@
 
   let sheetOpener = null;
   let sheetRelease = null;
+  let liveTimer = 0;
+  let lastPeriodNotice = "";
+
+  /* One live region for keyboard users: period changes, focus moves, saves and deletes. */
+  function announce(message) {
+    const node = document.getElementById("hq-cal-live");
+    if (!node || !message) return;
+    node.textContent = "";
+    clearTimeout(liveTimer);
+    liveTimer = setTimeout(() => { node.textContent = message; }, 20);
+  }
+
+  function viewName(view = state.view) {
+    return { day: "Vue jour", week: "Vue semaine", month: "Vue mois", agenda: "Vue agenda" }[view] || "Calendrier";
+  }
+
+  function stageLabel(view = state.view) {
+    const anchor = state.anchor || todayLocal();
+    const period = titleText();
+    return viewName(view) + " · " + (view === "day" ? period + " " + anchor.getFullYear() : period);
+  }
+
+  function announcePeriod() {
+    const anchor = state.anchor || todayLocal();
+    const key = state.view + "|" + dateKey(anchor) + "|" + weekSpan();
+    if (key === lastPeriodNotice) return;
+    lastPeriodNotice = key;
+    announce(stageLabel());
+  }
 
   function rememberOpener() {
     if (sheetOpener && document.contains(sheetOpener) && !(sheetOpener.closest && sheetOpener.closest(".hq-sheet"))) return;
@@ -2194,6 +2755,8 @@
     const length = duration * 60000;
     const earliest = sameDay(day, now) ? Math.max(opening, now.getTime()) : opening;
     const roundUp = time => opening + Math.ceil((time - opening) / step) * step;
+    // An all-day event owns the whole date, including every date of a multi-day span.
+    if (events.some(item => item.id !== excludeId && item.all_day && overlapsDay(item, day))) return [];
     const busy = events.filter(item => item.id !== excludeId && !item.all_day && overlapsDay(item, day))
       .map(item => [itemStart(item).getTime(), itemEnd(item).getTime()]).sort((a, b) => a[0] - b[0]);
     const slots = [];
@@ -2280,7 +2843,7 @@
         const scroll = dayScroll();
         revealTimelineNode(scroll, first);
         if (scroll && scroll.getBoundingClientRect().top + 100 > window.innerHeight) {
-          scroll.scrollIntoView({ block: "start", behavior: "smooth" });
+          scroll.scrollIntoView({ block: "start", behavior: calm() ? "auto" : "smooth" });
         }
         first.focus({ preventScroll: true });
       }
@@ -2288,7 +2851,7 @@
     card.append(
       h("h3", { id: "hq-cal-free-slots-title", text: "Trouver un créneau libre" }),
       h("p", { class: "hq-cal-free-slot-date", text: fmtDay(day) }),
-      h("p", { class: "hint", text: "Entre les événements avec horaire, de 8 h à 22 h." }),
+      h("p", { class: "hint", text: "De 8 h à 22 h, hors journées déjà occupées." }),
       durations, status, results, h("div", { class: "hq-cal-picker-actions" }, [showGrid, close])
     );
     root.appendChild(card);
@@ -2300,6 +2863,8 @@
   }
 
   function paintFreeSlotBands(stage) {
+    // The stage now survives a data change, so bands from the previous paint must leave first.
+    stage.querySelectorAll(".hq-cal-slot-band").forEach((node) => node.remove());
     const preview = state.slotPreview;
     if (!preview) return;
     const col = stage.querySelector('[data-col-day="' + preview.day + '"]');
@@ -2317,7 +2882,8 @@
   }
 
   function openDateJump(trigger) {
-    trigger.focus({ preventScroll: true });
+    dateJumpHour = focusedHour(); // read before the trigger takes focus
+    trigger?.focus?.({ preventScroll: true });
     const root = sheet("hq-cal-date-jump");
     const card = h("form", { class: "hq-sheet-card hq-cal-date-jump", role: "dialog", "aria-modal": "true", "aria-labelledby": "hq-cal-date-jump-title" });
     const input = h("input", { id: "hq-cal-jump-input", type: "date", value: dateKey(state.anchor || serverToday()), required: true });
@@ -2329,7 +2895,23 @@
       h("div", { class: "hq-cal-date-jump-actions" }, [today, close, h("button", { type: "submit", text: "Aller à cette date" })])
     );
     async function jump(day) {
+      const hour = Number.isInteger(dateJumpHour) ? dateJumpHour : 9;
+      const keyboard = keyboardIntent;
+      dateJumpHour = null;
       closeSheets();
+      if (keyboard) {
+        // A keyboard jump lands in the day's grid at the carried hour, or 09:00.
+        state.userMoved = true;
+        state.anim = state.view === "day" ? (state.anchor && day < state.anchor ? "prev" : "next") : "view";
+        state.view = "day";
+        try { localStorage.setItem("hq_cal_view", "day"); } catch (_) {}
+        state.anchor = day;
+        pendingGridFocus = { day, hour };
+        refresh(sameDay(day, serverToday()) ? "snap" : undefined);
+        return;
+      }
+      // Pointer: keep the view and wait for the very render this jump started, so the sheet's
+      // focus restoration cannot interleave with it.
       await goToDate(day);
       if (document.body.dataset.view === "calendrier" && document.activeElement === document.body) {
         document.querySelector(".hq-cal-date-trigger")?.focus({ preventScroll: true });
@@ -2355,7 +2937,7 @@
   }
 
   function openCalendarSearch(trigger) {
-    trigger.focus({ preventScroll: true });
+    trigger?.focus?.({ preventScroll: true });
     const root = sheet("hq-cal-search");
     const card = h("div", { class: "hq-sheet-card hq-cal-search", role: "dialog", "aria-modal": "true", "aria-labelledby": "hq-cal-search-title" });
     const input = h("input", { id: "hq-cal-search-input", type: "search", autocomplete: "off", placeholder: "Titre ou lieu",
@@ -2391,7 +2973,7 @@
         const date = dateFormat.format(start) + (item.all_day ? " · Toute la journée" : " · " + fmtTime(start));
         const row = h("button", { type: "button", class: "hq-cal-search-result " + catClass(item) }, [
           h("strong", { text: item.title || "Sans titre" }),
-          h("span", { text: date + (item.location ? " · " + item.location : "") }),
+          h("span", { text: date + (item.location ? " · " + item.location : "") + (item.series_id ? " · Série" : "") }),
         ]);
         row.addEventListener("click", () => {
           root.hidden = true;
@@ -2437,6 +3019,23 @@
         else result.focus();
       }
     });
+    // Inside the results: ↑ ↓ walk the list (↑ from the first comes back to the field),
+    // Home / End jump to its ends, Enter opens the focused one as any button does.
+    rows.addEventListener("keydown", (event) => {
+      const results = [...rows.querySelectorAll(".hq-cal-search-result")];
+      const index = results.indexOf(document.activeElement);
+      if (index < 0) return;
+      if (event.key === "Home" || event.key === "End") {
+        event.preventDefault();
+        results[event.key === "Home" ? 0 : results.length - 1].focus();
+        return;
+      }
+      if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+      event.preventDefault();
+      const next = results[index + (event.key === "ArrowDown" ? 1 : -1)];
+      if (next) next.focus();
+      else if (event.key === "ArrowUp") input.focus();
+    });
     root.appendChild(card);
     present(card);
     releaseSheet();
@@ -2456,22 +3055,302 @@
     card.classList.add("is-morph");
   }
 
-  /* Left / right arrows change period and T comes back to today, on the calendar view only, never
-     while typing or while a sheet, dialog or the search palette is open. */
+  /* Switching view from the segmented control or a number key: one path, one animation. */
+  function switchView(id) {
+    if (!id || id === state.view) return;
+    setOptionsOpen(false);
+    state.anim = "view";
+    state.view = id;
+    try { localStorage.setItem("hq_cal_view", id); } catch (_) {}
+    refresh();
+  }
+
+  /* One new event, from the toolbar button or N: the focused cell's day and hour when there is one,
+     otherwise the anchor day at 9:00. The title is focused. */
+  function newEvent() {
+    setOptionsOpen(false);
+    const day = focusedDay() || state.anchor || serverToday();
+    const hour = focusedHour();
+    openEditor(blankDraft(day, Number.isInteger(hour) ? hour : 9));
+  }
+
+  /* One tab stop per timeline column (roving tabindex): Tab enters at the cursor hour, arrows move it. */
+  function cursorHour(day) {
+    const saved = gridCursor.get(dateKey(day));
+    if (Number.isInteger(saved)) return saved;
+    const now = sameDay(day, serverToday()) ? serverNow() : null;
+    return now ? now.getHours() : 8;
+  }
+
+  function slotNode(day, hour) {
+    const col = document.querySelector('#hq-cal-app [data-col-day="' + CSS.escape(dateKey(day)) + '"]');
+    return col ? col.querySelector('.hq-cal-slot[data-hour="' + hour + '"]') : null;
+  }
+
+  /* Focus an hour cell and make it its column's tab stop, scrolling the grid (never the page) to it. */
+  function moveGridFocus(day, hour) {
+    const slot = slotNode(day, hour);
+    if (!slot) return false;
+    gridCursor.set(dateKey(day), hour);
+    for (const node of slot.closest("[data-col-day]").querySelectorAll(".hq-cal-slot")) {
+      node.setAttribute("tabindex", node === slot ? "0" : "-1");
+    }
+    slot.focus({ preventScroll: true });
+    revealTimelineNode(slot.closest(".hq-cal-scroll"), slot);
+    announce("Créneau · " + fmtDay(day) + " · " + pad(hour) + ":00");
+    return true;
+  }
+
+  /* The day the focused control belongs to: an hour cell, an all-day chip, a timeline event,
+     an agenda row, a month day or a strip day. */
+  function focusedDay() {
+    const active = document.activeElement;
+    if (!active || active === document.body || !active.closest) return null;
+    const pick = active.closest('[data-cal="pick-day"][data-day]');
+    if (pick) return parseLocalDateKey(pick.dataset.day);
+    const cell = active.closest("[data-col-day], [data-allday]");
+    if (cell) return parseLocalDateKey(cell.dataset.colDay || cell.dataset.allday);
+    const row = active.closest(".hq-cal-row[data-day]");
+    if (row) return parseLocalDateKey(row.dataset.day);
+    const item = active.dataset && active.dataset.id ? findItem(active.dataset.id) : null;
+    const start = item ? itemStart(item) : null;
+    return start || null;
+  }
+
+  function focusedHour() {
+    const slot = document.activeElement?.closest?.(".hq-cal-slot");
+    return slot ? Number(slot.dataset.hour) : null;
+  }
+
+  /* Keyboard path onto an event: E cycles the events covering the focused day (or the anchor
+     when no day owns the cursor), announces the title, and leaves the native button in charge
+     of Enter/Space opening its sheet. */
+  function focusDayEvent(direction = 1) {
+    const stage = document.querySelector("#hq-cal-app .hq-cal-stage");
+    if (!stage) return false;
+    const day = focusedDay() || state.anchor || serverToday();
+    const nodes = [...stage.querySelectorAll('[data-cal="open"][data-id]')].filter((node) => {
+      const item = findItem(node.dataset.id);
+      if (!item) return false;
+      if (node.classList.contains("hq-cal-row") && node.dataset.day) {
+        return sameDay(parseLocalDateKey(node.dataset.day), day);
+      }
+      return overlapsDay(item, day);
+    });
+    if (!nodes.length) {
+      announce("Aucun événement le " + fmtDay(day) + ". N pour en créer un.");
+      return false;
+    }
+    const at = nodes.indexOf(document.activeElement);
+    const node = nodes[at < 0 ? 0 : (at + direction + nodes.length) % nodes.length];
+    node.focus({ preventScroll: true });
+    node.scrollIntoView({ block: "nearest" });
+    const item = findItem(node.dataset.id);
+    announce((item?.title || "Sans titre") + " · " + (item ? whenText(item) : fmtDay(day)));
+    return true;
+  }
+
+  function captureGridFocus(active, root) {
+    if (!active || active === document.body || !root.contains(active) || !active.closest) return null;
+    const slot = active.closest(".hq-cal-slot");
+    if (slot) return { kind: "slot", day: slot.dataset.day, hour: Number(slot.dataset.hour) };
+    const mday = active.closest(".hq-cal-mday");
+    if (mday) return { kind: "day", day: mday.dataset.day };
+    const row = active.closest(".hq-cal-row[data-id]");
+    if (row) return { kind: "row", day: row.dataset.day, id: row.dataset.id };
+    const node = active.closest(".hq-cal-event[data-id], .hq-cal-chip[data-id]");
+    return node ? { kind: "item", id: node.dataset.id } : null;
+  }
+
+  function restoreGridFocus(saved) {
+    let node = null;
+    if (saved.kind === "slot") node = slotNode(parseLocalDateKey(saved.day), saved.hour);
+    else if (saved.kind === "day") node = document.querySelector('#hq-cal-app .hq-cal-mday[data-day="' + CSS.escape(saved.day) + '"]');
+    else if (saved.kind === "row") node = document.querySelector('#hq-cal-app .hq-cal-agenda .hq-cal-row[data-day="' + CSS.escape(saved.day || "") + '"][data-id="' + CSS.escape(saved.id) + '"]');
+    else node = document.querySelector('#hq-cal-app .hq-cal-stage [data-id="' + CSS.escape(saved.id) + '"]');
+    if (node) node.focus({ preventScroll: true });
+  }
+
+  /* A keyboard day or period change lands on the new period's grid: the hour the cursor had, or
+     09:00. The period title is the last resort — focus never falls to the document. */
+  function focusMonthDay(day) {
+    const node = document.querySelector('#hq-cal-app .hq-cal-mday[data-day="' + CSS.escape(dateKey(day)) + '"]');
+    if (!node) return false;
+    node.focus({ preventScroll: true });
+    node.scrollIntoView({ block: "nearest" });
+    announce("Jour · " + fmtDay(day));
+    return true;
+  }
+
+  function focusAgendaDay(day) {
+    const row = document.querySelector('#hq-cal-app .hq-cal-agenda .hq-cal-row[data-day="' + CSS.escape(dateKey(day)) + '"]')
+      || document.querySelector("#hq-cal-app .hq-cal-agenda .hq-cal-row");
+    if (!row) return false;
+    row.focus({ preventScroll: true });
+    row.scrollIntoView({ block: "nearest" });
+    announce("Agenda · " + (row.innerText || "").split("\n").slice(0, 2).join(" · "));
+    return true;
+  }
+
+  /* Focus a day in whichever view is active; used after a delete or a save when the old
+     chip no longer exists. */
+  function focusCalendarDate(day, hour) {
+    if (!day) return false;
+    const targetHour = Number.isInteger(hour) ? hour : 9;
+    if (state.view === "day" || state.view === "week") return moveGridFocus(day, targetHour);
+    if (state.view === "month") return focusMonthDay(day);
+    return focusAgendaDay(day);
+  }
+
+  function focusSavedEvent(event, hint) {
+    if (!event) return false;
+    const id = occurrenceIdFor(event, hint || event.start);
+    const stage = document.querySelector("#hq-cal-app .hq-cal-stage");
+    const selector = [".hq-cal-event", ".hq-cal-chip", ".hq-cal-row"]
+      .map((cls) => cls + '[data-id="' + CSS.escape(id) + '"]').join(",");
+    const node = stage?.querySelector(selector)
+      || document.querySelector('#hq-cal-app [data-cal="open"][data-id="' + CSS.escape(id) + '"]');
+    if (node) {
+      node.focus({ preventScroll: true });
+      node.scrollIntoView({ block: "nearest" });
+      return true;
+    }
+    const day = parseLocalDateKey(String(hint || event.start || "").slice(0, 10));
+    const start = itemStart(event);
+    return focusCalendarDate(day, start ? start.getHours() : 9);
+  }
+
+  function focusSwitchedPeriod(hour) {
+    const target = Number.isInteger(hour) ? hour : 9;
+    const anchor = state.anchor || serverToday();
+    let landed = false;
+    if (state.view === "day" || state.view === "week") {
+      landed = moveGridFocus(anchor, target);
+      if (!landed) {
+        const col = document.querySelector("#hq-cal-app [data-col-day]");
+        landed = !!col && moveGridFocus(parseLocalDateKey(col.dataset.colDay), target);
+      }
+    } else if (state.view === "month") landed = focusMonthDay(anchor);
+    else landed = focusAgendaDay(anchor);
+    if (!landed) document.querySelector("#hq-cal-app .hq-cal-date-trigger")?.focus({ preventScroll: true });
+  }
+
+  /* The grid is a keyboard surface: ↑ ↓ walk the hours, ← → the days (a day off screen slides in and
+     keeps its hour), Enter / Space open the cell, Esc hands focus back to the period title. Agenda
+     rows take ↑ ↓ the same way, and the month board walks its 6 × 7 cells. */
+  function onGridKey(ev) {
+    if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
+    const target = ev.target;
+    if (!target || !target.closest) return;
+    if ([...document.querySelectorAll(".hq-sheet")].some((node) => !node.hidden && !node.classList.contains("is-closing"))) return;
+    const slot = target.closest("#hq-cal-app .hq-cal-slot");
+    const row = target.closest("#hq-cal-app .hq-cal-agenda .hq-cal-row");
+    const mday = target.closest("#hq-cal-app .hq-cal-mcell .hq-cal-mday");
+    if (!slot && !row && !mday) return;
+    if (ev.key === "Escape") {
+      ev.preventDefault();
+      ev.stopPropagation();
+      document.querySelector("#hq-cal-app .hq-cal-date-trigger")?.focus({ preventScroll: true });
+      return;
+    }
+    if (ev.key === "Enter" || ev.key === " ") return; // the button opens its day or event on its own
+    const step = ev.key === "ArrowUp" ? -1 : ev.key === "ArrowDown" ? 1 : ev.key === "ArrowLeft" ? -1 : ev.key === "ArrowRight" ? 1 : 0;
+    if (!step) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (slot) {
+      const day = parseLocalDateKey(slot.dataset.day);
+      const hour = Number(slot.dataset.hour);
+      if (!day) return;
+      if (ev.key === "ArrowUp" || ev.key === "ArrowDown") {
+        moveGridFocus(day, Math.max(0, Math.min(23, hour + step)));
+        return;
+      }
+      const cols = [...document.querySelectorAll("#hq-cal-app [data-col-day]")];
+      const next = cols[cols.indexOf(slot.closest("[data-col-day]")) + step];
+      if (next) {
+        moveGridFocus(parseLocalDateKey(next.dataset.colDay), hour);
+        return;
+      }
+      // the neighbour is off screen: slide the period to it, then focus the same hour there
+      const away = addLocalDays(day, step);
+      pendingGridFocus = { day: away, hour };
+      state.userMoved = true;
+      state.anim = step > 0 ? "next" : "prev";
+      state.anchor = away;
+      refresh(sameDay(away, serverToday()) ? "snap" : undefined);
+      return;
+    }
+    if (row) {
+      const rows = [...document.querySelectorAll("#hq-cal-app .hq-cal-agenda .hq-cal-row")];
+      const next = rows[rows.indexOf(row) + step];
+      if (next) {
+        next.focus({ preventScroll: true });
+        next.scrollIntoView({ block: "nearest" });
+      } else {
+        document.querySelector("#hq-cal-app .hq-cal-date-trigger")?.focus({ preventScroll: true });
+      }
+      return;
+    }
+    const cells = [...document.querySelectorAll("#hq-cal-app .hq-cal-mcell .hq-cal-mday")];
+    const across = step * (ev.key === "ArrowUp" || ev.key === "ArrowDown" ? 7 : 1);
+    const next = cells[cells.indexOf(mday) + across];
+    if (next) focusMonthDay(parseLocalDateKey(next.dataset.day));
+  }
+
+  /* Keys on the calendar view only, never while typing or while a sheet, a dialog or the palette
+     is open: ← → change period, T is today, N a new event, F searches, G jumps to a date,
+     1–4 pick the view, Ctrl+Z undoes, H opens the guide. (« / » and « ? » belong to the app-wide palette.) */
   function navKey(ev) {
-    if (ev.ctrlKey || ev.metaKey || ev.altKey || !document.body || document.body.dataset.view !== "calendrier") return;
+    if (!document.body || document.body.dataset.view !== "calendrier") return;
     const target = ev.target;
     if (target && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName))) return;
-    if (document.querySelector("dialog[open]") || [...document.querySelectorAll(".hq-sheet")].some((s) => !s.hidden)) return;
+    const openSheet = [...document.querySelectorAll(".hq-sheet")]
+      .some((node) => !node.hidden && !node.classList.contains("is-closing"));
+    if (openSheet || document.querySelector("dialog[open]")) return;
     const palette = document.getElementById("hq-palette");
     if (palette && !palette.hidden) return;
-    if (ev.key === "ArrowLeft" || ev.key === "ArrowRight") {
+    const key = ev.key;
+    if ((ev.ctrlKey || ev.metaKey) && !ev.altKey && !ev.shiftKey && (key === "z" || key === "Z")) {
+      if (!undoHistory.length || undoBusy) return;
       ev.preventDefault();
-      go(ev.key === "ArrowRight" ? 1 : -1);
-    } else if (ev.key === "t" || ev.key === "T") {
+      undoLatest();
+      return;
+    }
+    if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
+    if (key === "PageUp" || key === "PageDown") {
+      ev.preventDefault();
+      go(key === "PageDown" ? 1 : -1);
+      return;
+    }
+    if (key === "e" || key === "E") {
+      ev.preventDefault();
+      focusDayEvent(ev.shiftKey ? -1 : 1);
+      return;
+    }
+    if (key === "ArrowLeft" || key === "ArrowRight") {
+      ev.preventDefault();
+      go(key === "ArrowRight" ? 1 : -1);
+      return;
+    }
+    if (key === "t" || key === "T") {
       ev.preventDefault();
       goToday();
+      return;
     }
+    const view = ["day", "week", "month", "agenda"][Number(key) - 1];
+    if (view) {
+      ev.preventDefault();
+      switchView(view);
+      return;
+    }
+    if (!["n", "N", "f", "F", "g", "G", "h", "H"].includes(key)) return;
+    ev.preventDefault();
+    if (state.optionsOpen) setOptionsOpen(false);
+    if (key === "n" || key === "N") newEvent();
+    else if (key === "g" || key === "G") openDateJump(document.querySelector(".hq-cal-date-trigger"));
+    else if (key === "h" || key === "H") openGestureGuide();
+    else openCalendarSearch(document.querySelector('#hq-cal-app [data-cal="search"]'));
   }
 
   /* ---- quick add: one sentence, Entrée, done ---- */
@@ -2584,6 +3463,7 @@
   }
 
   function paintRecent() {
+    if (pressed.size) return; // a chip must not vanish under the finger that is tapping it
     const box = document.getElementById("hq-cal-quick-recent");
     const input = document.getElementById("hq-cal-quick-input");
     if (!box || !input) return;
@@ -2638,7 +3518,7 @@
       bar = h("div", { id: "hq-cal-undo", class: "hq-cal-undo", role: "status", "aria-live": "polite" });
       document.body.appendChild(bar);
     }
-    const button = h("button", { type: "button", class: "hq-cal-undo-btn", text: "Annuler" });
+    const button = h("button", { type: "button", class: "hq-cal-undo-btn", "aria-keyshortcuts": "Control+Z", text: "Annuler" });
     button.disabled = undoBusy;
     button.addEventListener("click", undoLatest);
     bar.replaceChildren(h("span", { class: "hq-cal-undo-copy" }, [
@@ -2696,6 +3576,17 @@
       chime("undo");
       buzz(8);
       await landOn(restored);
+      const title = (restored || before || after)?.title || "Sans titre";
+      if (restored) {
+        const day = parseLocalDateKey(String(restored.start || "").slice(0, 10));
+        const start = itemStart(restored);
+        if (!focusSavedEvent(restored) && day) focusCalendarDate(day, start ? start.getHours() : 9);
+        announce((before && !after ? "Suppression annulée" : "Modification annulée") + " : " + title);
+      } else if (after) {
+        const start = itemStart(after);
+        if (start) focusCalendarDate(parseLocalDateKey(dateKey(start)), start.getHours());
+        announce("Ajout annulé : " + title);
+      }
     } catch (err) {
       if (err?.status === 409 || err?.message === "Événement introuvable") {
         for (let i = undoHistory.length - 1; i >= 0; i -= 1) {
@@ -2758,6 +3649,10 @@
   /* Tick an event off (or back): the check bursts, the day's ring fills. */
   async function toggleDone(item) {
     if (!item || item.read_only) return;
+    if (isRecurring(item)) {
+      if (typeof toast === "function") toast("Un événement récurrent ne se coche pas occurrence par occurrence.", "err");
+      return;
+    }
     const original = { ...item };
     const before = !!item.done;
     item.done = !before;
@@ -2780,7 +3675,7 @@
   }
 
   function eventPayload(source, over) {
-    const item = Object.assign({}, source, over || {});
+    const item = Object.assign({}, seriesRecord(source), over || {});
     const payload = {
       title: item.title || "",
       all_day: !!item.all_day,
@@ -2796,6 +3691,7 @@
       done: !!item.done,
     };
     if (item.id) payload.id = item.id;
+    if (item.recurrence) payload.recurrence = item.recurrence;
     return payload;
   }
 
@@ -3209,21 +4105,34 @@
 
   function bindDrag(root) {
     const LONG_PRESS = 380;
+    let chipPress = null;
     root.addEventListener("pointerdown", (ev) => {
       lastPoint = { x: ev.clientX, y: ev.clientY, t: Date.now() };
       if (drag || (ev.pointerType === "mouse" && ev.button !== 0) || ev.target.closest(".hq-sheet, .hq-cal-check")) return;
+      const seriesChip = ev.target.closest(".hq-cal-chip.is-series");
+      if (seriesChip) {
+        // An all-day chip has no time grid to drag in; a normal tap still opens its sheet.
+        chipPress = { id: ev.pointerId, x: ev.clientX, y: ev.clientY, told: false };
+        return;
+      }
       const slot = ev.target.closest(".hq-cal-slot");
+      const grip = ev.target.closest("[data-grip]");
       const eventBtn = ev.target.closest(".hq-cal-event.is-movable");
       let next = null;
       if (eventBtn) {
         const item = findItem(eventBtn.dataset.id);
+        if (isRecurring(item)) {
+          // A normal tap must still open the occurrence; an explicit grip press gets the reason.
+          if (grip && typeof toast === "function") toast("Cette occurrence fait partie d’une série. Modifie la série depuis sa fiche.", "err");
+          return;
+        }
         const col = eventBtn.closest("[data-col-day]");
         if (!item || !col || !movable(item) || pendingMoves.has(item.id)) return;
         const startDate = itemStart(item);
         const endDate = itemEnd(item);
         const startMin = startDate.getHours() * 60 + startDate.getMinutes();
         const endMin = sameDay(startDate, endDate) ? endDate.getHours() * 60 + endDate.getMinutes() : 1440;
-        const resize = !!ev.target.closest("[data-grip='end']");
+        const resize = !!grip && grip.dataset.grip === "end" && eventBtn.contains(grip);
         next = { mode: resize ? "resize" : "move", item, col, source: eventBtn, startMin, endMin,
           grabOffset: minuteRaw(col, ev.clientY) - (resize ? endMin : startMin) };
       } else if (slot) {
@@ -3233,14 +4142,21 @@
       }
       if (!next) return;
       drag = Object.assign(next, { id: ev.pointerId, type: ev.pointerType, x0: ev.clientX, y0: ev.clientY, active: false, ghost: null });
-      const directGrip = !!ev.target.closest("[data-grip]");
-      drag.directGrip = directGrip;
-      if (ev.pointerType !== "mouse" && !directGrip) {
+      drag.directGrip = !!grip;
+      if (ev.pointerType !== "mouse" && !grip) {
         // Touch: a press held still turns into a drag; moving first stays a scroll or a swipe.
         drag.timer = setTimeout(() => { if (drag && !drag.active) dragActivate(drag.x0, drag.y0); }, LONG_PRESS);
       }
     });
     window.addEventListener("pointermove", (ev) => {
+      if (chipPress && ev.pointerId === chipPress.id) {
+        if (!chipPress.told && Math.hypot(ev.clientX - chipPress.x, ev.clientY - chipPress.y) > 10) {
+          chipPress.told = true;
+          suppressClick();
+          if (typeof toast === "function") toast("Cette occurrence fait partie d’une série. Modifie la série depuis sa fiche.", "err");
+        }
+        return;
+      }
       if (!drag || ev.pointerId !== drag.id) return;
       const moved = Math.hypot(ev.clientX - drag.x0, ev.clientY - drag.y0);
       if (!drag.active) {
@@ -3254,12 +4170,14 @@
       scheduleDragScroll(ev.clientX, ev.clientY);
     });
     window.addEventListener("pointerup", (ev) => {
+      if (chipPress && ev.pointerId === chipPress.id) { chipPress = null; return; }
       if (!drag || ev.pointerId !== drag.id) return;
       const target = !!colAt(ev.clientX, ev.clientY);
       if (drag.active && target) dragUpdate(ev.clientX, ev.clientY);
       dragEnd(target);
     });
     window.addEventListener("pointercancel", (ev) => {
+      if (chipPress && ev.pointerId === chipPress.id) { chipPress = null; return; }
       if (drag && ev.pointerId === drag.id) dragEnd(false);
     });
     // Once a touch drag is live, the page must not scroll under it.
@@ -3289,7 +4207,7 @@
   /* Swipe left / right (touch): the period follows the finger, the next one is named at the edge,
      and letting go springs to it (far enough, or a flick) or back. Vertical moves stay scrolls. */
   function bindSwipe(root) {
-    const SKIP = ".hq-cal-bar, .hq-sheet, .hq-cal-row[data-id]:not(.is-schedule), .hq-cal-nextup, .hq-cal-weekstrip, [data-grip], .hq-cal-timeline-controls";
+    const SKIP = ".hq-cal-bar, .hq-sheet, .hq-cal-row[data-id]:not(.is-schedule), .hq-cal-nextup, .hq-cal-weekstrip, [data-grip], .hq-cal-timeline-controls, .hq-cal-chip.is-series";
     const calm = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     function peek(dir) {
       const node = h("div", { class: "hq-cal-peek " + (dir > 0 ? "is-next" : "is-prev"), "aria-hidden": "true" }, [
@@ -3486,6 +4404,8 @@
     root.addEventListener("pointerdown", (ev) => {
       if (ev.pointerType !== "touch") return;
       const row = ev.target.closest(".hq-cal-row[data-id]:not(.is-schedule)");
+      const item = row && findItem(row.dataset.id);
+      if (isRecurring(item)) return; // open the series from its detail sheet; never delete one occurrence by swipe
       r = row ? { row, id: ev.pointerId, x: ev.clientX, y: ev.clientY, t: Date.now(), locked: false, dx: 0 } : null;
     }, { passive: true });
     window.addEventListener("pointermove", (ev) => {
@@ -3557,6 +4477,7 @@
         if (Math.abs(dy) > 12 && Math.abs(dy) > Math.abs(dx)) { sc = null; return; }
         if (Math.abs(dx) < 8 || Math.abs(dx) < Math.abs(dy)) return;
         sc.active = true;
+        scrubbing = true; // a slide redraws the day it passes over, unlike a click that must not move
       }
       const strip = root.querySelector(".hq-cal-weekstrip");
       if (!strip) return;
@@ -3577,6 +4498,7 @@
       if (!sc || ev.pointerId !== sc.id) return;
       if (sc.active) suppressClick();
       sc = null;
+      scrubbing = false;
     };
     window.addEventListener("pointerup", end);
     window.addEventListener("pointercancel", end);
@@ -3826,9 +4748,13 @@
 
   function buildDetail(item, animate) {
     const root = sheet("hq-cal-detail");
+    const recurring = isRecurring(item);
     const card = h("div", { class: "hq-sheet-card", role: "dialog", "aria-modal": "true", "aria-labelledby": "hq-cal-detail-title" });
     card.appendChild(h("h3", { id: "hq-cal-detail-title", text: item.title || "Sans titre" }));
     card.appendChild(h("p", { class: "hint", text: whenText(item) }));
+    if (recurring) {
+      card.appendChild(h("p", { class: "hint hq-cal-series-note", text: "Série · " + recurrenceLabel(item.recurrence) + ". Toute modification ou suppression s’applique à toutes les occurrences." }));
+    }
     if (item.location) card.appendChild(h("p", { text: item.location }));
     if (item.notes) card.appendChild(h("p", { class: "hq-cal-note", text: item.notes }));
     if (item.read_only && item.source === "icloud") {
@@ -3845,11 +4771,11 @@
       }
       const editActions = h("div", { class: "hq-cal-detail-actions" });
       if (itemStart(item) && itemEnd(item)) {
-        editActions.appendChild(h("button", { type: "button", "data-sheet": "schedule", text: "Changer l’horaire" }));
+        editActions.appendChild(h("button", { type: "button", "data-sheet": "schedule", text: recurring ? "Horaire de la série" : "Changer l’horaire" }));
       }
-      editActions.appendChild(h("button", { type: "button", class: "secondary", "data-sheet": "edit", "data-id": item.id, text: "Modifier" }));
+      editActions.appendChild(h("button", { type: "button", class: "secondary", "data-sheet": "edit", "data-id": item.id, text: recurring ? "Modifier la série" : "Modifier" }));
       card.appendChild(editActions);
-      if (itemStart(item) && itemEnd(item)) {
+      if (itemStart(item) && itemEnd(item) && !recurring) {
         card.appendChild(h("div", { class: "hq-cal-detail-actions" }, [
           h("button", { type: "button", class: "secondary", "data-sheet": "move", text: "Déplacer vers…" }),
           h("button", { type: "button", class: "secondary", "data-sheet": "duplicate", text: "Dupliquer" }),
@@ -3858,7 +4784,7 @@
       if (item.scene_id) card.appendChild(h("button", { type: "button", class: "secondary", "data-sheet": "run", "data-id": item.id, "data-target": "scene", text: "Lancer la scène" }));
       if (item.action_id) card.appendChild(h("button", { type: "button", class: "secondary", "data-sheet": "run", "data-id": item.id, "data-target": "action", text: "Lancer l'action" }));
       if (item.device_id) card.appendChild(h("button", { type: "button", class: "secondary", "data-sheet": "device", "data-id": item.id, text: "Voir l'appareil" }));
-      card.appendChild(h("button", { type: "button", class: "danger", "data-sheet": "delete", "data-id": item.id, text: "Supprimer" }));
+      card.appendChild(h("button", { type: "button", class: "danger", "data-sheet": "delete", "data-id": item.id, text: recurring ? "Supprimer la série" : "Supprimer" }));
     }
     card.appendChild(h("button", { type: "button", class: "secondary", "data-sheet": "close", text: "Fermer" }));
     card.addEventListener("click", (ev) => onSheetClick(ev, item));
@@ -3951,6 +4877,10 @@
   }
 
   function openDuplicate(item) {
+    if (isRecurring(item)) {
+      if (typeof toast === "function") toast("Duplique la série depuis sa fiche après l’avoir modifiée, pas une seule occurrence.", "err");
+      return;
+    }
     const card = transferCard("Dupliquer l’événement", item);
     const today = serverToday();
     const weekday = (itemStart(item).getDay() + 6) % 7;
@@ -3975,6 +4905,10 @@
   }
 
   function openMove(item) {
+    if (isRecurring(item)) {
+      if (typeof toast === "function") toast("Une occurrence ne se déplace pas seule. Modifie l’horaire de la série.", "err");
+      return;
+    }
     const card = transferCard("Déplacer vers une autre date", item);
     const start = itemStart(item);
     const duration = (itemEnd(item) - start) / 60000;
@@ -4130,7 +5064,7 @@
       await busy("Lancement…", () => api("/api/calendar/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: item.id, target: target }),
+        body: JSON.stringify({ id: seriesRecord(item).id, target: target }),
       }));
       if (typeof toast === "function") toast(target === "scene" ? "Scène lancée" : "Action lancée");
     } catch (err) {
@@ -4157,17 +5091,27 @@
     if (form) form.scrollIntoView({ block: "start" });
   }
 
+  /* One delete path for every event: remove immediately, keep the same Annuler offer, and
+     put the keyboard cursor back on the day when the trigger no longer exists. */
   async function removeEvent(item, quiet) {
-    const original = { ...item };
+    const recurring = isRecurring(item);
+    const original = { ...seriesRecord(item) };
+    const at = itemStart(item);
+    const day = at ? parseLocalDateKey(dateKey(at)) : state.anchor;
+    const hour = at ? at.getHours() : 9;
     try {
-      await deleteCall(item.id, item.rev);
+      await deleteCall(original.id, original.rev);
       closeSheets();
       if (!quiet) {
         chime("delete");
         buzz(10);
       }
-      offerUndo("Supprimé", original, null);
-      refresh("keep");
+      offerUndo(recurring ? "Série supprimée" : "Supprimé", original, null);
+      await refresh("keep");
+      // The chip that opened the sheet is gone: land the keyboard cursor on its day instead.
+      if (!quiet) focusCalendarDate(day, hour);
+      announce((recurring ? "Série supprimée" : "Événement supprimé") + " : " + (original.title || "Sans titre")
+        + " · Ctrl+Z pour annuler");
     } catch (err) {
       if (typeof toast === "function") toast((err && err.message) || "Suppression impossible", "err");
       refresh("keep");
@@ -4179,6 +5123,9 @@
   function openEditor(item, quickText = "", mode = "full") {
     const scheduleOnly = mode === "schedule";
     morphFrom = ""; // the editor closes the ordinary way
+    const sourceStart = item && item.start;
+    item = seriesRecord(item);
+    const recurringEdit = !!(item && item.recurrence);
     const original = Object.assign({}, item); // what Annuler goes back to
     const root = sheet("hq-cal-editor");
     for (const id of ["hq-cal-detail", "hq-cal-free-slots", "hq-cal-transfer"]) {
@@ -4186,8 +5133,10 @@
       if (source) source.hidden = true;
     }
     const card = h("form", { class: "hq-sheet-card hq-cal-editor", role: "dialog", "aria-modal": "true", "aria-labelledby": "hq-cal-editor-title" });
-    const heading = scheduleOnly ? "Changer l’horaire" : item.id ? "Modifier" : "Nouvel événement";
+    const heading = scheduleOnly ? (recurringEdit ? "Horaire de la série" : "Changer l’horaire")
+      : recurringEdit ? "Modifier la série" : item.id ? "Modifier" : "Nouvel événement";
     card.appendChild(h("h3", { id: "hq-cal-editor-title", text: heading }));
+    if (recurringEdit) card.appendChild(h("p", { class: "hint hq-cal-series-note", text: "Toutes les occurrences de cette série seront modifiées." }));
     const title = h("input", { id: "hq-cal-title", class: "hq-cal-title-input", name: "title", maxlength: "120", required: "required",
       placeholder: "Titre", "aria-label": "Titre", autocomplete: "off", value: item.title || "" });
     card.appendChild(scheduleOnly ? h("p", { class: "hq-cal-schedule-name", text: item.title || "Sans titre" }) : title);
@@ -4276,11 +5225,12 @@
     if (!scheduleOnly) card.appendChild(allWrap);
     else if (!item.all_day) card.appendChild(h("p", { class: "hint", text: "Si tu changes le début, la durée reste la même." }));
     card.append(h("div", { class: "hq-cal-when" }, [startField, endField]), durations);
+    const repeat = scheduleOnly ? null : appendRecurrence(card, item, start);
     const category = scheduleOnly ? null : appendEditorDetails(card, item);
     const error = h("p", { class: "hq-cal-editor-error", role: "alert" });
     card.appendChild(error);
     const row = h("div", { class: "hq-cal-sheet-actions" });
-    const submit = h("button", { type: "submit", text: "Enregistrer" });
+    const submit = h("button", { type: "submit", "aria-keyshortcuts": "Control+Enter Meta+Enter", text: "Enregistrer" });
     row.appendChild(submit);
     row.appendChild(h("button", { type: "button", class: "secondary", "data-sheet": "close", text: "Fermer" }));
     card.appendChild(row);
@@ -4289,7 +5239,14 @@
     });
     card.addEventListener("submit", (ev) => {
       ev.preventDefault();
-      if (!submit.disabled) saveEditor(item, { card, allDay, start, end, category, original, error, submit, quickText, scheduleOnly });
+      if (!submit.disabled) saveEditor(item, { card, allDay, start, end, category, repeat, original, error, submit, quickText, scheduleOnly, sourceStart });
+    });
+    // Ctrl / Cmd + Entrée saves from anywhere in the form, so the footer never has to be scrolled to.
+    card.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter" && (ev.ctrlKey || ev.metaKey) && !submit.disabled) {
+        ev.preventDefault();
+        saveEditor(item, { card, allDay, start, end, category, repeat, original, error, submit, quickText, scheduleOnly, sourceStart });
+      }
     });
     card.addEventListener("input", () => { error.textContent = ""; });
     root.appendChild(card);
@@ -4297,6 +5254,116 @@
     releaseSheet();
     sheetRelease = window.hqTrapFocus ? window.hqTrapFocus(card) : null;
     (scheduleOnly ? start : title).focus();
+  }
+
+  /* Recurrence is a small structured pattern, not a sentence parser: frequency,
+     optional weekdays for weekly, and one end condition. */
+  function appendRecurrence(card, item, startInput) {
+    const initial = item.recurrence || null;
+    const chosen = new Set((initial && initial.weekdays) || []);
+    const repeat = h("select", { id: "cal-repeat", "aria-label": "Répétition" });
+    [["", "Ne se répète pas"], ["daily", "Chaque jour"], ["weekdays", "Jours ouvrés (lun.–ven.)"],
+      ["weekly", "Chaque semaine"]].forEach(([value, label]) => {
+      const option = h("option", { value: value, text: label });
+      if ((initial?.frequency || "") === value) option.selected = true;
+      repeat.appendChild(option);
+    });
+    const days = h("div", { class: "hq-cal-repeat-days", role: "group", "aria-label": "Jours de la semaine" });
+    DOW.forEach((label, index) => {
+      const button = h("button", { type: "button", class: "hq-cal-repeat-day", "data-day": String(index),
+        "aria-pressed": chosen.has(index) ? "true" : "false", "aria-label": label, title: label, text: label });
+      button.addEventListener("click", () => {
+        if (chosen.has(index)) chosen.delete(index);
+        else chosen.add(index);
+        button.setAttribute("aria-pressed", chosen.has(index) ? "true" : "false");
+        sync();
+      });
+      days.appendChild(button);
+    });
+    const end = h("div", { class: "hq-cal-repeat-end" });
+    const endMode = h("select", { id: "cal-repeat-end", "aria-label": "Fin de la répétition" });
+    [["never", "Ne se termine jamais"], ["until", "Jusqu’à une date"], ["count", "Après un nombre d’occurrences"]].forEach(([value, label]) => {
+      const option = h("option", { value: value, text: label });
+      if ((initial?.count ? "count" : initial?.until ? "until" : "never") === value) option.selected = true;
+      endMode.appendChild(option);
+    });
+    const until = h("input", { id: "cal-repeat-until", type: "date", "aria-label": "Date de fin de la répétition" });
+    if (initial?.until) until.value = initial.until;
+    const count = h("input", { id: "cal-repeat-count", type: "number", min: "1", max: "1000", step: "1",
+      inputmode: "numeric", "aria-label": "Nombre d’occurrences", value: initial?.count ? String(initial.count) : "10" });
+    const untilWrap = field("Dernière occurrence", until);
+    const countWrap = field("Nombre d’occurrences", count);
+    const note = h("p", { class: "hint hq-cal-repeat-note", "aria-live": "polite" });
+    const endModeField = field("Fin de la série", endMode);
+    const startDay = () => String(startInput.value || "").slice(0, 10);
+    let syncing = false;
+    function sync() {
+      if (syncing) return;
+      syncing = true;
+      const weekly = repeat.value === "weekly";
+      if (weekly && !chosen.size) {
+        const start = parseLocalDateTime(startInput.value) || parseLocalDateKey(startDay());
+        if (start) {
+          const weekday = (start.getDay() + 6) % 7;
+          chosen.add(weekday);
+          const button = days.querySelector('[data-day="' + weekday + '"]');
+          if (button) button.setAttribute("aria-pressed", "true");
+        }
+      }
+      days.hidden = !weekly;
+      end.hidden = !repeat.value;
+      const mode = endMode.value;
+      untilWrap.hidden = mode !== "until";
+      countWrap.hidden = mode !== "count";
+      if (mode === "until") {
+        until.min = startDay();
+        if (!until.value) until.value = startDay();
+      }
+      note.hidden = !repeat.value;
+      if (repeat.value) {
+        const sample = { frequency: repeat.value, weekdays: [...chosen].sort((a, b) => a - b), until: null, count: null };
+        if (mode === "until" && until.value) sample.until = until.value;
+        if (mode === "count") sample.count = Number(count.value) || null;
+        note.textContent = "Série : " + recurrenceLabel(sample) + ". La première occurrence compte.";
+      }
+      syncing = false;
+    }
+    repeat.addEventListener("change", sync);
+    endMode.addEventListener("change", sync);
+    until.addEventListener("input", sync);
+    count.addEventListener("input", sync);
+    startInput.addEventListener("input", sync);
+    startInput.addEventListener("change", sync);
+    card.append(field("Répétition", repeat), days, end);
+    end.append(endModeField, untilWrap, countWrap);
+    card.appendChild(note);
+    sync();
+    return {
+      validate() {
+        if (!repeat.value) return { ok: true, value: null };
+        if (repeat.value === "weekly" && !chosen.size) {
+          return { ok: false, message: "Choisis au moins un jour pour la répétition hebdomadaire." };
+        }
+        const start = startDay();
+        if (endMode.value === "until") {
+          if (!until.value) return { ok: false, message: "Choisis une date de fin de série." };
+          if (until.value < start) return { ok: false, message: "La fin de la série doit suivre son début." };
+        }
+        let number = null;
+        if (endMode.value === "count") {
+          number = Number(count.value);
+          if (!Number.isInteger(number) || number < 1 || number > 1000) {
+            return { ok: false, message: "Choisis entre 1 et 1000 occurrences." };
+          }
+        }
+        return { ok: true, value: {
+          frequency: repeat.value,
+          weekdays: repeat.value === "weekly" ? [...chosen].sort((a, b) => a - b) : [],
+          until: endMode.value === "until" ? until.value : null,
+          count: number,
+        } };
+      },
+    };
   }
 
   function appendEditorDetails(card, item) {
@@ -4377,7 +5444,7 @@
   }
 
   async function saveEditor(item, refs) {
-    const { card, submit, error } = refs;
+    const { card, submit, error, repeat, sourceStart } = refs;
     const value = id => card.querySelector("#" + id).value;
     const reminders = [...card.querySelectorAll(".hq-reminders input:checked")].map(input => Number(input.value));
     const allDay = refs.allDay.checked;
@@ -4394,6 +5461,16 @@
       start: allDay ? dateKey(start) : minuteKey(start),
       end: allDay ? dateKey(addLocalDays(end, 1)) : minuteKey(end),
     };
+    let recurrence = null;
+    if (repeat) {
+      const checked = repeat.validate();
+      if (!checked.ok) {
+        error.textContent = checked.message;
+        card.querySelector("#cal-repeat")?.focus();
+        return;
+      }
+      recurrence = checked.value;
+    }
     const payload = refs.scheduleOnly ? eventPayload(item, bounds) : {
       ...bounds,
       title: value("hq-cal-title"),
@@ -4406,6 +5483,7 @@
       reminders_min: reminders,
       done: !!item.done,
     };
+    if (!refs.scheduleOnly && recurrence) payload.recurrence = recurrence;
     if (item.id) payload.id = item.id;
     if (!payload.title.trim()) {
       error.textContent = "Titre requis.";
@@ -4428,11 +5506,13 @@
       chime("save");
       const ev = saved && saved.event;
       const original = refs.original || {};
-      if (ev) {
-        const label = refs.scheduleOnly ? "Horaire modifié" : original.id ? "Modifié" : "Ajouté";
-        offerUndo(label, original.id ? original : null, ev);
-      }
-      landOn(ev);
+      const label = refs.scheduleOnly ? (original.recurrence ? "Horaire de la série modifié" : "Horaire modifié")
+        : original.recurrence ? "Série modifiée" : original.id ? "Modifié" : "Ajouté";
+      if (ev) offerUndo(label, original.id ? original : null, ev);
+      const focusHint = item.recurrence && sourceStart ? sourceStart : "";
+      await landOn(ev, focusHint);
+      if (ev) focusSavedEvent(ev, focusHint || ev.start);
+      announce(label + " : " + ((refs.scheduleOnly ? item.title : payload.title) || "Sans titre"));
     } catch (err) {
       error.textContent = err?.message || "Enregistrement impossible.";
     } finally {
@@ -4554,6 +5634,12 @@
   function boot() {
     const root = document.getElementById("hq-cal-app");
     if (!root) return;
+    root.setAttribute("role", "region");
+    root.setAttribute("aria-label", "Calendrier");
+    if (!document.getElementById("hq-cal-live")) {
+      document.body.appendChild(h("p", { id: "hq-cal-live", class: "visually-hidden", role: "status",
+        "aria-live": "polite", "aria-atomic": "true" }));
+    }
     try {
       state.activity = localStorage.getItem("hq_cal_activity") === "1";
       const saved = localStorage.getItem("hq_cal_view");
@@ -4571,6 +5657,13 @@
     setZoom(state.zoom);
     state.anchor = todayLocal();
     root.addEventListener("click", onClick);
+    root.addEventListener("keydown", onGridKey);
+    document.addEventListener("keydown", () => { keyboardIntent = true; }, true);
+    document.addEventListener("pointerdown", () => { keyboardIntent = false; }, true);
+    // A rebuild never happens under a held pointer: the click it was about to become would vanish.
+    root.addEventListener("pointerdown", (ev) => { pressed.add(ev.pointerId); pressAt = performance.now(); }, true);
+    window.addEventListener("pointerup", releasePress, true);
+    window.addEventListener("pointercancel", releasePress, true);
     mountQuick(root);
     bindDrag(root);
     bindSwipe(root);
@@ -4604,9 +5697,11 @@
     window.hqCalendarOpenDay = function (key) {
       const day = parseLocalDateKey(key);
       if (!day) return;
+      const hour = focusedHour(); // the palette restores focus to the cell it was opened from
       state.userMoved = true;
       state.anchor = day;
       state.view = "day";
+      if (keyboardIntent) pendingGridFocus = { day, hour: Number.isInteger(hour) ? hour : 9 };
       refresh(sameDay(day, serverToday()) ? "snap" : undefined);
     };
     if (document.body && document.body.dataset.view === "calendrier") window.hqCalendarShow();

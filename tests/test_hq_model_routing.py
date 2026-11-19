@@ -5,6 +5,7 @@ import threading
 from unittest.mock import patch
 
 import hq_ai as ai
+import hq_language
 from tests.test_hq_ai import Base, DEV, reply
 
 GEMMA = "gemma-4-26b-a4b-it"
@@ -31,7 +32,7 @@ class RoutingTests(Base):
 
     def test_gemma_tpm_exhaustion_falls_back_without_calling_it(self):
         system, contents = self.payload()
-        estimate = ai.estimate_context(system, contents)
+        estimate = ai.estimate_context(hq_language.apply(system), contents)
         self.configure_tpm(ai.estimate_tokens(GEMMA, estimate))
         ai.generate(ai.AMBIENT_CHAIN, system, contents, ambient=True)
         _, model = ai.generate(ai.AMBIENT_CHAIN, system, contents, ambient=True)
@@ -55,7 +56,7 @@ class RoutingTests(Base):
 
     def test_missing_usage_and_failed_calls_keep_reservation(self):
         system, contents = self.payload()
-        self.configure_tpm(ai.estimate_tokens(GEMMA, ai.estimate_context(system, contents)))
+        self.configure_tpm(ai.estimate_tokens(GEMMA, ai.estimate_context(hq_language.apply(system), contents)))
         self.answers = [(503, {})]
         with self.assertRaises(ai.AiError):
             ai.generate((GEMMA,), system, contents)
@@ -64,7 +65,7 @@ class RoutingTests(Base):
 
     def test_reservations_survive_process_minute_cache_reset(self):
         system, contents = self.payload()
-        estimate = ai.estimate_context(system, contents)
+        estimate = ai.estimate_context(hq_language.apply(system), contents)
         self.configure_tpm(ai.estimate_tokens(GEMMA, estimate))
         ai.generate((GEMMA,), system, contents)
         ai._minute.clear()
@@ -84,7 +85,7 @@ class RoutingTests(Base):
 
     def test_all_jobs_share_tpm_pool(self):
         system, contents = self.payload()
-        estimate = ai.estimate_context(system, contents)
+        estimate = ai.estimate_context(hq_language.apply(system), contents)
         self.configure_tpm(ai.estimate_tokens(GEMMA, estimate) * 2)
         ai.generate((GEMMA,), system, contents, ambient=True)
         ai.generate((GEMMA,), system, contents, transferania=True, background=True)
@@ -118,7 +119,7 @@ class RoutingTests(Base):
 
     def test_concurrent_reservation_is_atomic(self):
         system, contents = self.payload()
-        self.configure_tpm(ai.estimate_tokens(GEMMA, ai.estimate_context(system, contents)))
+        self.configure_tpm(ai.estimate_tokens(GEMMA, ai.estimate_context(hq_language.apply(system), contents)))
         entered, release = threading.Event(), threading.Event()
         result, errors = [], []
         def post(*args):
@@ -155,7 +156,7 @@ class RoutingTests(Base):
 
     def test_daily_resets_preserve_the_rolling_window(self):
         system, contents = self.payload()
-        estimate = ai.estimate_context(system, contents)
+        estimate = ai.estimate_context(hq_language.apply(system), contents)
         self.configure_tpm(ai.estimate_tokens(GEMMA, estimate))
         ai.generate((GEMMA,), system, contents, ambient=True)
         with patch.object(ai, "_today", return_value="2026-11-02"):
@@ -422,7 +423,7 @@ class TokenCalibrationTests(Base):
     def test_successful_calls_teach_the_ratio_and_grow_gemma_cap(self):
         ai.bind(companion_context_config=lambda: {"chat_input_budget": 100000})
         before = ai.model_input_cap(GEMMA)
-        est = ai.estimate_context("core", self.MSG)
+        est = ai.estimate_context(hq_language.apply("core"), self.MSG)
         for _ in range(ai.CALIBRATION_MIN_SAMPLES):
             status, data = reply("ok")
             data["usageMetadata"] = {"promptTokenCount": round(est / 3.75)}
@@ -433,7 +434,7 @@ class TokenCalibrationTests(Base):
         self.assertAlmostEqual(ai.bytes_per_token(GEMMA), 3.75 * ai.CALIBRATION_MARGIN, places=2)
 
     def test_quota_window_reserves_calibrated_tokens_not_bytes(self):
-        est = ai.estimate_context("core", self.MSG)
+        est = ai.estimate_context(hq_language.apply("core"), self.MSG)
         self.answers = [(503, {})]
         with self.assertRaises(ai.AiError):
             ai.generate((GEMMA,), "core", self.MSG)

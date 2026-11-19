@@ -178,6 +178,30 @@ class PageLoadPerf9(unittest.TestCase):
         self.assertIn('src="/assets/big.js?v=%s"' % B.asset_version(self.js.stat()), out)
         self.assertIn('<script src="/assets/gone.js"></script>', out)  # missing file: left as is
 
+    def test_published_tag_and_stamp_follow_an_edit_immediately(self):
+        # A page that names the previous version pins the browser to the old bytes for a year: tagged URLs are
+        # served immutable, so nothing revalidates them, not even a reload. Publish what the files are now.
+        page = b'<script src="/assets/big.js"></script></body>'
+        first = B.version_page_assets(page).decode()
+        old = self.js.read_bytes()
+        self.js.write_bytes(old + b"\n// edit\n")
+        try:
+            edited = B.asset_version(self.js.stat())
+            second = B.version_page_assets(page).decode()
+            stamp_cached = B.asset_build_stamp()
+            stamp_edited = B.asset_build_stamp(refresh=True)
+        finally:
+            self.js.write_bytes(old)
+        stamps_first = re.findall(r'HQ_ASSET_BUILD="(t[0-9a-f]+)"', first)
+        stamps_second = re.findall(r'HQ_ASSET_BUILD="(t[0-9a-f]+)"', second)
+        self.assertEqual(len(stamps_first), 1)
+        self.assertEqual(len(stamps_second), 1)
+        self.assertNotIn('?v=%s"' % edited, first)
+        self.assertIn('src="/assets/big.js?v=%s"' % edited, second)
+        self.assertNotEqual(stamps_first[0], stamps_second[0])
+        self.assertEqual(stamp_cached, stamp_edited)  # the page render leaves the cache current for asset requests
+        self.assertEqual(B.asset_build_stamp(refresh=True), stamps_first[0])  # content-derived: bytes restored, stamp too
+
     def test_real_page_every_static_link_versioned_order_kept(self):
         B.ROOT = SOURCE
         B.CODE_ROOT = SOURCE

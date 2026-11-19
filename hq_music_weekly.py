@@ -23,6 +23,7 @@ STATE_FILE = "dj-weekly.json"
 KEEP_WEEKS = 8
 MIN_PLAYS = 5
 AUTO_HOUR = 10
+VOICE_LUFS = -16.0  # same target as the show's drops (hq_music_dj._mix)
 MAX_PARTS = 12
 DAYS_FR = ["lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"]
 DAYS_EN = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
@@ -181,7 +182,8 @@ def _assemble(voices: list, out, *, jingle=None, outro=None, bed=None) -> bool:
         filters.append(f"[{n}:a]{fmt},apad=pad_dur=0.45[p{i}]")
         labels.append(f"[p{i}]")
         n += 1
-    filters.append("".join(labels) + f"concat=n={len(labels)}:v=0:a=1[v]")
+    # Same on-air level as the show's drops, whatever voice engine recorded the parts.
+    filters.append("".join(labels) + f"concat=n={len(labels)}:v=0:a=1,loudnorm=I={VOICE_LUFS}:TP=-1.5:LRA=11[v]")
     body = "[v]"
     if bed:
         inputs += ["-stream_loop", "-1", "-i", str(bed)]

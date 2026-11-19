@@ -4,6 +4,10 @@
 (function (root) {
   "use strict";
 
+  // The one song identity (assets/hq-now-playing.js, loaded before this module). Every DJ/tournament line that
+  // names a track asks it, instead of reading the Spotify item a second way.
+  var Song = root.HqNowPlaying || null;
+
   var state = {
     host: null,
     request: null,
@@ -19,6 +23,8 @@
     abort: null,
     spotify: null,
     player: null,
+    nowPlaying: null,
+    localPlaying: false,
     devices: [],
     playlists: [],
     playlistOffset: 0,
@@ -157,6 +163,17 @@
     node.classList.toggle("is-error", !!isError);
   }
 
+  /* An error that belongs to the conversation itself: the status line sits above the
+     card and is rebuilt on every render, so a failed stop also lands in the thread. */
+  function threadAlert(message) {
+    var log = state.host && state.host.querySelector(".hqm-chat-log");
+    if (!log) { status(message, true); return; }
+    var node = el("div", "hqm-chat-bubble is-assistant", String(message));
+    node.setAttribute("role", "alert");
+    log.appendChild(node);
+    log.scrollTop = log.scrollHeight;
+  }
+
   function fmtMs(ms) {
     ms = Math.max(0, Number(ms) || 0);
     var s = Math.floor(ms / 1000);
@@ -178,7 +195,9 @@
     if (typeof adapter !== "function") throw new Error("API adapter required");
     var response = await adapter({ path: path, method: method || "GET", body: body });
     var data = response && (response.body || response);
-    if (!data || data.ok === false) {
+    // An HTTP failure is a failure even when the body has no `ok:false` marker:
+    // otherwise a 500 with `{error}` would read as a silent success (e.g. cancel).
+    if (!data || data.ok === false || (response && response.status >= 400)) {
       var err = new Error((data && data.error) || "Music API unavailable");
       err.code = data && data.code;
       err.status = response && response.status;
@@ -687,15 +706,17 @@
     var data = await call("/api/spotify/devices" + wake);
     state.devices = data.devices || [];
     if (data.local) state.localSpotify = data.local;
-    if (!state.preferredDeviceId) {
+    var hasPreferred = state.preferredDeviceId &&
+      state.devices.some(function (d) { return d.id === state.preferredDeviceId; });
+    if (!hasPreferred) {
       var localDev = state.devices.find(function (d) { return d.is_local_candidate && !d.is_restricted; });
-      if (localDev) savePreferredDevice(localDev.id);
+      savePreferredDevice(localDev ? localDev.id : "");
     }
     return data;
   }
 
   async function wakeLocalSpotify() {
-    status("Réveil Spotify Desktop…");
+    status("Réveil Spotify PC…");
     var data = await call("/api/spotify/devices/wake", "POST", { wait_s: 3 });
     state.devices = data.devices || [];
     if (data.local) state.localSpotify = data.local;
@@ -1124,6 +1145,7 @@
       ["mixer", "Mixer", "sliders"],
       ["decouvertes", "Découvertes", "spark"],
       ["musica", "Musica", "chat"],
+      ["profil", "Profil", "sliders"],
       ["journal", "Journal", "chart"],
       ["quiz", "Quiz", "quiz"],
       ["studio", "Studio IA", "studio"]
@@ -1360,6 +1382,9 @@
       if (state.spotify && state.spotify.connected) quizLoads.push(loadHall());
       Promise.all(quizLoads).then(render).catch(function (e) { status(e.message, true); });
     }
+    if (tab === "profil") {
+      loadMusicaProfile().then(render).catch(function () {});
+    }
     if (tab === "musica") {
       revealMusicaComposer();
       var requests = [loadMusicaThread()];
@@ -1371,11 +1396,91 @@
     }
   }
 
+  async function loadMusicaProfile() {
+    try {
+      var data = await call("/api/musica/profile");
+      state.musicaProfileDossier = data.analysis || null;
+      state.musicaProfileOverrides = data.overrides || null;
+      state.musicaProfileDraft = null;
+      state.musicaProfileDirty = false;
+      state.musicaProfileFetch = data.fetch_state || null;
+      if (data.fetch_state && data.fetch_state.running) pollMusicaProfile();
+      return data;
+    } catch (_e) {
+      return null;
+    }
+  }
+
+  function pollMusicaProfile() {
+    if (state.musicaProfileTimer) return;
+    state.musicaProfileTimer = setInterval(async function () {
+      try {
+        var st = await call("/api/musica/profile/status");
+        state.musicaProfileFetch = st.fetch_state || null;
+        if (!st.fetch_state || !st.fetch_state.running) {
+          clearInterval(state.musicaProfileTimer);
+          state.musicaProfileTimer = null;
+          await loadMusicaProfile();
+          if ((state.tab === "musica" || state.tab === "profil") && state.shown) render();
+          return;
+        }
+        if ((state.tab === "musica" || state.tab === "profil") && state.shown) render();
+      } catch (_e) {
+        clearInterval(state.musicaProfileTimer);
+        state.musicaProfileTimer = null;
+      }
+    }, 1200);
+  }
+
+  async function startMusicaProfileFetch() {
+    var res = await call("/api/musica/profile/fetch", "POST", {
+      deep: true,
+      force: true,
+      synthesize: true,
+      sync_preferences: true
+    });
+    state.musicaProfileFetch = res.fetch_state || { running: true, pct: 5, label: "Analyse démarrée…" };
+    pollMusicaProfile();
+    render();
+  }
+
+  async function synthesizeMusicaProfile() {
+    if (state.musicaSynthesizing) return;
+    state.musicaSynthesizing = true;
+    render();
+    try {
+      var res = await call("/api/musica/profile/fetch", "POST", { synthesize_only: true });
+      if (res.analysis) state.musicaProfileDossier = res.analysis;
+      status(res.ok ? "Synthèse IA mise à jour." : "Synthèse IA indisponible pour le moment.", !res.ok);
+    } finally {
+      state.musicaSynthesizing = false;
+      render();
+    }
+  }
+
+  function exportMusicaProfile() {
+    var payload = {
+      exported_utc: new Date().toISOString(),
+      dossier: state.musicaProfileDossier,
+      overrides: state.musicaProfileOverrides
+    };
+    var blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement("a");
+    a.href = url;
+    a.download = "musica-taste-dossier.json";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(function () { URL.revokeObjectURL(url); }, 1500);
+    status("Dossier exporté en JSON.");
+  }
+
   async function loadMusicaThread() {
     state.musicaThreadLoading = true;
     if (state.tab === "musica" && state.shown) render();
     try {
-      var results = await Promise.all([call("/api/musica/thread"), loadTaste()]);
+      var results = await Promise.all([call("/api/musica/thread"), loadTaste(), loadMusicaProfile()]);
       var data = results[0];
       state.musicaThread = data.messages || [];
       state.musicaLoaded = true;
@@ -1390,15 +1495,24 @@
 
   async function sendMusica(text, context) {
     var message = String(text || "").trim();
+    var notice = "";
     if (!message) return;
     if (state.musicaBusy) return;
     state.musicaBusy = true;
     state.musicaError = null;
     state.musicaDraft = message;
     state.musicaContext = context;
+    state.musicaJob = "mus-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
     render();
     try {
-      var data = await call("/api/musica/chat", "POST", { message: message, context: context });
+      var data = await call("/api/musica/chat", "POST", { message: message, context: context, job: state.musicaJob });
+      if (data.cancelled) {
+        // Stopped server-side: the turn was dropped before it was stored.
+        state.musicaDraft = "";
+        state.musicaContext = undefined;
+        notice = "Arrêtée. Rien n'a été enregistré.";
+        return data;
+      }
       state.musicaThread = data.thread || state.musicaThread;
       state.musicaDraft = "";
       state.musicaContext = undefined;
@@ -1410,7 +1524,10 @@
       throw err;
     } finally {
       state.musicaBusy = false;
+      state.musicaJob = "";
       render();
+      // render() rebuilds .hqm-status: re-assert the cancellation once it exists again.
+      if (notice) status(notice);
     }
   }
 
@@ -1429,7 +1546,7 @@
       var voices = root.speechSynthesis.getVoices();
       var matches = voices.filter(function (voice) { return voice.lang.toLowerCase().startsWith(language); });
       var neural = /Sylvie|Denise|Eloise|Amélie|Chloé|Hortense|Julie|Natural|Online|Google/i;
-      utterance.lang = language === "en" ? "en-US" : "fr-CA";
+      utterance.lang = "en-US";
       utterance.voice = matches.find(function (voice) {
         return voice.lang === utterance.lang && neural.test(voice.name);
       }) || matches.find(function (voice) { return neural.test(voice.name); })
@@ -1619,7 +1736,7 @@
       state.micCancel = function () { finish(true); };
       microphone.setAttribute("aria-pressed", "true");
       microphone.textContent = "Écoute…";
-      startRecognition(speechLanguage(draft) === "en" || state.voiceLanguage === "en" ? "en-US" : "fr-FR");
+      startRecognition("en-US");
     }
     function startRecognition(language) {
       var noMatch = false;
@@ -2211,6 +2328,21 @@
     });
     send.disabled = !!state.musicaBusy;
     actions.appendChild(send);
+    if (state.musicaBusy) {
+      // A long turn is stoppable: the server drops it at its next round or tool call.
+      var stopTurn = btn("Arrêter", "hqm-btn secondary", function () {
+        if (!state.musicaJob || stopTurn.disabled) return;
+        stopTurn.disabled = true;
+        call("/api/musica/cancel", "POST", { job: state.musicaJob }).then(function () {
+          status("Arrêt demandé…");
+        }, function (err) {
+          stopTurn.disabled = false;
+          status(err.message, true);
+          threadAlert("Arrêt impossible : " + err.message);
+        });
+      });
+      actions.appendChild(stopTurn);
+    }
     composer.appendChild(actions);
     input.addEventListener("keydown", function (ev) {
       if (ev.key === "Enter" && !ev.shiftKey && !ev.isComposing) {
@@ -2221,6 +2353,758 @@
     card.insertBefore(chips, log);
     card.insertBefore(composer, log);
     host.appendChild(card);
+    renderMusicaProfileCard(host);
+  }
+
+  function svgNode(tag, attrs) {
+    var n = document.createElementNS("http://www.w3.org/2000/svg", tag);
+    Object.keys(attrs || {}).forEach(function (k) { n.setAttribute(k, String(attrs[k])); });
+    return n;
+  }
+
+  function sonicAxesRadarSvg(axes) {
+    var order = [
+      ["aggression_heaviness", "Impact"],
+      ["adrenaline_velocity", "Vélocité"],
+      ["darkness_edge", "Noirceur"],
+      ["theatricality_epic", "Épique"],
+      ["underground_niche", "Niche"],
+      ["eclecticism_volatility", "Éclectisme"]
+    ];
+    var size = 240;
+    var cx = 120;
+    var cy = 120;
+    var r = 74;
+    var svg = svgNode("svg", { viewBox: "0 0 " + size + " " + size, class: "hqm-radar-svg", role: "img", "aria-label": "Radar des 6 axes sonores" });
+    [0.25, 0.5, 0.75, 1.0].forEach(function (lvl) {
+      var pts = order.map(function (_pair, idx) {
+        var ang = -Math.PI / 2 + (idx * 2 * Math.PI / order.length);
+        return (cx + Math.cos(ang) * r * lvl).toFixed(1) + "," + (cy + Math.sin(ang) * r * lvl).toFixed(1);
+      }).join(" ");
+      svg.appendChild(svgNode("polygon", { points: pts, class: "hqm-radar-ring" }));
+    });
+    var polyPts = [];
+    order.forEach(function (pair, idx) {
+      var ang = -Math.PI / 2 + (idx * 2 * Math.PI / order.length);
+      var x2 = cx + Math.cos(ang) * r;
+      var y2 = cy + Math.sin(ang) * r;
+      svg.appendChild(svgNode("line", { x1: cx, y1: cy, x2: x2.toFixed(1), y2: y2.toFixed(1), class: "hqm-radar-spoke" }));
+      var rawVal = axes && axes[pair[0]] ? Number(axes[pair[0]].score) : 50;
+      var val = Math.max(8, Math.min(100, isNaN(rawVal) ? 50 : rawVal)) / 100.0;
+      var px = cx + Math.cos(ang) * r * val;
+      var py = cy + Math.sin(ang) * r * val;
+      polyPts.push(px.toFixed(1) + "," + py.toFixed(1));
+      var lx = cx + Math.cos(ang) * (r + 22);
+      var ly = cy + Math.sin(ang) * (r + 17);
+      var lbl = svgNode("text", { x: lx.toFixed(1), y: ly.toFixed(1), "text-anchor": "middle", "dominant-baseline": "middle", class: "hqm-radar-label" });
+      lbl.textContent = pair[1] + " " + Math.round(val * 100);
+      svg.appendChild(lbl);
+    });
+    svg.appendChild(svgNode("polygon", { points: polyPts.join(" "), class: "hqm-radar-poly" }));
+    polyPts.forEach(function (pStr) {
+      var parts = pStr.split(",");
+      svg.appendChild(svgNode("circle", { cx: parts[0], cy: parts[1], r: 3.4, class: "hqm-radar-dot" }));
+    });
+    return svg;
+  }
+
+  function hourlyCurveChart(curve) {
+    var wrap = el("div", "hqm-hour-chart");
+    var maxPlays = Math.max(1, Math.max.apply(null, curve.map(function (c) { return Number(c.plays) || 0; })));
+    curve.forEach(function (c) {
+      var col = el("div", "hqm-hour-col");
+      var plays = Number(c.plays) || 0;
+      col.title = String(c.hour).padStart(2, "0") + "h : " + plays + " écoutes" + (c.dominant_family ? " (" + c.dominant_family + ")" : "");
+      var barWrap = el("div", "hqm-hour-bar-wrap");
+      var bar = el("div", "hqm-hour-bar");
+      bar.style.height = (plays ? Math.max(8, Math.round((plays / maxPlays) * 100)) : 2) + "%";
+      if (!plays) bar.className += " is-empty";
+      barWrap.appendChild(bar);
+      col.appendChild(barWrap);
+      col.appendChild(el("span", "hqm-hour-lbl", (c.hour % 3 === 0) ? String(c.hour).padStart(2, "0") : ""));
+      wrap.appendChild(col);
+    });
+    return wrap;
+  }
+
+  function renderMusicaProfileCard(host) {
+    var box = el("section", "hqm-card hqm-profile-dna");
+    var head = el("div", "hqm-card-head");
+    var titleWrap = el("div", "");
+    titleWrap.appendChild(el("h3", "", "ADN Musical du Maître"));
+    titleWrap.appendChild(el("p", "hqm-muted", "Analyse 14 dimensions : Spotify, Dig Cache, Journal, Tournois, Radar, Paroles, Agenda & BPM."));
+    head.appendChild(titleWrap);
+
+    var fetchSt = state.musicaProfileFetch || {};
+    var running = !!fetchSt.running;
+    var headBtns = el("div", "hqm-row");
+    var analyzeBtn = btn(running ? ("Analyse… " + (fetchSt.pct || 0) + "%") : "Analyser (Spotify + Local)", "hqm-btn", function () {
+      startMusicaProfileFetch().catch(function (e) { status(e.message, true); });
+    });
+    analyzeBtn.disabled = running || state.historySharing === false;
+    headBtns.appendChild(analyzeBtn);
+    var synBtn = btn(state.musicaSynthesizing ? "Synthèse…" : "Synthèse IA", "hqm-btn secondary", function () {
+      synthesizeMusicaProfile().catch(function (e) { status(e.message, true); });
+    });
+    synBtn.disabled = running || !!state.musicaSynthesizing || state.historySharing === false;
+    headBtns.appendChild(synBtn);
+    if (state.musicaProfileDossier) {
+      headBtns.appendChild(btn("Exporter JSON", "hqm-btn secondary", exportMusicaProfile));
+    }
+    head.appendChild(headBtns);
+    box.appendChild(head);
+
+    if (running && fetchSt.label) {
+      var prog = el("div", "hqm-dna-progress");
+      var bar = el("div", "hqm-dna-bar");
+      bar.style.width = Math.max(5, Math.min(100, Number(fetchSt.pct) || 5)) + "%";
+      prog.appendChild(bar);
+      box.appendChild(prog);
+      box.appendChild(el("p", "hqm-muted", fetchSt.label));
+    } else if (fetchSt.stage === "error" && fetchSt.error) {
+      box.appendChild(el("p", "hqm-muted", "Erreur d’analyse : " + fetchSt.error));
+    }
+
+    if (state.historySharing === false) {
+      box.appendChild(el("p", "hqm-muted", "Active le partage d’historique pour que Musica analyse ton profil musical."));
+      host.appendChild(box);
+      return;
+    }
+
+    var doc = state.musicaProfileDossier;
+    if (!doc) {
+      box.appendChild(el("p", "hqm-muted", "Aucune analyse enregistrée. Lance « Analyser (Spotify + Local) » pour scanner ton catalogue."));
+      host.appendChild(box);
+      return;
+    }
+
+    var cov = doc.source_coverage || {};
+    var pills = el("div", "hqm-dna-pills");
+    [
+      cov.spotify_connected ? "Spotify connecté" : "Mode local / caches",
+      cov.spotify_tracks_scanned ? (cov.spotify_tracks_scanned + " titres scannés") : null,
+      cov.spotify_playlists_scanned ? (cov.spotify_playlists_scanned + " playlists") : null,
+      cov.dj_dig_cache_tracks ? ("Dig : " + cov.dj_dig_cache_tracks) : null,
+      cov.journal_plays ? ("Journal : " + cov.journal_plays + " écoutes") : null,
+      cov.artist_genres_cached ? (cov.artist_genres_cached + " artistes tagués") : null,
+      cov.lyrics_cached_tracks ? (cov.lyrics_cached_tracks + " paroles") : null,
+      cov.beat_grids_count ? (cov.beat_grids_count + " BPM") : null,
+      cov.radar_releases_tracked ? ("Radar : " + cov.radar_releases_tracked) : null
+    ].filter(Boolean).forEach(function (txt) {
+      pills.appendChild(el("span", "hqm-dna-pill", txt));
+    });
+    box.appendChild(pills);
+
+    var syn = doc.ai_synthesis;
+    if (syn && syn.narrative_summary) {
+      var synBox = el("div", "hqm-dna-syn");
+      if (syn.archetype_title) {
+        synBox.appendChild(el("div", "hqm-dna-archetype", syn.archetype_title));
+      }
+      synBox.appendChild(el("p", "", syn.narrative_summary));
+      if ((syn.blind_spots_and_bridges || []).length) {
+        synBox.appendChild(el("p", "hqm-muted", "Ponts à explorer : " + syn.blind_spots_and_bridges.join(" · ")));
+      }
+      box.appendChild(synBox);
+    } else if (doc.taste_summary_text) {
+      box.appendChild(el("p", "", doc.taste_summary_text));
+    }
+
+    var cols = el("div", "hqm-wrapped-cols");
+
+    var axes = doc.sonic_axes || {};
+    if (Object.keys(axes).length) {
+      var radarCol = el("div", "hqm-dna-block hqm-radar-wrap");
+      radarCol.appendChild(el("h4", "", "Empreinte vectorielle (6 axes)"));
+      radarCol.appendChild(sonicAxesRadarSvg(axes));
+      Object.keys(axes).forEach(function (k) {
+        var ax = axes[k];
+        if (!ax) return;
+        var driversTxt = (ax.drivers && ax.drivers.length) ? (" — " + ax.drivers.join(", ")) : "";
+        radarCol.appendChild(el("div", "hqm-dna-item", ax.label + " : " + ax.score + "/100" + driversTxt));
+      });
+      cols.appendChild(radarCol);
+    }
+
+    var famList = (doc.genre_profile && doc.genre_profile.macro_families) || [];
+    if (famList.length) {
+      var famCol = el("div", "hqm-dna-block");
+      famCol.appendChild(el("h4", "", "Familles sonores"));
+      famList.slice(0, 7).forEach(function (f) {
+        var row = el("div", "hqm-dna-meter");
+        row.appendChild(el("span", "", f.family + " (" + f.share_pct + "%)"));
+        var track = el("div", "hqm-dna-track");
+        var fill = el("div", "hqm-dna-fill");
+        fill.style.width = Math.max(4, Math.min(100, Number(f.share_pct) || 0)) + "%";
+        track.appendChild(fill);
+        row.appendChild(track);
+        famCol.appendChild(row);
+      });
+      cols.appendChild(famCol);
+    }
+
+    var artList = doc.artist_affinities || [];
+    if (artList.length) {
+      var artCol = el("div", "hqm-dna-block");
+      artCol.appendChild(el("h4", "", "Piliers & montées"));
+      artList.slice(0, 10).forEach(function (a) {
+        var tag = a.trajectory === "surging" ? " ▲" : (a.trajectory === "climbing" ? " ↗" : (a.trajectory === "fading" ? " ↘" : ""));
+        var sub = (a.genres || []).slice(0, 2).join(", ");
+        var pin = a.manual_pinned ? " ★" : "";
+        artCol.appendChild(el("div", "hqm-dna-item", a.name + pin + tag + " (" + a.score + ")" + (sub ? " — " + sub : "")));
+      });
+      cols.appendChild(artCol);
+    }
+
+    var consts = doc.sonic_constellations || [];
+    if (consts.length) {
+      var conCol = el("div", "hqm-dna-block");
+      conCol.appendChild(el("h4", "", "Constellations"));
+      consts.slice(0, 5).forEach(function (c) {
+        conCol.appendChild(el("div", "hqm-dna-item", c.label + " (" + c.weight_pct + "%) : " + (c.artists || []).slice(0, 4).join(", ")));
+      });
+      cols.appendChild(conCol);
+    }
+
+    box.appendChild(cols);
+    host.appendChild(box);
+  }
+
+  function ensureProfilDraft() {
+    var src = state.musicaProfileOverrides || {};
+    if (!state.musicaProfileDraft) {
+      var bpmSrc = src.target_bpm_range || {};
+      var moodSrc = src.mood_rules_override || {};
+      state.musicaProfileDraft = {
+        favorite_artists: (src.favorite_artists || []).slice(),
+        boosted_artists: (src.boosted_artists || []).slice(),
+        preferred_genres: (src.preferred_genres || []).slice(),
+        boosted_genres: (src.boosted_genres || []).slice(),
+        musical_patterns: (src.musical_patterns || []).slice(),
+        pinned_tracks: (src.pinned_tracks || []).slice(),
+        language_preferences: (src.language_preferences || []).slice(),
+        context_tags: (src.context_tags || []).slice(),
+        banned_artists: (src.banned_artists || []).slice(),
+        mood_rules_override: {
+          matin: String(moodSrc.matin || ""),
+          "apres-midi": String(moodSrc["apres-midi"] || ""),
+          soiree: String(moodSrc.soiree || ""),
+          nuit: String(moodSrc.nuit || ""),
+          sport: String(moodSrc.sport || ""),
+          focus: String(moodSrc.focus || "")
+        },
+        target_bpm_range: {
+          min: bpmSrc.min != null ? String(bpmSrc.min) : "",
+          max: bpmSrc.max != null ? String(bpmSrc.max) : ""
+        },
+        novelty_target: src.novelty_target != null ? Number(src.novelty_target) : "",
+        custom_notes: String(src.custom_notes || "")
+      };
+    }
+    return state.musicaProfileDraft;
+  }
+
+  function draftAddUnique(fieldKey, val, label) {
+    var draft = ensureProfilDraft();
+    var clean = String(val || "").trim();
+    if (!clean) return;
+    draft[fieldKey] = draft[fieldKey] || [];
+    var exists = draft[fieldKey].some(function (x) { return x.toLowerCase() === clean.toLowerCase(); });
+    if (!exists) {
+      draft[fieldKey].push(clean);
+      state.musicaProfileDirty = true;
+      status((label || "Ajouté") + " : " + clean + " (clique Enregistrer)");
+      render();
+    } else {
+      status("Déjà présent dans la liste : " + clean);
+    }
+  }
+
+  async function saveProfilDraft() {
+    var draft = ensureProfilDraft();
+    var payload = Object.assign({}, draft, {
+      target_bpm_range: {
+        min: draft.target_bpm_range.min !== "" ? Number(draft.target_bpm_range.min) : null,
+        max: draft.target_bpm_range.max !== "" ? Number(draft.target_bpm_range.max) : null
+      },
+      novelty_target: draft.novelty_target !== "" ? Number(draft.novelty_target) : null
+    });
+    var res = await call("/api/musica/profile/edit", "POST", payload);
+    state.musicaProfileOverrides = res.overrides || payload;
+    if (res.analysis) state.musicaProfileDossier = res.analysis;
+    state.musicaProfileDraft = null;
+    state.musicaProfileDirty = false;
+    status("Profil musical enregistré et ré-analysé.");
+    render();
+  }
+
+  function renderProfilTab(host) {
+    renderMusicaProfileCard(host);
+
+    var editCard = el("section", "hqm-card hqm-profile-editor");
+    var head = el("div", "hqm-card-head");
+    var copy = el("div", "");
+    copy.appendChild(el("h3", "", "Éditer & enrichir le profil"));
+    copy.appendChild(el("p", "hqm-muted", "Ajoute ou retire artistes, boosts de pondération, genres, titres de référence, règles par moment, cibles BPM et directives."));
+    head.appendChild(copy);
+    var headAct = el("div", "hqm-row");
+    if (state.musicaProfileDirty) {
+      headAct.appendChild(el("span", "hqm-badge warn", "Modifications non enregistrées"));
+      headAct.appendChild(btn("Annuler", "hqm-btn secondary", function () {
+        state.musicaProfileDraft = null;
+        state.musicaProfileDirty = false;
+        render();
+      }));
+    }
+    headAct.appendChild(btn(state.musicaProfileDirty ? "Enregistrer *" : "Enregistrer", "hqm-btn", function () {
+      saveProfilDraft().catch(function (e) { status(e.message, true); });
+    }));
+    head.appendChild(headAct);
+    editCard.appendChild(head);
+
+    var draft = ensureProfilDraft();
+
+    function chipListEditor(fieldKey, label, placeholder) {
+      var wrap = el("div", "hqm-field hqm-chip-editor");
+      wrap.appendChild(el("label", "hqm-label", label));
+      var chips = el("div", "hqm-dna-pills");
+      (draft[fieldKey] || []).forEach(function (val, idx) {
+        var chip = el("span", "hqm-dna-pill hqm-edit-chip");
+        chip.appendChild(el("span", "", val));
+        var rm = btn("×", "hqm-chip-rm", function () {
+          draft[fieldKey].splice(idx, 1);
+          state.musicaProfileDirty = true;
+          render();
+        });
+        rm.setAttribute("aria-label", "Retirer " + val);
+        chip.appendChild(rm);
+        chips.appendChild(chip);
+      });
+      wrap.appendChild(chips);
+
+      var addRow = el("div", "hqm-row hqm-chip-add-row");
+      var inp = document.createElement("input");
+      inp.type = "text";
+      inp.placeholder = placeholder;
+      inp.setAttribute("aria-label", label);
+      function commitAdd() {
+        var v = String(inp.value || "").trim();
+        if (!v) return;
+        var exists = (draft[fieldKey] || []).some(function (x) { return x.toLowerCase() === v.toLowerCase(); });
+        if (!exists) {
+          draft[fieldKey].push(v);
+          state.musicaProfileDirty = true;
+        }
+        inp.value = "";
+        render();
+      }
+      inp.addEventListener("keydown", function (ev) {
+        if (ev.key === "Enter") { ev.preventDefault(); commitAdd(); }
+      });
+      addRow.appendChild(inp);
+      addRow.appendChild(btn("+ Ajouter", "hqm-btn secondary", commitAdd));
+      wrap.appendChild(addRow);
+      return wrap;
+    }
+
+    var secAnchors = el("details", "hqm-prof-sec");
+    secAnchors.open = true;
+    var s1 = document.createElement("summary");
+    s1.textContent = "1. Ancres, boosts de pondération & titres de référence";
+    secAnchors.appendChild(s1);
+    secAnchors.appendChild(chipListEditor("favorite_artists", "Artistes favoris", "Ex. Gloryhammer, HEALTH, Sabaton…"));
+    secAnchors.appendChild(chipListEditor("boosted_artists", "Artistes boostés (+6.5 dans le score)", "Ex. Five Finger Death Punch, Pendulum…"));
+    secAnchors.appendChild(chipListEditor("preferred_genres", "Genres préférés", "Ex. symphonic power metal, brazilian phonk…"));
+    secAnchors.appendChild(chipListEditor("boosted_genres", "Genres boostés (+9.0)", "Ex. darksynth, montagem…"));
+    secAnchors.appendChild(chipListEditor("musical_patterns", "Motifs & signatures", "Ex. epic choir, slowed reverb, high-BPM…"));
+    secAnchors.appendChild(chipListEditor("pinned_tracks", "Titres / albums de référence", "Ex. Gloryhammer — Keeper of the Celestial Flame"));
+    editCard.appendChild(secAnchors);
+
+    var secMoods = el("details", "hqm-prof-sec");
+    var s2 = document.createElement("summary");
+    s2.textContent = "2. Règles par moment & contexte (Matin / Nuit / Sport / Focus)";
+    secMoods.appendChild(s2);
+    var moodGrid = el("div", "hqm-wrapped-cols");
+    [
+      ["matin", "Matin", "Ex. Power metal épique, montée progressive"],
+      ["apres-midi", "Après-midi", "Ex. Phonk rapide ou Metalcore rythmé"],
+      ["soiree", "Soirée", "Ex. Rock lourd, Gaming / Anime hype"],
+      ["nuit", "Nuit", "Ex. Slowed phonk, darksynth, witch house"],
+      ["sport", "Sport / Training", "Ex. 150+ BPM, doubles pédales, drift"],
+      ["focus", "Focus / Code", "Ex. OST instrumentales, darksynth continu"]
+    ].forEach(function (pair) {
+      var mf = el("div", "hqm-field");
+      mf.appendChild(el("label", "hqm-label", pair[1]));
+      var mi = document.createElement("input");
+      mi.type = "text";
+      mi.placeholder = pair[2];
+      mi.value = (draft.mood_rules_override && draft.mood_rules_override[pair[0]]) || "";
+      mi.addEventListener("input", function () {
+        draft.mood_rules_override[pair[0]] = mi.value;
+        state.musicaProfileDirty = true;
+      });
+      mf.appendChild(mi);
+      moodGrid.appendChild(mf);
+    });
+    secMoods.appendChild(moodGrid);
+    editCard.appendChild(secMoods);
+
+    var secTargets = el("details", "hqm-prof-sec");
+    var s3 = document.createElement("summary");
+    s3.textContent = "3. Cibles BPM, curseur nouveauté, langues & contextes";
+    secTargets.appendChild(s3);
+    var targetGrid = el("div", "hqm-wrapped-cols");
+    var bpmWrap = el("div", "hqm-field");
+    bpmWrap.appendChild(el("label", "hqm-label", "Plage BPM cible (40–240)"));
+    var bpmRow = el("div", "hqm-row");
+    var bpmMin = document.createElement("input");
+    bpmMin.type = "number";
+    bpmMin.min = "40";
+    bpmMin.max = "240";
+    bpmMin.placeholder = "Min (ex. 115)";
+    bpmMin.value = draft.target_bpm_range.min || "";
+    bpmMin.addEventListener("input", function () { draft.target_bpm_range.min = bpmMin.value; state.musicaProfileDirty = true; });
+    var bpmMax = document.createElement("input");
+    bpmMax.type = "number";
+    bpmMax.min = "40";
+    bpmMax.max = "240";
+    bpmMax.placeholder = "Max (ex. 175)";
+    bpmMax.value = draft.target_bpm_range.max || "";
+    bpmMax.addEventListener("input", function () { draft.target_bpm_range.max = bpmMax.value; state.musicaProfileDirty = true; });
+    bpmRow.append(bpmMin, el("span", "hqm-muted", "à"), bpmMax);
+    bpmWrap.appendChild(bpmRow);
+    targetGrid.appendChild(bpmWrap);
+
+    var novWrap = el("div", "hqm-field");
+    var novPctLabel = draft.novelty_target !== "" ? Math.round(Number(draft.novelty_target) * 100) + "% familier" : "Auto (selon DJ & découvertes)";
+    var novLbl = el("label", "hqm-label", "Équilibre familier / découverte : " + novPctLabel);
+    var novRange = document.createElement("input");
+    novRange.type = "range";
+    novRange.min = "0.15";
+    novRange.max = "0.90";
+    novRange.step = "0.05";
+    novRange.value = draft.novelty_target !== "" ? String(draft.novelty_target) : "0.60";
+    novRange.addEventListener("input", function () {
+      draft.novelty_target = Number(novRange.value);
+      state.musicaProfileDirty = true;
+      novLbl.textContent = "Équilibre familier / découverte : " + Math.round(draft.novelty_target * 100) + "% familier";
+    });
+    var novBtns = el("div", "hqm-row");
+    novBtns.appendChild(novRange);
+    novBtns.appendChild(btn("Auto", "hqm-btn secondary", function () {
+      draft.novelty_target = "";
+      state.musicaProfileDirty = true;
+      render();
+    }));
+    novWrap.append(novLbl, novBtns);
+    targetGrid.appendChild(novWrap);
+    secTargets.appendChild(targetGrid);
+    secTargets.appendChild(chipListEditor("language_preferences", "Langues préférées", "Ex. en, fr, pt, ja, instrumental…"));
+    secTargets.appendChild(chipListEditor("context_tags", "Contextes d’écoute", "Ex. gym, coding, night_drive, gaming…"));
+    editCard.appendChild(secTargets);
+
+    var secExcl = el("details", "hqm-prof-sec");
+    secExcl.open = true;
+    var s4 = document.createElement("summary");
+    s4.textContent = "4. Exclusions & directives libres pour Musica";
+    secExcl.appendChild(s4);
+    secExcl.appendChild(chipListEditor("banned_artists", "Artistes bannis", "Ex. nom de l’artiste à exclure…"));
+    var notesField = el("div", "hqm-field");
+    notesField.appendChild(el("label", "hqm-label", "Directives personnelles pour Musica"));
+    var notesArea = document.createElement("textarea");
+    notesArea.rows = 3;
+    notesArea.placeholder = "Ex. Power metal épique le matin/sport, phonk ralenti ou darksynth la nuit, jamais de pop radio…";
+    notesArea.value = draft.custom_notes || "";
+    notesArea.addEventListener("input", function () {
+      draft.custom_notes = notesArea.value;
+      state.musicaProfileDirty = true;
+    });
+    notesField.appendChild(notesArea);
+    secExcl.appendChild(notesField);
+    editCard.appendChild(secExcl);
+
+    var footer = el("div", "hqm-row");
+    footer.appendChild(btn("Enregistrer les modifications", "hqm-btn", function () {
+      saveProfilDraft().catch(function (e) { status(e.message, true); });
+    }));
+    footer.appendChild(btn("Recharger depuis le serveur", "hqm-btn secondary", function () {
+      loadMusicaProfile().then(render).catch(function (e) { status(e.message, true); });
+    }));
+    editCard.appendChild(footer);
+    host.appendChild(editCard);
+
+    var doc = state.musicaProfileDossier;
+    if (!doc) return;
+
+    // 1. Paradoxes, Bridges & AI Insights Card
+    var syn = doc.ai_synthesis || {};
+    var paradoxes = doc.taste_paradoxes || [];
+    var hubs = doc.bridge_hubs || [];
+    if (paradoxes.length || hubs.length || (syn.psychological_threads || []).length || (syn.curator_warnings || []).length) {
+      var bridgeCard = el("section", "hqm-card hqm-profile-deep");
+      bridgeCard.appendChild(el("h3", "", "Architecture psychologique, paradoxes & passerelles"));
+      var bridgeCols = el("div", "hqm-wrapped-cols");
+      if (paradoxes.length) {
+        var pxCol = el("div", "hqm-dna-block");
+        pxCol.appendChild(el("h4", "", "Dualités empiriques"));
+        paradoxes.forEach(function (px) {
+          pxCol.appendChild(el("div", "hqm-dna-item", px.title + " — " + px.detail));
+        });
+        bridgeCols.appendChild(pxCol);
+      }
+      if (hubs.length) {
+        var hbCol = el("div", "hqm-dna-block");
+        hbCol.appendChild(el("h4", "", "Artistes passerelles"));
+        hubs.slice(0, 6).forEach(function (h) {
+          hbCol.appendChild(el("div", "hqm-dna-item", h.name + " : " + (h.families || []).join(" ↔ ")));
+        });
+        bridgeCols.appendChild(hbCol);
+      }
+      if ((syn.psychological_threads || []).length || (syn.curator_warnings || []).length) {
+        var psyCol = el("div", "hqm-dna-block");
+        psyCol.appendChild(el("h4", "", "Fils psychologiques & alertes"));
+        (syn.psychological_threads || []).forEach(function (t) {
+          psyCol.appendChild(el("div", "hqm-dna-item", "• " + t));
+        });
+        (syn.curator_warnings || []).forEach(function (w) {
+          psyCol.appendChild(el("div", "hqm-dna-item hqm-warn-txt", "⚠ " + w));
+        });
+        bridgeCols.appendChild(psyCol);
+      }
+      bridgeCard.appendChild(bridgeCols);
+      host.appendChild(bridgeCard);
+    }
+
+    // 2. Circadian 24h & Weekly Rhythm Card
+    var circ = doc.circadian_profile || {};
+    var hourly = circ.hourly_curve || [];
+    if (hourly.length || circ.active_days) {
+      var circCard = el("section", "hqm-card hqm-profile-deep");
+      circCard.appendChild(el("h3", "", "Rythme circadien 24 h & endurance d’écoute"));
+      var binge = circ.binge_profile || {};
+      var circPills = el("div", "hqm-dna-pills");
+      [
+        circ.active_days ? (circ.active_days + " jours actifs") : null,
+        circ.longest_streak ? ("Série max : " + circ.longest_streak + " j") : null,
+        circ.peak_hour != null ? ("Pic : " + String(circ.peak_hour).padStart(2, "0") + "h") : null,
+        circ.peak_weekday ? ("Jour pic : " + circ.peak_weekday) : null,
+        binge.night_owl_pct != null ? ("Nocturne (23h-05h) : " + binge.night_owl_pct + "%") : null,
+        binge.marathon_sessions_13_plus ? (binge.marathon_sessions_13_plus + " sessions marathon") : null
+      ].filter(Boolean).forEach(function (p) { circPills.appendChild(el("span", "hqm-dna-pill", p)); });
+      circCard.appendChild(circPills);
+      if (hourly.length) circCard.appendChild(hourlyCurveChart(hourly));
+      var wv = circ.weekday_vs_weekend || {};
+      if (wv.weekday_plays || wv.weekend_plays) {
+        circCard.appendChild(el("p", "hqm-muted",
+          "Semaine (" + (wv.weekday_plays || 0) + " écoutes : " + (wv.weekday_top_artists || []).slice(0, 3).join(", ") +
+          ") · Week-end (" + (wv.weekend_plays || 0) + " : " + (wv.weekend_top_artists || []).slice(0, 3).join(", ") + ")"));
+      }
+      host.appendChild(circCard);
+    }
+
+    // 3. Interactive Artist Affinities & Genres Quick-Curator Card
+    var artList = doc.artist_affinities || [];
+    var topGenres = (doc.genre_profile && doc.genre_profile.top_genres) || [];
+    if (artList.length || topGenres.length) {
+      var curCard = el("section", "hqm-card hqm-profile-deep");
+      curCard.appendChild(el("h3", "", "Classement des artistes & genres (curation rapide)"));
+      var curCols = el("div", "hqm-wrapped-cols");
+      if (artList.length) {
+        var aCol = el("div", "hqm-dna-block");
+        aCol.appendChild(el("h4", "", "Top artistes multi-sources"));
+        artList.slice(0, 18).forEach(function (a) {
+          var row = el("div", "hqm-dna-action-row");
+          var arrow = a.trajectory === "surging" ? " ▲" : (a.trajectory === "climbing" ? " ↗" : (a.trajectory === "fading" ? " ↘" : ""));
+          var meta = [];
+          meta.push(a.tier.replace(/_/g, " "));
+          if (a.journal_plays) meta.push(a.journal_plays + "× j.");
+          if ((a.dj_done || 0) + (a.dj_skipped || 0) > 0) meta.push("DJ " + Math.round((a.completion_rate || 0) * 100) + "%");
+          if (a.genres && a.genres.length) meta.push(a.genres.slice(0, 2).join(", "));
+          var txt = el("div", "hqm-dna-row-copy");
+          txt.appendChild(el("strong", "", a.name + arrow + " (" + a.score + ")"));
+          txt.appendChild(el("span", "hqm-muted", " — " + meta.join(" · ")));
+          row.appendChild(txt);
+          var btns = el("div", "hqm-dna-mini-btns");
+          var bFav = btn("★", "hqm-btn secondary hqm-mini-btn", function () { draftAddUnique("favorite_artists", a.name, "Favori"); });
+          bFav.title = "Ajouter aux artistes favoris";
+          var bBst = btn("⚡", "hqm-btn secondary hqm-mini-btn", function () { draftAddUnique("boosted_artists", a.name, "Boost"); });
+          bBst.title = "Booster (+6.5)";
+          var bBan = btn("×", "hqm-btn secondary hqm-mini-btn", function () { draftAddUnique("banned_artists", a.name, "Banni"); });
+          bBan.title = "Bannir l'artiste";
+          btns.append(bFav, bBst, bBan);
+          row.appendChild(btns);
+          aCol.appendChild(row);
+        });
+        curCols.appendChild(aCol);
+      }
+      if (topGenres.length) {
+        var gCol = el("div", "hqm-dna-block");
+        gCol.appendChild(el("h4", "", "Sous-genres détectés"));
+        topGenres.slice(0, 18).forEach(function (g) {
+          var row = el("div", "hqm-dna-action-row");
+          var tag = g.trajectory === "surging" ? " ▲" : (g.manual ? " ★" : "");
+          var txt = el("div", "hqm-dna-row-copy");
+          txt.appendChild(el("strong", "", g.genre + tag));
+          txt.appendChild(el("span", "hqm-muted", " (" + g.share_pct + "%)"));
+          row.appendChild(txt);
+          var btns = el("div", "hqm-dna-mini-btns");
+          var bG = btn("+", "hqm-btn secondary hqm-mini-btn", function () { draftAddUnique("preferred_genres", g.genre, "Genre préféré"); });
+          bG.title = "Ajouter aux genres préférés";
+          var bBG = btn("⚡", "hqm-btn secondary hqm-mini-btn", function () { draftAddUnique("boosted_genres", g.genre, "Genre boosté"); });
+          bBG.title = "Booster ce genre (+9.0)";
+          btns.append(bG, bBG);
+          row.appendChild(btns);
+          gCol.appendChild(row);
+        });
+        curCols.appendChild(gCol);
+      }
+      curCard.appendChild(curCols);
+      host.appendChild(curCard);
+    }
+
+    // 4. Tracks, Albums, Collaborations & Playlists Card
+    var sigCard = el("section", "hqm-card hqm-profile-deep");
+    sigCard.appendChild(el("h3", "", "Titres signatures, albums, collaborations & playlists"));
+    var sigCols = el("div", "hqm-wrapped-cols");
+
+    var tSig = doc.track_signatures || {};
+    if ((tSig.top_tracks || []).length) {
+      var ttCol = el("div", "hqm-dna-block");
+      ttCol.appendChild(el("h4", "", "Titres signatures"));
+      tSig.top_tracks.slice(0, 10).forEach(function (t) {
+        var meta = (t.artists || []).join(", ") + " · " + t.score + " pts" + (t.journal_plays ? (" · " + t.journal_plays + "×") : "");
+        ttCol.appendChild(el("div", "hqm-dna-item", t.name + " (" + meta + ")"));
+      });
+      if ((tSig.hidden_gems || []).length) {
+        ttCol.appendChild(el("div", "hqm-dna-item hqm-muted", "Pépites niche : " + tSig.hidden_gems.slice(0, 4).map(function (g) { return g.name; }).join(", ")));
+      }
+      sigCols.appendChild(ttCol);
+    }
+
+    var alb = doc.album_architecture || {};
+    var collabs = doc.collaboration_network || {};
+    if ((alb.top_albums || []).length || (collabs.top_collaborations || []).length) {
+      var alCol = el("div", "hqm-dna-block");
+      alCol.appendChild(el("h4", "", "Albums (" + (alb.listening_style || "mixte") + ") & collabs"));
+      (alb.top_albums || []).slice(0, 6).forEach(function (al) {
+        alCol.appendChild(el("div", "hqm-dna-item", al.album + " — " + al.artist + " (" + al.distinct_tracks + " titres" + (al.saved ? ", sauvé" : "") + ")"));
+      });
+      (collabs.top_collaborations || []).slice(0, 5).forEach(function (cp) {
+        alCol.appendChild(el("div", "hqm-dna-item hqm-muted", "Collab : " + (cp.artists || []).join(" × ") + " (" + cp.tracks + " titres)"));
+      });
+      sigCols.appendChild(alCol);
+    }
+
+    var playlists = doc.playlist_archetypes || [];
+    if (playlists.length) {
+      var plCol = el("div", "hqm-dna-block");
+      plCol.appendChild(el("h4", "", "Archétypes de playlists"));
+      playlists.slice(0, 10).forEach(function (p) {
+        plCol.appendChild(el("div", "hqm-dna-item", p.name + " — " + p.archetype + " (" + p.tracks_scanned + " titres)"));
+      });
+      sigCols.appendChild(plCol);
+    }
+
+    var ac = doc.acoustic_fingerprint || {};
+    var obs = ac.top_obsessed_tracks || [];
+    var vp = ac.version_preferences || {};
+    var vpKeys = Object.keys(vp);
+    if (obs.length || vpKeys.length || ac.repeat_ratio != null || ac.artist_concentration_top5_pct != null) {
+      var obsCol = el("div", "hqm-dna-block");
+      obsCol.appendChild(el("h4", "", "Boucles, versions & concentration"));
+      if (ac.repeat_ratio != null) obsCol.appendChild(el("div", "hqm-dna-item", "Taux de réécoute : " + Math.round(ac.repeat_ratio * 100) + "%"));
+      if (ac.artist_concentration_top5_pct != null) obsCol.appendChild(el("div", "hqm-dna-item", "Top 5 artistes : " + ac.artist_concentration_top5_pct + "% des écoutes"));
+      if (ac.median_year) obsCol.appendChild(el("div", "hqm-dna-item", "Année médiane : " + ac.median_year));
+      if (vpKeys.length) obsCol.appendChild(el("div", "hqm-dna-item", "Versions : " + vpKeys.map(function (k) { return k + " (" + vp[k] + ")"; }).join(", ")));
+      obs.slice(0, 6).forEach(function (t) {
+        obsCol.appendChild(el("div", "hqm-dna-item", "Boucle : " + t.name + " (" + (t.artists || []).join(", ") + ") · " + t.count + "×"));
+      });
+      sigCols.appendChild(obsCol);
+    }
+
+    sigCard.appendChild(sigCols);
+    host.appendChild(sigCard);
+
+    // 5. Deep Behavioral Card: Session Flow, Lyrics, Fatigue, Tournaments, Agenda & Drift
+    var deepCard = el("section", "hqm-card hqm-profile-deep");
+    deepCard.appendChild(el("h3", "", "Flux, paroles, fatigue, tournois & dérive"));
+    var deepCols = el("div", "hqm-wrapped-cols");
+
+    var flow = doc.session_flow || {};
+    if (flow.session_count) {
+      var flowCol = el("div", "hqm-dna-block");
+      flowCol.appendChild(el("h4", "", "Flux & transitions de session"));
+      flowCol.appendChild(el("div", "hqm-dna-item", flow.session_count + " sessions · moy. " + flow.avg_session_tracks + " titres (max " + flow.longest_session_tracks + ")"));
+      if ((flow.openers || []).length) flowCol.appendChild(el("div", "hqm-dna-item", "Ouvertures : " + flow.openers.slice(0, 4).map(function (o) { return o.artist + " (" + o.count + ")"; }).join(", ")));
+      if ((flow.closers || []).length) flowCol.appendChild(el("div", "hqm-dna-item", "Fermetures : " + flow.closers.slice(0, 4).map(function (c) { return c.artist + " (" + c.count + ")"; }).join(", ")));
+      if ((flow.family_transitions || []).length) flowCol.appendChild(el("div", "hqm-dna-item", "Pivots : " + flow.family_transitions.slice(0, 4).map(function (t) { return t.from + " → " + t.to + " (" + Math.round((t.prob || 0) * 100) + "%)"; }).join(" · ")));
+      deepCols.appendChild(flowCol);
+    }
+
+    var lyr = doc.lyrical_profile || {};
+    var lyrLangs = lyr.languages ? Object.keys(lyr.languages) : [];
+    if (lyrLangs.length) {
+      var lyrCol = el("div", "hqm-dna-block");
+      lyrCol.appendChild(el("h4", "", "Langues & thèmes lyriques"));
+      lyrCol.appendChild(el("div", "hqm-dna-item", "Langues : " + lyrLangs.slice(0, 6).map(function (k) { return k + " " + lyr.languages[k] + "%"; }).join(" · ")));
+      if (lyr.lexical_diversity != null) lyrCol.appendChild(el("div", "hqm-dna-item", "Richesse lexicale : " + lyr.lexical_diversity));
+      (lyr.top_themes || []).slice(0, 4).forEach(function (t) {
+        var ex = (t.examples || []).length ? (" (" + t.examples.slice(0, 2).join(", ") + ")") : "";
+        lyrCol.appendChild(el("div", "hqm-dna-item", t.theme.replace(/_/g, " ") + " · " + t.count + ex));
+      });
+      deepCols.appendChild(lyrCol);
+    }
+
+    var fat = doc.fatigue_profile || {};
+    var nov = doc.novelty_profile || {};
+    var cal = doc.calendar_correlation || {};
+    var trn = doc.tournament_intelligence || {};
+    var drf = doc.drift_profile || {};
+    var dynCol = el("div", "hqm-dna-block");
+    dynCol.appendChild(el("h4", "", "Fatigue, nouveauté & tournois"));
+    if (nov.optimal_familiarity != null) {
+      dynCol.appendChild(el("div", "hqm-dna-item", "Zone idéale : " + Math.round(nov.optimal_familiarity * 100) + "% familier (" + nov.sweet_spot_label + ")"));
+    }
+    if (trn.tournaments_played) {
+      dynCol.appendChild(el("div", "hqm-dna-item", "Tournois : " + trn.tournaments_played + " joués · rivalité Maître " + (trn.rivalry ? trn.rivalry.master_wins : 0) + "–" + (trn.rivalry ? trn.rivalry.musica_wins : 0) + " Musica"));
+    }
+    if ((fat.overplay_fatigue || []).length) {
+      dynCol.appendChild(el("div", "hqm-dna-item", "En pause 14 j (saturation) : " + fat.overplay_fatigue.slice(0, 4).map(function (x) { return x.name; }).join(", ")));
+    }
+    if ((fat.track_burnout || []).length) {
+      dynCol.appendChild(el("div", "hqm-dna-item", "Titres surjoués au repos : " + fat.track_burnout.slice(0, 3).map(function (x) { return x.name; }).join(", ")));
+    }
+    if ((fat.true_dislikes || []).length || (fat.track_feedback_rejects || []).length) {
+      var rejTxt = (fat.true_dislikes || []).slice(0, 3).map(function (x) { return x.name; }).concat((fat.track_feedback_rejects || []).slice(0, 2).map(function (r) { return r.title || r.artist; }));
+      dynCol.appendChild(el("div", "hqm-dna-item hqm-muted", "Rejets vérifiés : " + rejTxt.filter(Boolean).join(", ")));
+    }
+    if (cal.matched_plays) {
+      var actNames = Object.keys(cal.activities || {});
+      dynCol.appendChild(el("div", "hqm-dna-item", "Agenda : " + actNames.slice(0, 3).map(function (a) { return a + " (" + (cal.activities[a].top_artists || []).slice(0, 2).join(", ") + ")"; }).join(" · ")));
+    }
+    if (dynCol.children.length > 1) deepCols.appendChild(dynCol);
+
+    var wm = drf.weekly_momentum || {};
+    if (wm.plays_last_7d != null || (drf.macro_family_deltas || []).length) {
+      var drfCol = el("div", "hqm-dna-block");
+      drfCol.appendChild(el("h4", "", "Dérive & momentum 7 jours"));
+      if (wm.plays_last_7d != null) {
+        drfCol.appendChild(el("div", "hqm-dna-item", "7 derniers jours : " + wm.plays_last_7d + " écoutes (vs " + (wm.plays_prior_7d || 0) + " préc.)"));
+      }
+      if ((wm.accelerating_artists || []).length) {
+        drfCol.appendChild(el("div", "hqm-dna-item", "En accélération : " + wm.accelerating_artists.slice(0, 5).map(function (x) { return x.artist + " (+" + x.delta + ")"; }).join(", ")));
+      }
+      if ((wm.new_arrivals_14d || []).length) {
+        drfCol.appendChild(el("div", "hqm-dna-item", "Nouveaux arrivants (14 j) : " + wm.new_arrivals_14d.slice(0, 5).join(", ")));
+      }
+      if ((drf.macro_family_deltas || []).length) {
+        drfCol.appendChild(el("div", "hqm-dna-item", "Vs " + drf.compared_to_month + " : " + drf.macro_family_deltas.slice(0, 4).map(function (d) { return d.family + " " + (d.delta_pct > 0 ? "+" : "") + d.delta_pct + "%"; }).join(", ")));
+      }
+      deepCols.appendChild(drfCol);
+    }
+
+    deepCard.appendChild(deepCols);
+    host.appendChild(deepCard);
   }
 
   function renderDisconnected(host) {
@@ -2280,10 +3164,12 @@
 
     var pc = el("section", "hqm-card hqm-pc-card");
     var pcLocal = state.localSpotify || (state.spotify && state.spotify.local) || null;
-    var pcOpen = !!(pcLocal && pcLocal.spotify_desktop_running);
+    var pcSoloist = !!(pcLocal && pcLocal.soloist_running);
+    var pcOpen = pcSoloist || !!(pcLocal && pcLocal.spotify_desktop_running);
     var pcHead = el("div", "hqm-card-head");
     pcHead.appendChild(el("h3", "", "Spotify sur ce PC"));
-    pcHead.appendChild(el("span", "hqm-badge " + (pcOpen ? "ok" : ""), pcOpen ? "Ouvert" : "Fermé"));
+    pcHead.appendChild(el("span", "hqm-badge " + (pcOpen ? "ok" : ""),
+      pcSoloist ? "Soloist actif (~20 Mo)" : (pcOpen ? "Ouvert" : "Fermé")));
     pc.appendChild(pcHead);
     var pcRow = el("div", "hqm-row");
     var pcOpenBtn = btn(state.pcBusy ? "…" : "Ouvrir Spotify", "hqm-btn", function () { pcPower("start"); });
@@ -2491,9 +3377,11 @@
       "Choisis où jouer. Spotify Connect ne voit que l'app Spotify — pas le panneau Son de Windows."));
     var local = state.localSpotify || (state.spotify && state.spotify.local) || null;
     if (local) {
-      devices.body.appendChild(el("p", local.spotify_desktop_running ? "hqm-muted" : "hqm-muted",
-        "PC « " + (local.hostname || "?") + " » · Spotify Desktop " +
-        (local.spotify_desktop_running ? "ouvert" : "fermé")));
+      var pcStateLabel = local.soloist_running
+        ? "Soloist actif"
+        : (local.spotify_desktop_running ? "Spotify Desktop ouvert" : "fermé");
+      devices.body.appendChild(el("p", "hqm-muted",
+        "PC « " + (local.hostname || "?") + " » · " + pcStateLabel));
     }
     var deviceActions = el("div", "hqm-row");
     deviceActions.appendChild(btn("Actualiser", "hqm-btn secondary", function () {
@@ -3493,7 +4381,7 @@
     // The Musica chip reads this one flag: no bubble may name the song while a tournament match or a quiz round is concealed.
     var hidden = blind || quizMasking();
     var was = !!window.__hqBlindMatch;
-    window.__hqBlindMatch = hidden;
+    window.__hqBlindMatch = Song ? Song.conceal(hidden) : hidden;
     if (hidden && !was) {
       try { window.dispatchEvent(new CustomEvent("hq:musica-conceal")); } catch (_e) {}
     }
@@ -3527,12 +4415,52 @@
     return !!(state.quiz && state.quiz.game && !state.quiz.game.done && !state.quiz.revealed);
   }
 
+  // The song the DJ and tournament lines are about, resolved once by the shared module.
+  function nowPlayingOf(player) {
+    var p = player || state.player || {};
+    var item = p.item || null;
+    var artist = item && (item.artists || []).length ? item.artists.join(", ") : "";
+    if (!Song) return { key: "", title: (item && item.name) || "", artist: artist, local: false, stableMs: 0 };
+    return Song.remember(Song.identity({
+      view: "musique",
+      playback: { trackId: (item && item.id) || "", track: (item && item.name) || "", artist: artist, playing: !!p.playing }
+    }), Date.now());
+  }
+
+  // Real consumer of hq:now-playing: the on-air card shows the song the module settled on. A blind match still hides it.
+  function paintOnAirNow(song) {
+    var node = state.host && state.host.querySelector("[data-hqm='onair-now']");
+    if (!node) return;
+    var upcoming = state.djShow && state.djShow.next && state.djShow.next.title
+      ? "Ensuite : " + state.djShow.next.title : "Le prochain segment se prépare";
+    var hidden = Song ? Song.isConcealed() : !!window.__hqBlindMatch;
+    node.textContent = (song && song.title && !hidden ? song.title + " · " : "") + upcoming;
+  }
+
+  try {
+    root.addEventListener("hq:now-playing", function (ev) {
+      state.nowPlaying = ev.detail || null;
+      paintOnAirNow(state.nowPlaying);
+    });
+    // The Lecteur announces local playback: the show steps aside exactly as for a foreign Spotify track.
+    root.addEventListener("hq:local-play", function (ev) {
+      state.localPlaying = !!(ev.detail && ev.detail.playing);
+      if (!state.localPlaying || !(state.djShow && state.djShow.active)) return;
+      call("/api/musica/dj/local", "POST", { playing: true }).then(function (answer) {
+        if (!answer || !answer.left) return;
+        status("DJ Musica s’efface : tu as lancé autre chose.");
+        loadDjShow().then(paintDjCard).catch(function () {});
+      }).catch(function () {});
+    });
+  } catch (_e) {}
+
   function onTrackChange(next, previousMs) {
     var item = next && next.item;
-    if (!item || !item.uri || state.lastTrackUri === item.uri) return;
+    if (!item || !item.uri || state.lastTrackUri === item.uri || state.localPlaying) return;
     var previous = state.lastTrackItem;
     state.lastTrackUri = item.uri;
     state.lastTrackItem = item;
+    state.nowPlaying = nowPlayingOf(next);
     if (!previous) return; // first observation after load: nothing changed for the listener
     if (state.tab === "lecture") refreshQueueCard();
     var show = state.djShow;
@@ -3554,20 +4482,28 @@
     if (!state.dj || !state.dj.on || !next.playing || quizMasking() || state.speakingMusica || state.sleep) return;
     state.djCount = (state.djCount || 0) + 1;
     if (state.djCount % state.dj.every !== 0) return;
-    djAnnounce(item, previous).catch(function () {});
+    djAnnounce(item, previous, state.nowPlaying).catch(function () {});
   }
 
-  async function djAnnounce(item, previous) {
+  async function djAnnounce(item, previous, song) {
+    song = song || nowPlayingOf();
+    if (!song.title) return;
     var data = await call("/api/musica/dj", "POST", {
-      track: item.name || "",
-      artist: (item.artists || []).join(", "),
+      track: song.title,
+      artist: song.artist,
       album: item.album || "",
       uri: item.uri,
+      key: song.key,
+      source: song.local ? "local" : "spotify",
       previous: previous ? (previous.name || "") + " — " + (previous.artists || []).join(", ") : "",
       style: state.dj.style,
       language: state.voiceLanguage === "en" ? "en" : "fr"
     });
     if (!data || !data.line) return;
+    // Same guard as the chip: a line naming another track is dropped rather than spoken.
+    var clean = Song ? Song.filterLines([data.line], song.title) : [data.line];
+    if (!clean.length) return;
+    data.line = clean[0];
     state.djLast = { text: data.line, at: Date.now() };
     paintDjLine();
     await speakMusica(data.line);
@@ -3715,6 +4651,25 @@
       steps.appendChild(li);
     });
     box.appendChild(steps);
+    var names2 = { pools: "Fouille", writing: "Écriture", voice: "Micro", play: "Antenne" };
+    var timings = prep.timings || {};
+    var spent = Object.keys(names2).filter(function (k) { return timings[k]; }).map(function (k) {
+      return names2[k] + " " + Math.round(timings[k]) + " s";
+    });
+    if (prep.stage && prep.stage_elapsed) spent.push((names2[prep.stage] || "En cours") + " " + Math.round(prep.stage_elapsed) + " s…");
+    if (spent.length) box.appendChild(el("p", "hqm-muted hqm-dj-timings", "Où passe le temps : " + spent.join(" · ")));
+    if (prep.queued) box.appendChild(el("p", "hqm-muted hqm-hint", "Ta demande est en attente : elle s’applique dès que cette préparation est finie."));
+    var cancelRow = el("div", "hqm-row");
+    if (prep.cancelled) {  // the worker stops at its next checkpoint: say so instead of offering the button again
+      cancelRow.appendChild(el("span", "hqm-muted hqm-hint", "Annulation en cours : elle s’arrête à la fin de l’étape en cours."));
+    } else {
+      cardButton(cancelRow, "Annuler la préparation", async function () {
+        var out = await call("/api/musica/dj/prep/cancel", "POST", {}).catch(function (e) { status(e.message, true); return null; });
+        status(out && out.cancelled ? "Annulation en cours : elle s’arrête à la fin de l’étape en cours." : "Préparation annulée.");
+        loadDjShow().then(paintDjCard).catch(function () {});
+      });
+    }
+    box.appendChild(cancelRow);
     box.appendChild(el("p", "hqm-muted hqm-hint", "Ça prend en général 10 à 30 secondes. Tu peux continuer à naviguer."));
     return box;
   }
@@ -3838,8 +4793,35 @@
     state.prepDisplay = 2;
     var data = await call("/api/musica/dj/steer", "POST", Object.assign({ device_id: state.preferredDeviceId || undefined }, body));
     state.djShow = data;
+    if (data.queued) status("Demande mise en attente : elle s’applique dès que la préparation en cours est finie.");
     paintDjCard();
     watchPrep();
+    return data;
+  }
+
+  async function djSimilar() {
+    unlockAudio();
+    state.prepDisplay = 2;
+    var data = await call("/api/musica/dj/similar", "POST", { device_id: state.preferredDeviceId || undefined });
+    state.djShow = data;
+    paintDjCard();
+    watchPrep();
+    return data;
+  }
+
+  async function djSetSessionSteer(body) {
+    var data = await call("/api/musica/dj/session-steer", "POST", Object.assign({ device_id: state.preferredDeviceId || undefined }, body));
+    state.djShow = data;
+    paintDjCard();
+    if (body && body.apply_now && !body.clear) watchPrep();
+    return data;
+  }
+
+  async function djSkipReason(reason) {
+    var data = await call("/api/musica/dj/skip-reason", "POST", { reason: reason });
+    state.djShow = data;
+    status("Noté, Musica ajuste le set.");
+    paintDjCard();
     return data;
   }
 
@@ -4258,14 +5240,34 @@
     if (live && !prep) {
       var steerBox = el("div", "hqm-dj-steer-box");
       steerBox.appendChild(el("span", "hqm-dj-label", "Oriente l’émission"));
+      if (show.session_steer && (show.session_steer.label || show.session_steer.text)) {
+        var stickyBar = el("div", "hqm-dj-sticky-active");
+        stickyBar.appendChild(el("span", "", "Ambiance verrouillée : " + (show.session_steer.label || show.session_steer.text)));
+        stickyBar.appendChild(btn("✕ Libérer", "hqm-btn secondary", function () {
+          djSetSessionSteer({ clear: true }).catch(function (e) { status(e.message, true); });
+        }));
+        steerBox.appendChild(stickyBar);
+      }
       var chips = el("div", "hqm-dj-steer");
       [["calme", "Plus calme"], ["energie", "Plus d’énergie"], ["change", "Change de vibe"], ["decouverte", "Découvertes"],
         ["nostalgie", "Nostalgie"], ["nouveautes", "Nouveautés"], ["ban", "Pas cet artiste"]].forEach(function (pair) {
         chips.appendChild(btn(pair[1], "hqm-dj-chip", function () {
-          djSteer({ preset: pair[0] }).catch(function (e) { status(e.message, true); });
+          var sticky = !!state.djStickySteer && pair[0] !== "ban";
+          djSteer({ preset: pair[0], sticky: sticky }).catch(function (e) { status(e.message, true); });
         }));
       });
+      var simBtn = btn("✦ Similaire à ce titre", "hqm-dj-chip is-accent", function () {
+        djSimilar().catch(function (e) { status(e.message, true); });
+      });
+      chips.appendChild(simBtn);
       steerBox.appendChild(chips);
+      var stickyOpt = el("label", "hqm-check hqm-dj-sticky-opt");
+      var stickyBox = document.createElement("input");
+      stickyBox.type = "checkbox";
+      stickyBox.checked = !!state.djStickySteer;
+      stickyBox.addEventListener("change", function () { state.djStickySteer = stickyBox.checked; });
+      stickyOpt.append(stickyBox, " Garder l’orientation sur les segments suivants");
+      steerBox.appendChild(stickyOpt);
       var ask = el("form", "hqm-dj-ask");
       var input = document.createElement("input");
       input.type = "text";
@@ -4281,10 +5283,22 @@
       ask.addEventListener("submit", function (event) {
         event.preventDefault();
         if (!input.value.trim()) return;
-        djSteer({ text: input.value.trim() }).catch(function (e) { status(e.message, true); });
+        djSteer({ text: input.value.trim(), sticky: !!state.djStickySteer }).catch(function (e) { status(e.message, true); });
       });
       steerBox.appendChild(ask);
       card.appendChild(steerBox);
+      if (show.last_skipped && !show.last_skipped.reason) {
+        var skipBox = el("div", "hqm-dj-skip-reason");
+        skipBox.appendChild(el("span", "hqm-muted", "Pourquoi passer « " + (show.last_skipped.name || "ce titre") + " » ?"));
+        var skipBtns = el("div", "hqm-dj-steer");
+        [["too_slow", "Trop lent"], ["too_fast", "Trop rapide"], ["wrong_mood", "Pas le mood"], ["overplayed", "Trop entendu"]].forEach(function (pair) {
+          skipBtns.appendChild(btn(pair[1], "hqm-dj-chip", function () {
+            djSkipReason(pair[0]).catch(function (e) { status(e.message, true); });
+          }));
+        });
+        skipBox.appendChild(skipBtns);
+        card.appendChild(skipBox);
+      }
       if (show.segment && show.segment.fallback_reason) {
         card.appendChild(el("p", "hqm-muted hqm-hint", "Segment simplifié : l’IA n’a pas répondu à temps (" +
           show.segment.fallback_reason + "). Le prochain réessaiera."));
@@ -4432,7 +5446,7 @@
   function renderDjVoiceBox(show, st, save, select) {
     var box = el("div", "hqm-dj-voice");
     box.appendChild(el("strong", "", "Voix de Musica"));
-    box.appendChild(select("Moteur", "voice_engine", [["auto", "Auto (Chatterbox quand il est prêt)"], ["chatterbox", "Chatterbox (expressive)"], ["phonon", "Phonon (rapide)"]]));
+    box.appendChild(select("Moteur", "voice_engine", [["auto", "Auto (Chatterbox quand il est prêt)"], ["chatterbox", "Chatterbox (expressive)"], ["phonon", "Phonon (rapide)"], ["elevenlabs", "ElevenLabs (consomme des crédits)"]]));
     var expr = el("label", "", "Expressivité (Chatterbox)");
     var exprSel = document.createElement("select");
     [["0.8", "Sobre"], ["1", "Normale"], ["1.2", "Vive"], ["1.4", "Très vive"]].forEach(function (pair) {
@@ -4454,8 +5468,16 @@
     cardButton(row, "Comparer les voix", async function () {
       unlockAudio();
       results.replaceChildren(el("p", "hqm-muted", "Musica enregistre la même réplique avec les deux voix…"));
-      var data = await call("/api/musica/dj/voice-compare", "POST", { mood: "hype" });
-      results.replaceChildren(el("p", "hqm-muted hqm-hint", "« " + data.text + " »"));
+      // 202 + poll: two syntheses (one may cold-start a model) never hold the request open.
+      var job = await call("/api/musica/dj/voice-compare", "POST", { mood: "hype" });
+      var until = Date.now() + 180000;
+      while (job && job.pending && job.id && Date.now() < until) {
+        await new Promise(function (resolve) { setTimeout(resolve, 1500); });
+        job = await call("/api/musica/dj/voice-compare/" + encodeURIComponent(job.id)).catch(function () { return null; });
+        if (!job) break;
+      }
+      var data = job || {};
+      results.replaceChildren(el("p", "hqm-muted hqm-hint", "« " + (data.text || "") + " »"));
       [["phonon", "A · Phonon"], ["chatterbox", "B · Chatterbox"]].forEach(function (pair) {
         var name = data[pair[0]];
         var item = el("div", "hqm-row");
@@ -5660,7 +6682,7 @@
     if (line) ctx.fillText(line, x, y);
   }
 
-  /* Rembobiner: past shows, replayable with the same lines. */
+  /* Rembobiner: past shows, replayable with the same lines, searchable and exportable as one MP3. */
   function renderDjArchive() {
     var box = el("details", "hqm-advanced hqm-dj-archive");
     var summary = document.createElement("summary");
@@ -5669,36 +6691,113 @@
     var body = el("div", "hqm-advanced-body");
     box.appendChild(body);
     var loaded = false;
+
+    function replay(id) {
+      unlockAudio();
+      state.prepDisplay = 2;
+      return call("/api/musica/dj/archive/replay", "POST", { id: id, device_id: state.preferredDeviceId || undefined })
+        .then(function (data) { state.djShow = data; paintDjCard(); watchPrep(); });
+    }
+
+    function episodeRow(ep) {
+      var row = el("div", "hqm-dj-episode");
+      var meta = el("div", "hqm-track-meta");
+      var when = ep.started ? new Date(ep.started * 1000).toLocaleString("fr-FR", { dateStyle: "short", timeStyle: "short" }) : "";
+      meta.appendChild(el("strong", "", (ep.title || "Émission") + (ep.segments.length > 1 ? " +" + (ep.segments.length - 1) : "")));
+      meta.appendChild(el("span", "hqm-muted", when + " · " + ep.tracks + " titres"));
+      var names = [];
+      ep.segments.forEach(function (s) { (s.tracks || []).forEach(function (t) { if (names.length < 4) names.push(t.name); }); });
+      meta.appendChild(el("span", "hqm-reason", names.join(" · ")));
+      row.appendChild(meta);
+      cardButton(row, "↺ Rejouer cette émission", function () { return replay(ep.id); });
+      cardButton(row, "⬇ Exporter en MP3", async function () {
+        var view = await call("/api/musica/dj/archive/export", "POST", { id: ep.id }).catch(function (e) {
+          status(e.message, true); return null;
+        });
+        if (!view) return;
+        status("J’assemble l’émission en un seul fichier…");
+        var until = Date.now() + 300000;
+        while (view && view.job && view.job.running && Date.now() < until) {
+          await new Promise(function (resolve) { setTimeout(resolve, 2000); });
+          view = await call("/api/musica/dj/archive/export").catch(function () { return null; });
+        }
+        var entry = view && view.job && view.job.entry;
+        if (!entry || !entry.audio_url) {
+          status((view && view.job && view.job.error) || "Export impossible pour l’instant.", true);
+          return;
+        }
+        var link = el("a", "hqm-btn hqm-dj-export-link", "Écouter / télécharger · " + fmtSec(entry.seconds));
+        link.href = entry.audio_url;
+        link.setAttribute("download", entry.file);
+        link.setAttribute("target", "_blank");
+        row.appendChild(link);
+        status("Émission exportée : " + entry.file + " (" + fmtSec(entry.seconds) + ", " + (entry.chapters || []).length + " chapitres).");
+      });
+      return row;
+    }
+
+    function paintEpisodes(container, episodes) {
+      if (!episodes.length) {
+        container.appendChild(el("p", "hqm-muted", "Pas encore d’émission gardée : chaque segment passé à l’antenne apparaîtra ici."));
+        return;
+      }
+      episodes.forEach(function (ep) { container.appendChild(episodeRow(ep)); });
+    }
+
+    function searchBox() {
+      var form = el("form", "hqm-dj-archive-search");
+      var input = document.createElement("input");
+      input.type = "search";
+      input.maxLength = 120;
+      input.placeholder = "Rechercher un titre, un artiste, une réplique…";
+      input.setAttribute("aria-label", "Rechercher dans les émissions passées");
+      form.appendChild(input);
+      var send = btn("Chercher", "hqm-btn secondary");
+      send.type = "submit";
+      form.appendChild(send);
+      var out = el("div", "hqm-dj-archive-results");
+      form.addEventListener("submit", async function (event) {
+        event.preventDefault();
+        var q = input.value.trim();
+        if (!q) { out.replaceChildren(); return; }
+        out.replaceChildren(el("p", "hqm-muted", "Recherche…"));
+        var data = await call("/api/musica/dj/archive/search", "POST", { q: q }).catch(function (e) {
+          out.replaceChildren(el("p", "hqm-muted", e.message || "Recherche indisponible."));
+          return null;
+        });
+        if (!data) return;
+        out.replaceChildren();
+        if (!data.results || !data.results.length) {
+          out.appendChild(el("p", "hqm-muted", "Rien trouvé dans les émissions gardées."));
+          return;
+        }
+        data.results.forEach(function (hit) {
+          var block = el("div", "hqm-dj-episode");
+          var meta = el("div", "hqm-track-meta");
+          meta.appendChild(el("strong", "", hit.title || "Émission"));
+          (hit.matches || []).slice(0, 4).forEach(function (m) {
+            var icon = m.kind === "track" ? "🎵 " : m.kind === "intro" ? "🎙 " : "";
+            meta.appendChild(el("span", "hqm-reason", icon + m.text));
+          });
+          block.appendChild(meta);
+          cardButton(block, "↺ Rejouer", function () { return replay(hit.id); });
+          out.appendChild(block);
+        });
+      });
+      return { form: form, out: out };
+    }
+
     box.addEventListener("toggle", function () {
       if (!box.open || loaded) return;
       loaded = true;
       body.appendChild(el("p", "hqm-muted", "Chargement…"));
       call("/api/musica/dj/archive").then(function (data) {
         body.textContent = "";
-        var episodes = data.episodes || [];
-        if (!episodes.length) {
-          body.appendChild(el("p", "hqm-muted", "Pas encore d’émission gardée : chaque segment passé à l’antenne apparaîtra ici."));
-          return;
-        }
-        episodes.forEach(function (ep) {
-          var row = el("div", "hqm-dj-episode");
-          var meta = el("div", "hqm-track-meta");
-          var when = ep.started ? new Date(ep.started * 1000).toLocaleString("fr-FR", { dateStyle: "short", timeStyle: "short" }) : "";
-          meta.appendChild(el("strong", "", (ep.title || "Émission") + (ep.segments.length > 1 ? " +" + (ep.segments.length - 1) : "")));
-          meta.appendChild(el("span", "hqm-muted", when + " · " + ep.tracks + " titres"));
-          var names = [];
-          ep.segments.forEach(function (s) { (s.tracks || []).forEach(function (t) { if (names.length < 4) names.push(t.name); }); });
-          meta.appendChild(el("span", "hqm-reason", names.join(" · ")));
-          row.appendChild(meta);
-          cardButton(row, "↺ Rejouer cette émission", async function () {
-            unlockAudio();
-            state.prepDisplay = 2;
-            state.djShow = await call("/api/musica/dj/archive/replay", "POST", { id: ep.id, device_id: state.preferredDeviceId || undefined });
-            paintDjCard();
-            watchPrep();
-          });
-          body.appendChild(row);
-        });
+        var search = searchBox();
+        body.append(search.form, search.out);
+        var list = el("div", "hqm-dj-archive-list");
+        paintEpisodes(list, data.episodes || []);
+        body.appendChild(list);
       }).catch(function (e) { body.textContent = ""; body.appendChild(el("p", "hqm-muted", e.message || "Archives indisponibles.")); });
     });
     return box;
@@ -6109,7 +7208,7 @@
       var stats = latest.stats || {};
       episode.appendChild(el("span", "hqm-muted", "Du " + dayLabel(stats.from) + " au " + dayLabel(stats.to) +
         (secs ? " · " + Math.floor(secs / 60) + " min " + String(secs % 60).padStart(2, "0") : "") +
-        " · voix " + (latest.engine === "chatterbox" ? "Chatterbox" : "Phonon")));
+        " · voix " + (latest.engine === "chatterbox" ? "Chatterbox" : latest.engine === "elevenlabs" ? "ElevenLabs" : "Phonon")));
       episode.appendChild(weeklyAudio(latest.audio_url));
       var tiles = el("div", "hqm-stat-grid");
       tiles.appendChild(statTile(stats.plays || 0, "écoutes"));
@@ -7097,7 +8196,7 @@
 
   function noDeviceReason() {
     var local = state.localSpotify || (state.spotify && state.spotify.local) || null;
-    if (local && local.spotify_desktop_running === false) return "Spotify Desktop est fermé sur ce PC, donc aucun appareil n’est disponible.";
+    if (local && local.spotify_desktop_running === false && !local.soloist_running) return "Spotify est fermé sur ce PC, donc aucun appareil n’est disponible.";
     return "Spotify est ouvert mais aucun appareil n’est actif (rien n’a été lu récemment ou l’appareil s’est endormi).";
   }
 
@@ -7291,10 +8390,12 @@
     var seg = show.segment || {};
     var words = el("div", "hqm-onair-words");
     words.appendChild(el("span", "hqm-onair-title", (seg.title || "DJ Musica") + (seg.theme ? " · " + seg.theme : "")));
-    var item = state.player && state.player.item;
+    var now = state.nowPlaying || nowPlayingOf();
+    var blindNow = !!(show.duels && show.duels.current && show.duels.current.blind && !show.duels.current.vote);
     var upcoming = show.next && show.next.title ? "Ensuite : " + show.next.title : "Le prochain segment se prépare";
-    words.appendChild(el("span", "hqm-muted", (item && !(show.duels && show.duels.current && show.duels.current.blind && !show.duels.current.vote)
-      ? item.name + " · " : "") + upcoming));
+    var nowNode = el("span", "hqm-muted", (now.title && !blindNow ? now.title + " · " : "") + upcoming);
+    nowNode.setAttribute("data-hqm", "onair-now");
+    words.appendChild(nowNode);
     live.appendChild(words);
     slot.appendChild(live);
     var controls = el("div", "hqm-onair-controls");
@@ -7389,6 +8490,7 @@
     } else if (state.tab === "playlists") renderPlaylists(panel);
     else if (state.tab === "mixer") renderMixer(panel);
     else if (state.tab === "musica") renderMusica(panel);
+    else if (state.tab === "profil") renderProfilTab(panel);
     else if (state.tab === "studio") renderStudio(panel);
     else if (state.tab === "journal") { renderWeeklyRecap(panel); renderWrapped(panel); renderOnThisDay(panel); renderTasteMap(panel); renderJournal(panel); }
     else if (state.tab === "quiz") renderQuiz(panel);
@@ -7532,5 +8634,12 @@
   };
   root.hqMusicHide = function () {
     if (root.HqMusic) root.HqMusic.hide();
+  };
+  // Read-only snapshot for browser tests and agents (the on-air card, concealment and local-play state).
+  root.hqMusicDebug = function () {
+    return {
+      tab: state.tab, spotify: state.spotify, djShow: state.djShow, nowPlaying: state.nowPlaying,
+      localPlaying: state.localPlaying, djLast: state.djLast, concealed: !!(Song && Song.isConcealed())
+    };
   };
 })(typeof window !== "undefined" ? window : globalThis);

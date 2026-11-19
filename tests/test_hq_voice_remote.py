@@ -42,8 +42,9 @@ class Base(unittest.TestCase):
         self.addCleanup(hq_music.reset_for_tests)
         hq_music.bind(root=self.tmp.name)
         remote._jobs.clear()
-        remote._live.update(seen=0.0, info={}, busy=None, last_ms=None, last_error=None, done=0)
+        remote._live.update(seen=0.0, info={}, busy=None, last_ms=None, last_error=None, done=0, voice_last=0.0, text_done=0)
         remote._breaker.update(fails=0, until=0.0)
+        remote._text_breaker.update(fails=0, until=0.0)
         remote._hits.clear()
         remote.POLL_WAIT = 0.4  # keep long polls short in tests
         self.addCleanup(setattr, remote, "POLL_WAIT", 8.0)
@@ -222,6 +223,173 @@ class QueueTests(Base):
             big.write_bytes(wav(1.0) + b"\x00" * 3_300_000)  # the real reference clip is about 3.2 MB
             self.assertEqual(call("voice/long", {}, token=token)[0], 200)
             self.assertEqual(call("voice/..%2Fx", {}, token=token)[0], 400)
+
+
+class TextTests(Base):
+    """The small LLM on the worker PC: text jobs, always behind the voice."""
+    MSG = [{"role": "system", "content": "Be brief."}, {"role": "user", "content": "Say hi."}]
+
+    def pair_llm(self):
+        token = self.pair()
+        call("poll", {"info": {"ready": True, "llm": True}}, token=token)
+        return token
+
+    def play(self, token, result):
+        out = {}
+
+        def go():
+            status, data = call("poll", {"info": {"ready": True, "llm": True}}, token=token)
+            out["job"] = data.get("job")
+            if out["job"]:
+                call("result/" + out["job"]["id"], result(out["job"]), token=token)
+        thread = threading.Thread(target=go)
+        thread.start()
+        return thread, out
+
+    def test_text_goes_to_the_worker_and_back(self):
+        token = self.pair_llm()
+        thread, out = self.play(token, lambda job: {"ok": True, "text": "  Hi Master.  ", "ms": 900})
+        text = remote.generate_text(self.MSG, temperature=0.6, max_tokens=999, timeout=5)
+        thread.join()
+        self.assertEqual(text, "Hi Master.")
+        self.assertEqual(out["job"]["kind"], "text")
+        self.assertEqual(out["job"]["max_tokens"], remote.TEXT_MAX_TOKENS)  # capped
+        self.assertNotIn("voice", out["job"])  # a text job never names a voice, a path or a command
+        self.assertEqual(remote.status()["text_done"], 1)
+        self.assertEqual(remote.status()["done"], 0)  # the voice counters stay the voice's
+        self.assertFalse(out["job"]["json"])
+        thread, out = self.play(token, lambda job: {"ok": True, "text": "{}"})
+        remote.generate_text(self.MSG, timeout=5, json_mode=True)
+        thread.join()
+        self.assertTrue(out["job"]["json"])  # the worker asks llama-server for valid JSON
+
+    def test_no_text_without_a_worker_that_has_an_llm(self):
+        self.assertIsNone(remote.generate_text(self.MSG))
+        token = self.pair()
+        call("poll", {"info": {"ready": True}}, token=token)  # an older worker: no "llm" flag
+        self.assertFalse(remote.llm_ready())
+        self.assertIsNone(remote.generate_text(self.MSG))
+        self.assertEqual(remote._jobs, {})
+
+    def test_messages_are_cleaned_and_a_user_turn_is_required(self):
+        self.pair_llm()
+        self.assertIsNone(remote.generate_text([{"role": "system", "content": "x"}]))
+        self.assertIsNone(remote.generate_text([{"role": "tool", "content": "x"}, {"role": "user", "content": ""}]))
+        self.assertIsNone(remote.generate_text([{"role": "user", "content": "x" * (remote.TEXT_MAX_CHARS + 1)}]))
+        self.assertEqual(remote._jobs, {})
+
+    def test_voice_keeps_the_gpu(self):
+        token = self.pair_llm()
+        remote._live["voice_last"] = time.time()  # a sentence was just asked for
+        self.assertIsNone(remote.generate_text(self.MSG))
+        remote._live["voice_last"] = time.time() - remote.TEXT_QUIET - 1
+        remote._jobs["v"] = {"id": "v", "kind": "voice", "state": "queued", "created": time.time(), "voice_stamp": 1,
+                             "payload": {"text": "x", "voice": "musica"}, "wav": None, "error": None}
+        self.assertIsNone(remote.generate_text(self.MSG))  # a sentence is waiting: no text behind it
+        remote._jobs.pop("v")
+        # and when both are queued the sentence is claimed first
+        now = time.time()
+        remote._jobs["t"] = {"id": "t", "kind": "text", "state": "queued", "created": now - 5, "voice_stamp": 0,
+                             "payload": {"messages": self.MSG}, "text": None, "error": None}
+        remote._jobs["v"] = {"id": "v", "kind": "voice", "state": "queued", "created": now, "voice_stamp": 1,
+                             "payload": {"text": "x", "voice": "musica"}, "wav": None, "error": None}
+        self.assertEqual(call("poll", {}, token=token)[1]["job"]["id"], "v")
+        self.assertEqual(call("poll", {}, token=token)[1]["job"]["id"], "t")
+
+    def test_failures_open_a_text_breaker_that_leaves_the_voice_alone(self):
+        token = self.pair_llm()
+        for _ in range(remote.BREAKER_FAILS):
+            thread, _ = self.play(token, lambda job: {"ok": False, "error": "llama-server s’est arrêté"})
+            self.assertIsNone(remote.generate_text(self.MSG, timeout=5))
+            thread.join()
+        self.assertTrue(remote.status()["text_breaker_open"])
+        self.assertFalse(remote.llm_ready())
+        self.assertFalse(remote.status()["breaker_open"])  # the voice breaker is untouched
+        self.assertTrue(remote.available())
+
+    def test_an_empty_text_result_is_a_failure(self):
+        token = self.pair_llm()
+        thread, _ = self.play(token, lambda job: {"ok": True, "text": "   "})
+        self.assertIsNone(remote.generate_text(self.MSG, timeout=5))
+        thread.join()
+
+
+class OfflineAlertTests(Base):
+    def test_a_silent_worker_is_flagged_only_after_ten_minutes_and_only_when_it_matters(self):
+        self.assertIsNone(remote.offline_alert())  # not paired
+        token = self.pair()
+        call("poll", {}, token=token)
+        self.assertIsNone(remote.offline_alert())  # answering
+        with mock.patch.object(remote, "_STARTED", time.time() - 3600):
+            remote._live["seen"] = time.time() - 300
+            self.assertIsNone(remote.offline_alert())  # 5 min: the laptop's task is still relaunching it
+            remote._live["seen"] = time.time() - 700
+            alert = remote.offline_alert()
+            self.assertEqual(alert["name"], "Portable")
+            self.assertGreaterEqual(alert["quiet_sec"], 700)
+            remote.set_enabled(False)
+            self.assertIsNone(remote.offline_alert())  # switched off on purpose: not an alert
+            remote.set_enabled(True)
+            remote._live.update(busy="job", busy_since=time.time())
+            self.assertIsNone(remote.offline_alert())  # busy on a long job counts as alive
+
+    def test_a_bridge_restart_does_not_raise_a_false_alarm(self):
+        self.pair()
+        remote._live["seen"] = 0.0  # what a restart leaves behind
+        self.assertIsNone(remote.offline_alert())  # silence is counted from the bridge start
+        with mock.patch.object(remote, "_STARTED", time.time() - 1200):
+            self.assertIsNotNone(remote.offline_alert())
+
+
+class WorkerTextTests(Base):
+    def test_text_job_starts_the_llm_and_a_sentence_stops_it(self):
+        replies = []
+
+        class Llm(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                out = b'{"status":"ok"}'
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(out)))
+                self.end_headers()
+                self.wfile.write(out)
+
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)))
+                replies.append(body)
+                out = json.dumps({"choices": [{"message": {"content": " Salut, Maître. "}}]}).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(out)))
+                self.end_headers()
+                self.wfile.write(out)
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Llm)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        args = argparse.Namespace(llm_server="llama-server.exe", llm_model="m.gguf", llm_port=server.server_address[1])
+        self.assertTrue(worker.has_llm(args))
+        self.assertFalse(worker.has_llm(argparse.Namespace()))  # an older command line: no text jobs
+        fake = mock.Mock()
+        fake.poll.return_value = None
+        fake.pid = 4242
+        with mock.patch.object(worker.subprocess, "Popen", return_value=fake) as popen,              mock.patch.object(worker.subprocess, "run") as run:
+            worker.STOP.clear()  # an earlier test leaves it set
+            worker._llm.update(proc=None, last=0.0)
+            text = worker.complete(args, {"messages": [{"role": "user", "content": "hi"}], "temperature": 0.5, "max_tokens": 9999})
+            self.assertEqual(text, "Salut, Maître.")
+            self.assertEqual(replies[0]["max_tokens"], 400)  # the worker caps it too
+            self.assertNotIn("response_format", replies[0])
+            worker.complete(args, {"messages": [{"role": "user", "content": "hi"}], "json": True})
+            self.assertEqual(replies[1]["response_format"], {"type": "json_object"})
+            cmd = popen.call_args[0][0]
+            self.assertIn("127.0.0.1", cmd)  # loopback only, nothing listens on the network
+            self.assertEqual(cmd[cmd.index("-fitt") + 1], "3300")  # llama.cpp leaves VRAM for Chatterbox
+            worker.stop_llm()  # idle, or --llm-exclusive and a sentence arrived
+            self.assertIn("4242", run.call_args[0][0])
+            self.assertIsNone(worker._llm["proc"])
 
 
 class SynthPathTests(Base):

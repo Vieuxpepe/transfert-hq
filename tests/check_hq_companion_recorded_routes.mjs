@@ -6,7 +6,7 @@ const require=createRequire(import.meta.url);
 const {create}=require('../assets/hq-companion-reaction-audio.js');
 const manifest=JSON.parse(readFileSync(new URL('../assets/companion/chat/reactions/manifest.json',import.meta.url)));
 const source=readFileSync(new URL('../assets/hq-companion.js',import.meta.url),'utf8')
-  .replace('testCry: bustPullCry,','__audio: {state:S,playVocalSynthFx,playPleasureGruntSfx,playLewdPhaseWav,playTreatWav,stopSpeech}, testCry: bustPullCry,');
+  .replace('testCry: bustPullCry,','__audio: {state:S,muted,playVocalSynthFx,playPleasureGruntSfx,playLewdPhaseWav,playTreatWav,stopSpeech}, testCry: bustPullCry,');
 let now=100000;class Clock extends Date{static now(){return now;}}
 const sandbox={module:{exports:{}},Date:Clock};vm.runInNewContext(source,sandbox);
 const api=sandbox.module.exports,fx=api.__audio,state=fx.state;
@@ -45,7 +45,16 @@ assert.equal(sounds.length,before,'adult recordings require the existing adult m
 state.nsfwOn=true;storage.set('hq_companion_mute_until',String(Date.now()+60000));
 fx.playVocalSynthFx(win,'mwah');fx.playLewdPhaseWav(win,'deepthroat');
 assert.equal(sounds.length,before,'mute applies to recorded effects and lines');
-storage.delete('hq_companion_mute_until');win.document.hidden=true;
+storage.delete('hq_companion_mute_until');
+for (const off of [['hq_companion_on','0'],['hq_companion_persona','off']]) {
+  storage.set(off[0],off[1]);
+  assert.equal(fx.muted(win),true,'synth/oscillator sounds consult muted(): switched off ('+off[0]+') must read as muted');
+  for (const kind of ['moan','mwah','purr','gasp','sigh','gag']) fx.playVocalSynthFx(win,kind);
+  fx.playPleasureGruntSfx(win,0.9,'moan');fx.playLewdPhaseWav(win,'deepthroat');fx.playTreatWav(win,'kiss');
+  assert.equal(sounds.length,before,'switched off in Compagnons ('+off[0]+') every sound path stays silent');
+  storage.delete(off[0]);
+}
+win.document.hidden=true;
 fx.playVocalSynthFx(win,'mwah');fx.playLewdPhaseWav(win,'deepthroat');
 assert.equal(sounds.length,before,'hidden pages stay silent');
 win.document.hidden=false;state.voicePreview=true;

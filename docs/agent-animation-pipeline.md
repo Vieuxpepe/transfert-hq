@@ -98,11 +98,13 @@ Automated gate (CI + local):
 ```bash
 pip install playwright && playwright install chromium
 python tests/visual_hq_motion_fps_playwright.py
+python tests/visual_hq_rain_sky_playwright.py   # rain held on, so the rainy sky is always covered
 ```
 
 | Scenario | Expect |
 |----------|--------|
 | Accueil Full, 3 s (automated) | ≥ 24 FPS, p95 frame gap ≤ 55 ms, ≤ 2 long tasks, ≤ 45 running animations |
+| Accueil with the sky pinned to rain (automated) | Same Full/Lite budget as above, over 3 interleaved samples per condition; precipitation = 2 sheet animations (0 in Lite, 2 layers); rainy fps within 15 % of the same page's cloudy baseline |
 | Accueil Lite, 3 s (automated) | ≥ 40 FPS, p95 frame gap ≤ 40 ms, ≤ 16 running animations, ≤ 4 API requests |
 | Accueil Parked / reduced motion (automated) | Zero home animations; kinetic scheduler inactive; no softbody arming |
 | Navigation (automated) | Calendrier commit ≤ 600 ms; cold Carnet ready ≤ 5 s with ≤ 45 lazy scripts |

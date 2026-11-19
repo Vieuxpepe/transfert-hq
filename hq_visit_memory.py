@@ -19,17 +19,32 @@ import hq_state
 
 log = logging.getLogger(__name__)
 RETENTION = 90 * 86400
-LIMIT = 16
+# The file is shared by every partner of one assistant: a cap on the whole file
+# alone let one chatty pair push all the others out inside the hour.
+PER_OTHER = 8
+LIMIT = 48
+CLOCK_SLACK = 86400  # a clock stepped back must not erase what was just written
 MAX_LINES = 12
 MAX_TEXT = 400
 _lock = threading.RLock()
 _UNREADABLE = object()
 _SOCIAL = re.compile(
-    r"\b(?:bonjour|salut|hello|hey|ca va|comment vas|quoi de neuf|tu te souviens|"
-    r"souvenir|derniere fois|derniere[s]? visite[s]?|last visits?|revoir|visits?|visites?|passe|passage|"
-    r"avez-vous parle|de quoi.*parle|what did.*talk)\b",
+    r"\b(?:bonjour|salut|hello|hey|hi there|ca va|comment vas|how are you|how's it going|what's up|"
+    r"quoi de neuf|tu te souviens|do you remember|remember|souvenir|memory of|derniere fois|last time|"
+    r"derniere[s]? visite[s]?|last visits?|revoir|visits?|visites?|passe|passage|stopped by|dropped by|"
+    r"avez-vous parle|de quoi.*parle|what did.*talk|what were you (?:two )?(?:talking|chatting))\b",
     re.I,
 )
+_CLOSING = re.compile(
+    r"\b(?:je te laisse|je vous laisse|je retourne|je repars|je file|je m'efface|"
+    r"je m'en vais|je dois y aller|je vais y aller|a bientot|à bientôt|au revoir|"
+    r"bonne suite|bonne journee|bonne journée|a plus|à plus|bye|goodbye|"
+    r"i'll leave you|i will leave you|i'm going back|i am going back|back to (?:the|my) \w+|"
+    r"i'm off|i am off|i'm leaving|i have to go|i need to go|see you|take care|"
+    r"i'll let you|catch you later|talk later|fading out)\b",
+    re.I,
+)
+_GREETING = re.compile(r"^\s*(?:bonjour|bonsoir|salut|coucou|hello|hey|hi|good (?:morning|evening|afternoon))\b", re.I)
 
 
 def _fold(text: Any) -> str:
@@ -54,12 +69,33 @@ def _clean_text(value: Any) -> str:
 
 
 def _thread(lines: list[dict[str, str]]) -> str:
-    """A short unfinished point a later visit can pick up, never a transcript."""
-    for line in reversed(lines):
-        text = line["text"]
+    """A short unfinished point a later visit can pick up, never a transcript.
+
+    A closing line ("Je retourne à l'atelier.") is not a thread: feeding it back
+    made every later visit answer a goodbye. Greetings are skipped for the same
+    reason, and when nothing remains the visit simply has no thread.
+
+    The last line of a visit is its departure (the generation prompt asks for it,
+    in words no phrase list can anticipate), so it is only a thread when it is
+    itself a question left open.
+    """
+    body = list(lines)
+    if len(body) >= 2 and "?" not in str(body[-1].get("text") or ""):
+        body = body[:-1]
+    for line in reversed(body):
+        text = re.sub(r"\s+", " ", str(line.get("text") or "")).strip()
+        if not text or _CLOSING.search(text):
+            continue
+        if _GREETING.match(text) and len(text.split()) < 6:
+            continue
         if "?" in text or len(text.split()) >= 4:
             return text[:200]
-    return lines[-1]["text"][:200] if lines else ""
+    return ""
+
+
+def thread_of(lines: list[dict[str, str]]) -> str:
+    """The thread a visit leaves, for callers outside this module."""
+    return _thread(lines)
 
 
 def _schema_ok(rows: Any) -> bool:
@@ -72,6 +108,8 @@ def _schema_ok(rows: Any) -> bool:
             return False
         at = row.get("at")
         if isinstance(at, bool) or not isinstance(at, (int, float)) or not (at >= 0):
+            return False
+        if row.get("source", "") not in ("", "gemini", "nvidia", "canned"):
             return False
         lines = row.get("lines")
         if not isinstance(lines, list) or not lines or len(lines) > MAX_LINES:
@@ -100,20 +138,36 @@ def _load(path: Path) -> list[dict[str, Any]] | object:
 
 
 def _prune(rows: list[dict[str, Any]], now: float) -> list[dict[str, Any]]:
-    return [row for row in rows if 0 <= now - float(row["at"]) <= RETENTION]
+    return [row for row in rows if -CLOCK_SLACK <= now - float(row["at"]) <= RETENTION]
+
+
+def _trim(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The newest PER_OTHER visits with each partner, newest LIMIT overall."""
+    seen: dict[str, int] = {}
+    keep: list[dict[str, Any]] = []
+    for row in reversed(rows):
+        other = str(row.get("other") or "")
+        seen[other] = seen.get(other, 0) + 1
+        if seen[other] <= PER_OTHER:
+            keep.append(row)
+    keep.reverse()
+    return keep[-LIMIT:]
 
 
 def _write(path: Path, rows: list[dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    hq_state.write_json_atomic(path, {"v": 1, "visits": rows[-LIMIT:]})
+    hq_state.write_json_atomic(path, {"v": 1, "visits": _trim(rows)})
 
 
 def record(path: Path, *, self_key: str, other_key: str, other_name: str, lines: list[dict[str, Any]],
-           now: float | None = None) -> dict[str, Any] | None:
+           now: float | None = None, source: str = "", visit_id: str = "",
+           answer: dict[str, str] | None = None) -> dict[str, Any] | None:
     """Append one completed visit to this assistant's own file.
 
     Lines use real assistant keys in ``who``. Invalid input is ignored; an
-    unreadable file is preserved and nothing is written.
+    unreadable file is preserved and nothing is written. A ``visit_id`` already in
+    the file is the same visit posted again (a retry whose answer was lost): it is
+    returned with ``duplicate`` set and nothing is written.
     """
     self_key, other_key = str(self_key or "").strip(), str(other_key or "").strip()
     if not self_key or not other_key or self_key == other_key:
@@ -137,9 +191,27 @@ def record(path: Path, *, self_key: str, other_key: str, other_name: str, lines:
         if rows is _UNREADABLE:
             return None
         rows = _prune(rows, stamp)
+        if visit_id:
+            known = next((r for r in rows if r.get("vid") == visit_id), None)
+            if known is not None:
+                return {**known, "duplicate": True}
+        thread = _thread(clean)
+        previous = max((r for r in rows if r.get("self") == self_key and r.get("other") == other_key),
+                       key=lambda r: float(r["at"]), default=None)
+        # How many visits in a row this thread has come back: it deepens while the
+        # new exchange still touches the last open point, and starts over otherwise.
+        depth = 0
+        if previous and previous.get("thread") and (
+                _words(previous["thread"]) & _words(" ".join(line["text"] for line in clean))):
+            depth = min(9, int(previous.get("depth") or 0) + 1)
         row = {"at": stamp, "self": self_key, "other": other_key,
                "other_name": str(other_name or other_key).strip()[:80] or other_key, "lines": clean,
-               "thread": _thread(clean)}
+               "thread": thread, "depth": depth,
+               "source": source if source in ("gemini", "nvidia", "canned") else ""}
+        if visit_id:
+            row["vid"] = visit_id
+        if isinstance(answer, dict) and answer.get("q") and answer.get("a"):
+            row["answer"] = {"q": _clean_text(answer["q"])[:120], "a": _clean_text(answer["a"])[:60]}
         rows.append(row)
         try:
             _write(path, rows)
@@ -163,7 +235,9 @@ def latest(path: Path, *, self_key: str, other_key: str | None = None,
         return None
     row = max(matches, key=lambda item: float(item["at"]))
     return {"at": row["at"], "other": row["other"], "other_name": row["other_name"],
-            "thread": row.get("thread") or "",
+            "thread": row.get("thread") or "", "source": row.get("source") or "",
+            "depth": int(row.get("depth") or 0),
+            "answer": row.get("answer") if isinstance(row.get("answer"), dict) else None,
             "lines": [{"who": line["who"], "text": line["text"]} for line in row["lines"]]}
 
 
@@ -212,7 +286,9 @@ def hint_detail(path: Path, *, self_key: str, query: Any, now: float | None = No
         if rows is _UNREADABLE:
             return "", None, 1
         rows = _prune(rows, stamp)
-    mine = [row for row in rows if row.get("self") == self_key]
+    # A scripted fallback line is not a shared memory: it is kept in the log for
+    # the daily record, but never offered as a recall.
+    mine = [row for row in rows if row.get("self") == self_key and row.get("source") != "canned"]
     named = [row for row in mine
              if re.search(r"\b" + re.escape(_fold(row["other_name"])) + r"\b", folded)]
     if named:
@@ -232,6 +308,7 @@ def hint_detail(path: Path, *, self_key: str, query: Any, now: float | None = No
     name = row["other_name"]
     other_quote = _quote(row["lines"], row["other"])
     self_quote = _quote(row["lines"], self_key)
+    answer = row.get("answer") if isinstance(row.get("answer"), dict) else None
     date = time.strftime("%d/%m/%Y", time.localtime(float(row["at"])))
     age = max(0.0, stamp - float(row["at"]))
     stale = stale_after is not None and age > float(stale_after)
@@ -249,6 +326,10 @@ def hint_detail(path: Path, *, self_key: str, query: Any, now: float | None = No
         parts.append(f"{name} a dit « {other_quote} ».")
     if self_quote:
         parts.append(f"Tu as répondu « {self_quote} ».")
+    if answer and answer.get("q") and answer.get("a"):
+        # What he actually said to her question: true whoever wrote the lines.
+        parts.append(f"Elle lui avait demandé « {_clean_text(answer['q'])[:120]} » ; "
+                     f"il avait répondu « {_clean_text(answer['a'])[:60]} ».")
     if stale:
         parts.append("Il y revient maintenant : tu peux la reprendre, sans réciter." if touched
                      else "Ne pas la rouvrir de soi-même ; à reprendre seulement si le fil y revient.")

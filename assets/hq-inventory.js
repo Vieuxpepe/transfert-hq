@@ -210,6 +210,8 @@
     project: "M14.5 6.5l3 3M4 20l4.5-1 10-10a2.1 2.1 0 0 0-3-3l-10 10zM4 4h6M4 8h3",
     open: "M14 4h6v6M20 4l-9 9M18 14v6H4V6h6",
     home: "M4 10.5 12 4l8 6.5V20H4z",
+    scan: "M4 8V5h3M17 5h3v3M20 16v3h-3M7 19H4v-3M7 9v6M10 9v6M13 9v6M16 9v6",
+    chat: "M4 5h16v11H9l-5 4z",
   };
 
   function el(tag, attrs, kids) {
@@ -489,6 +491,7 @@
         for (const p of pathOf(S.ix, t)) if (p.id !== t) S.open.add(p.id);
       }
     }
+    syncScan();
     for (const c of S.chips.querySelectorAll("[data-inv-filter]")) c.setAttribute("aria-pressed", String(c.getAttribute("data-inv-filter") === S.filter));
     const low = S.data.items.filter(isLow).length;
     const lowChip = S.chips.querySelector('[data-inv-filter="low"] .inv-count');
@@ -505,7 +508,7 @@
     S.app.classList.add("inv");
     const top = el("div", { class: "inv-top" });
     const sb = el("label", { class: "inv-search" }, [icon("search")]);
-    S.searchEl = el("input", { type: "search", placeholder: "Chercher un objet, une étiquette, une boîte…", "aria-label": "Chercher dans l'inventaire", autocomplete: "off", enterkeyhint: "search" });
+    S.searchEl = el("input", { type: "search", placeholder: (S.win && S.win.innerWidth < 360) ? "Chercher…" : "Chercher un objet, un lieu…", "aria-label": "Chercher dans l'inventaire", autocomplete: "off", enterkeyhint: "search" });
     S.searchEl.addEventListener("input", () => {
       S.q = S.searchEl.value;
       renderMain();
@@ -519,6 +522,13 @@
       }
     });
     sb.appendChild(S.searchEl);
+    // The scan button is always built and shown once the Inventoria chip exists (it may load after this page does).
+    S.scanBtn = el("button", { type: "button", class: "inv-scan", "aria-label": "Scanner un code-barres ou une étiquette", title: "Scanner un code-barres", hidden: true });
+    S.scanBtn.appendChild(icon("scan"));
+    S.scanBtn.addEventListener("click", (ev) => { ev.preventDefault(); const a = chipApi(); if (a && a.scan) a.scan(); });
+    sb.appendChild(S.scanBtn);
+    syncScan();
+    if (S.win && S.win.addEventListener) S.win.addEventListener("hq:inventoria-ready", syncScan);
     const actions = el("div", { class: "inv-actions" }, [
       btn("Objet", { cls: "inv-primary", icon: "plus", title: "Ajouter un objet ici", on: () => editItem(null) }),
       btn("Emplacement", { icon: "plus", title: "Ajouter un emplacement ici", on: () => editPlace(null) }),
@@ -660,10 +670,27 @@
         el("h3", { class: "inv-welcome-title", text: "Un tiroir pour chaque chose" }),
         el("p", { text: "Commence par une pièce ou un meuble, puis range des boîtes dedans. Chaque emplacement reçoit son étiquette QR : colle-la, scanne-la avec l'appareil photo de l'iPhone, et son contenu s'ouvre ici." }),
         btn("Créer un premier emplacement", { cls: "inv-primary", icon: "plus", on: () => editPlace(null) }),
+        welcomeShortcuts(),
       ]));
     }
     if (!S.sel && (S.ix.items.get("") || []).length && !kids.length) m.appendChild(itemGrid(S.ix.items.get(""), false));
     finishRender();
+  }
+
+  const chipApi = () => (S.win && S.win.HqInventoria) || null;
+
+  function syncScan() {
+    if (S.scanBtn) S.scanBtn.hidden = !(chipApi() && typeof chipApi().scan === "function");
+  }
+
+  /** Faster ways to start than building the tree by hand: say it, or photograph a shelf. Only offered when the chip is there. */
+  function welcomeShortcuts() {
+    const api = (S.win && S.win.HqInventoria) || null;
+    const row = el("div", { class: "inv-welcome-alt" });
+    if (!api) return row;
+    if (typeof api.say === "function") row.appendChild(btn("Dis-lui ce que tu as", { icon: "chat", on: () => api.say("") }));
+    if (typeof api.photo === "function") row.appendChild(btn("Photo d'une étagère", { icon: "camera", on: () => api.photo() }));
+    return row;
   }
 
   function flipCapture() {
@@ -990,6 +1017,13 @@
     if (!r.items.length && !r.places.length) {
       m.appendChild(el("p", { class: "inv-empty", text: "Rien ne correspond à « " + S.q.trim() + " »." }));
       return;
+    }
+    const top = r.items[0];
+    if (top) {
+      m.appendChild(el("p", { class: "inv-where", role: "status" }, [
+        el("strong", { text: top.name }), " — ", pathText(S.ix, top.place || ""),
+        " (" + top.qty + (top.unit ? " " + top.unit : "") + ")", r.items.length > 1 ? " · +" + (r.items.length - 1) : "",
+      ]));
     }
     if (r.places.length) {
       m.appendChild(el("h3", { class: "inv-h", text: "Emplacements" }));

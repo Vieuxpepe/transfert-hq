@@ -11,6 +11,20 @@ subject states for the session's own owner:
                                                             he names the subject, so it opens again
   cold_unasked  the same old turn, a message that only         -> the same cold row, but dated and shut:
                greets her ("Salut, ça va ?")                   “ne pas le rouvrir de soi-même”
+  repair_asked  an answer the Master corrected into another   -> one dated repair line, told once
+                one, then the corrected topic returning          and silent on the next return
+  repair_absent a store with no superseded answer              -> no repair line at all
+  repair_view   the same correction, read through the recall   -> the ledger lists topic, both
+                view (op memory), then asked again                answers, the date and both row
+                                                                  ids; the read spends nothing, so
+                                                                  the next real turn still says it
+  repair_pruned the replaced answer pruned out of the archive  -> the view names topic and date,
+                                                                  says "old" is missing, and the
+                                                                  page carries "non reconstruite"
+  repair_undated a journal correction with no change date      -> both texts named, "since"
+                                                                  reported missing
+  chapter_closed a project opened four days ago and closed     -> one dated chapter line, opened
+                two minutes ago                                   and closed, said once
   corrected  the hot turns plus two corrections about it -> tier withheld, rung answering (pushback 2)
   recovered  those corrections, then two turns of his own -> back to hot, pushback 0
   burst      four corrections, five returns back to back    -> hot again, pushback 0, same row as hot
@@ -66,6 +80,9 @@ DEVICE = "hqtestdevice01ab"
 # without being a recall request, which would hand the turn to the correction
 # episode instead of letting her own salience decide.
 MESSAGE = "La fermentation du chou, c'est intéressant."
+# The subject of the closed chapter, named by his message so the pick can only
+# land on it — the state is about how a closure reads, not about recall.
+CHAPTER_MESSAGE = "Où en est le dossier fiscal ?"
 COOKIE = "transfert_session"
 SUBJECT = "Parle-moi de la fermentation du chou."
 
@@ -113,6 +130,19 @@ VISIT_PAGE_STALE = {"tier": "cold", "rung": "cold", "priority": 40, "share": 380
 # recall page reaches the hot band exactly as a repeated subject does.
 VISIT_PAGE_REPEAT = {"tier": "hot", "rung": "hot", "priority": 98, "share": 530, "selected": True,
                      "basis": "visit_recall", "visit_page": True}
+# A correction that replaced an earlier answer: the repair line ranks by the
+# moment the answer changed (warm band, one open correction -> almost herself).
+REPAIR = {"tier": "almost_herself", "rung": "almost_herself", "priority": 68, "share": 431,
+          "selected": True, "basis": "repair", "pushback": 1}
+# The ledger read back, asked for in her own words: the same records, listed.
+# A statement, not a recall question: the episode slot is not handed the turn,
+# so the ledger is the one thing this message is asking for.
+LEDGER_QUERY = "Montre-moi tes corrections du journal."
+REPAIR_VIEW = {"view": "complete"}
+REPAIR_LOST_OLD = {"view": "old"}
+REPAIR_NO_DATE = {"view": "since"}
+REPAIR_SEED = {"old": "J'aime la fermentation du chou.",
+               "new": "Je n'aime pas la fermentation du chou."}
 VISIT_ELSE_LINES = [{"who": "else", "text": "On a reparlé du chou, elle avait des chiffres."},
                     {"who": "transferania", "text": "Je lui ai dit que le chou fermentait encore."}]
 VISIT_LINES = [{"who": "forgia", "text": "On a reparlé du chou et du bras robot."},
@@ -185,6 +215,28 @@ STATES = {
     "visit_stale": {"expected": VISIT_PAGE_STALE, "message": VISIT_QUERY,
                     "visit": {"ages": (20 * 3600,), "log": "own", "other": "forgia", "name": "Forgia",
                               "lines": VISIT_LINES, "page": True}},
+    # Growth over time: an answer the Master corrected into another one. The line
+    # is derived from the archive, told once, and silent once it has been told.
+    "repair_asked": {"expected": REPAIR, "message": MESSAGE,
+                     "repair": {"old": "J'aime la fermentation du chou.",
+                                "new": "Je n'aime pas la fermentation du chou."}},
+    "repair_absent": {"expected": {"empty": True, "selected": False}, "message": MESSAGE},
+    # The same correction, read through the recall view and then asked again.
+    "repair_view": {"expected": REPAIR_VIEW, "message": LEDGER_QUERY,
+                    "repair": REPAIR_SEED, "view": {"seed": "complete"}},
+    # The archive it can no longer fully rebuild: named, not guessed.
+    "repair_pruned": {"expected": REPAIR_LOST_OLD, "message": LEDGER_QUERY,
+                      "repair": REPAIR_SEED, "view": {"seed": "prune"}},
+    "repair_undated": {"expected": REPAIR_NO_DATE, "message": LEDGER_QUERY,
+                       "repair": REPAIR_SEED, "view": {"seed": "undated"}},
+    # A recorded outcome is a past chapter, not a pending thread: dated from its
+    # opening, read from the stored episode that closed it, and said once.
+    "chapter_closed": {"expected": {**ph.salience(120, 1), "basis": "chapter", "selected": True},
+                       "message": CHAPTER_MESSAGE,
+                       "chapter": {"topic": "le dossier fiscal",
+                                   "opening": "Je travaille sur le dossier fiscal.",
+                                   "outcome": "C'est fait pour le dossier fiscal.",
+                                   "age": 4 * 86400}},
     "visit_repeat": {"expected": VISIT_PAGE_REPEAT, "message": VISIT_QUERY,
                      "visit": {"ages": (3600, 7200, 10800), "log": "own", "other": "forgia",
                                "name": "Forgia", "lines": VISIT_LINES, "page": True}},
@@ -284,6 +336,8 @@ def pinned(usage: dict, contents: list, line: str = "") -> dict:
         "hint_in_payload": bool(line) and line in text,
         "hint_text": next((part["text"] for m in contents for part in m.get("parts", [])
                            if isinstance(part.get("text"), str) and line and line in part["text"]), ""),
+        "page_text": "\n".join(part["text"] for m in contents for part in m.get("parts", [])
+                                if isinstance(part.get("text"), str)),
     }
 
 
@@ -292,9 +346,40 @@ def owner_for_token(token: str) -> str:
     return ((raw.get(token) if isinstance(raw, dict) else None) or {}).get("user") or "admin"
 
 
+def _view_seed(data: dict, seed: str, live_id: str) -> dict:
+    """Make the archive thin in one specific, honest way. Nothing is invented."""
+    if seed == "complete":
+        return data
+    key = next((m.get("key") for m in data["memories"] if m.get("id") == live_id), "")
+    if seed == "prune":
+        # The replaced answer was pruned: the new words and their date survive.
+        data["memories"] = [m for m in data["memories"] if m.get("status") != "superseded"]
+        return data
+    if seed == "undated":
+        # A journal correction from before ``corrected_at`` existed: both texts
+        # survive, the moment the answer changed was never kept.
+        old = next((m for m in data["memories"] if m.get("key") == key
+                    and m.get("status") == "superseded"), None)
+        live = next((m for m in data["memories"] if m.get("key") == key
+                     and m.get("status") == "active"), {})
+        topic = live.get("subject") or ""
+        data["memories"] = [m for m in data["memories"] if m.get("key") != key]
+        data["episodes"].extend([
+            {"id": "verify-old-side", "text": (old or {}).get("text") or "",
+             "kind": "interest", "topic": topic, "source_device": DEVICE, "source_key": None,
+             "at": time.time() - 3600, "evidence": "user_statement", "status": "superseded"},
+            {"id": "verify-new-side", "text": live.get("text") or "",
+             "kind": "interest", "topic": topic, "source_device": DEVICE, "source_key": None,
+             "at": time.time() - 3600, "evidence": "user_correction", "status": "active"}])
+        return data
+    return data
+
+
 def capture_state(opener, owner: str, live_cfg: dict, ages: tuple = (), corrections: int = 0,
                   correction_age: float = 600, *, message: str = MESSAGE,
-                  visit: dict | None = None, feedback: tuple = ()) -> dict:
+                  visit: dict | None = None, feedback: tuple = (),
+                  repair: dict | None = None, view: dict | None = None,
+                  chapter: dict | None = None) -> dict:
     """Seed one state, capture live + in-process, restore every store it touched."""
     path = self_path(owner)
     store = memory_path(owner)
@@ -346,6 +431,18 @@ def capture_state(opener, owner: str, live_cfg: dict, ages: tuple = (), correcti
                     visits.record(logs[visit["other"]], self_key=visit["other"],
                                   other_key="transferania", other_name="Transferania",
                                   lines=visit["lines"], now=stamp)
+            if repair:
+                # Growth over time: an answer she used to give, then the Master's
+                # correction replacing it. Both texts stay in the archive.
+                memory.observe_user(repair["old"], DEVICE)
+                wanted = memory.fold(repair["old"]).strip(" .!")
+                target = next((m for m in memory.snapshot()["memories"]
+                               if memory.fold(m["text"]).strip(" .!") == wanted), None)
+                if target is None:
+                    raise RuntimeError(f"repair seed: {repair['old']!r} did not become a memory")
+                memory.correct(target["id"], repair["new"])
+                if view:
+                    memory._save(_view_seed(memory._load(), str(view.get("seed") or ""), target["id"]))
             if corrections:
                 # The archive keeps one active correction per subject; the earlier
                 # ones stay as superseded evidence of the repetition.
@@ -359,12 +456,41 @@ def capture_state(opener, owner: str, live_cfg: dict, ages: tuple = (), correcti
                         "at": time.time() - correction_age, "evidence": "user_correction",
                         "status": "active" if index == corrections - 1 else "superseded"})
                 memory._save(mem)
+            if chapter:
+                # A closed chapter, held in the archive itself: an opening episode
+                # and the outcome episode that closed it, both dated.
+                mem = memory._load()
+                mem["episodes"].append({
+                    "id": "verify-chapter-opening", "text": chapter["opening"], "kind": "interest",
+                    "topic": chapter["topic"], "source_device": DEVICE, "source_key": None,
+                    "at": time.time() - float(chapter["age"]), "evidence": "explicit_statement",
+                    "status": "active"})
+                mem["episodes"].append({
+                    "id": "verify-chapter-outcome", "text": chapter["outcome"], "kind": "outcome",
+                    "topic": chapter["topic"], "source_device": DEVICE, "source_key": None,
+                    "at": time.time() - 120, "evidence": "explicit_statement", "status": "active"})
+                memory._save(mem)
         # Read-only salience: the same helper the pipeline uses, without
         # recording a turn that would take the continuity slot from her line.
         with memory.owner_context(owner), memory.memory_scope("transferania"):
             archive = memory._load().get("episodes", [])
         pushback = [{"topic": e.get("topic") or "", "text": e.get("text") or "", "at": e.get("at")}
                     for e in archive if e.get("kind") == "correction"]
+        # Read-only: the repair records the archive already implies, unmarked, so
+        # the live and in-process previews stay deterministic.
+        repairs = []
+        if repair:
+            with memory.owner_context(owner), memory.memory_scope("transferania"):
+                repairs = [dict(row, quoted=False) for row in memory.repair_records(memory._load(), time.time())]
+            out["repair"] = repairs[0] if repairs else None
+        chapters = []
+        if chapter:
+            with memory.owner_context(owner), memory.memory_scope("transferania"):
+                chapters = [dict(row, quoted=False)
+                            for row in memory.chapter_records(memory._load(), time.time())]
+            wanted = memory.fold(chapter["topic"])
+            out["chapter"] = next((row for row in chapters
+                                   if memory.fold(row["topic"]) == wanted), None)
         if visit and visit.get("page"):
             # A visit recall owns the continuity slot before her own salience is
             # even consulted, so this state has no salience of its own to report.
@@ -376,13 +502,22 @@ def capture_state(opener, owner: str, live_cfg: dict, ages: tuple = (), correcti
             out["salience"] = {**ph.salience(visit_age, visit_repeats), "basis": "visit_recall"}
         else:
             detail = ph.hint_detail("transferania", message, owner=owner, now=time.time(),
-                                    pushback=pushback)
+                                    pushback=pushback, repairs=repairs, chapters=chapters)
             out["salience"] = {k: detail[k] for k in ("tier", "rung", "base", "score", "priority",
                                                       "share", "basis", "age_s", "repeats", "pushback",
                                                       "corrected", "progress", "withhold")
                                if k in detail}
             out["line"] = detail.get("line") or ""
 
+        if view:
+            # The recall surface the operator actually reads: the same ledger,
+            # listed. Read before any real turn, so what follows proves the read
+            # cost nothing.
+            status, body, _ = post(opener, "/api/ai", data={"action": "transferania", "op": "memory",
+                                                           "device_id": DEVICE})
+            out["view_status"] = status
+            out["view"] = (json.loads(body.decode("utf-8")).get("repairs")
+                           if status == 200 else None)
         payload = {"action": "transferania", "op": "context_preview", "kind": "chat",
                    "device_id": DEVICE, "persona": "warm", "message": message}
         status, body, _ = post(opener, "/api/ai", data=payload)
@@ -398,6 +533,28 @@ def capture_state(opener, owner: str, live_cfg: dict, ages: tuple = (), correcti
         out["inproc_status"] = code
         out["inproc"] = pinned(inproc["context_usage"], inproc["contents"], out["line"])
         out["system_identical"] = live["system"] == inproc["system"]
+        if repair:
+            # The line is told once, on a real turn; a second return has to stay quiet.
+            with memory.owner_context(owner), memory.memory_scope("transferania"):
+                first = memory.context_packet(message, conversation_text=message, reserve_followup=True)
+                second = memory.context_packet(message, conversation_text=message, reserve_followup=True)
+            out["repair_once"] = {"first": first.get("repair"), "second": second.get("repair"),
+                                  "line": first.get("continuity") or "",
+                                  "second_line": second.get("continuity") or ""}
+        if chapter:
+            # The line is said once, on a real turn; a second return stays quiet.
+            with memory.owner_context(owner), memory.memory_scope("transferania"):
+                first = memory.context_packet(message, conversation_text=message, reserve_followup=True)
+                second = memory.context_packet(message, conversation_text=message, reserve_followup=True)
+            out["chapter_once"] = {"first": first.get("chapter"), "second": second.get("chapter"),
+                                   "line": first.get("continuity") or "",
+                                   "second_line": second.get("continuity") or ""}
+        if view and view.get("seed") == "complete":
+            # A real turn about the corrected subject, after the read: the one-time
+            # line must still be there.
+            with memory.owner_context(owner), memory.memory_scope("transferania"):
+                after_view = memory.context_packet(MESSAGE, conversation_text=MESSAGE, reserve_followup=True)
+            out["view_then_turn"] = after_view.get("repair")
     finally:
         def restore(file: Path, saved) -> None:
             # Put the bytes back and give the file its old timestamps, so a store
@@ -425,9 +582,77 @@ def capture_state(opener, owner: str, live_cfg: dict, ages: tuple = (), correcti
     return out
 
 
+def check_view(name: str, expected: dict, result: dict, failures: list[str]) -> None:
+    """The recall view lists what the ledger holds, and says what it no longer does."""
+    if result.get("view_status") != 200:
+        failures.append(f"{name}: the recall view answered {result.get('view_status')}")
+        return
+    view = result.get("view") or {}
+    rows = view.get("rows") or []
+    if not rows:
+        failures.append(f"{name}: the recall view listed no repair")
+        return
+    row, want = rows[0], expected["view"]
+    if memory.fold(row.get("topic") or "") != "fermentation du chou":
+        failures.append(f"{name}: the view names {row.get('topic')!r} instead of the corrected topic")
+    if row.get("basis") != "repair":
+        failures.append(f"{name}: the view row is not marked with basis repair")
+    evidence = row.get("evidence") or {}
+    if not evidence.get("live"):
+        failures.append(f"{name}: the view does not name the row that carries the new answer")
+    shown = (result["live"].get("page_text") or "")
+    if want == "complete":
+        if not row.get("complete") or row.get("missing"):
+            failures.append(f"{name}: a fully held repair is not reported as complete")
+        if "aime la fermentation" not in memory.fold(row.get("old") or ""):
+            failures.append(f"{name}: the view lost the old answer")
+        if "n'aime pas la fermentation" not in memory.fold(row.get("new") or ""):
+            failures.append(f"{name}: the view lost the new answer")
+        if not evidence.get("superseded"):
+            failures.append(f"{name}: the view does not name the row that carried the old answer")
+        if evidence.get("superseded") == evidence.get("live"):
+            failures.append(f"{name}: the view names one row as both sides of the repair")
+        since = row.get("since")
+        if not isinstance(since, (int, float)) or not 0 <= time.time() - float(since) <= 3600:
+            failures.append(f"{name}: the view dates the change as {since!r}")
+        if "RÉPARATIONS DU JOURNAL" not in shown:
+            failures.append(f"{name}: the ledger page did not reach the packet")
+        if "journal : " + str(evidence.get("live"))[:8] not in shown:
+            failures.append(f"{name}: the page does not carry the evidence ids")
+        if (result.get("view_then_turn") or {}).get("basis") != "repair":
+            failures.append(f"{name}: reading the view spent the one-time line")
+        return
+    if row.get("complete"):
+        failures.append(f"{name}: a ledger it cannot rebuild is reported as complete")
+    if want not in (row.get("missing") or []):
+        failures.append(f"{name}: the view does not say {want!r} is missing")
+    if want == "old":
+        if row.get("old") is not None:
+            failures.append(f"{name}: the view invented an old answer it does not hold")
+        if not row.get("since"):
+            failures.append(f"{name}: the view lost the date it does hold")
+    if want == "since":
+        if row.get("since") is not None:
+            failures.append(f"{name}: the view dated a change it never recorded")
+        if not row.get("old"):
+            failures.append(f"{name}: the view lost the old answer it does hold")
+    if "non reconstruite" not in shown:
+        failures.append(f"{name}: the page does not say the repair is incomplete")
+
+
 def check_state(name: str, expected: dict, result: dict, failures: list[str]) -> None:
     live, inproc = result["live"], result["inproc"]
     rows = live["personhood"]
+    if expected.get("view"):
+        check_view(name, expected, result, failures)
+        return
+    if expected.get("empty"):
+        # The legitimate silence: nothing superseded, so nothing may be claimed.
+        if result.get("line") or rows:
+            failures.append(f"{name}: a line was offered with nothing to derive it from")
+        if "RÉPARATION" in (live.get("hint_text") or ""):
+            failures.append(f"{name}: a repair was printed without a superseded answer")
+        return
     if not rows and not expected.get("withhold"):
         failures.append(f"{name}: no personhood row in the live manifest")
         return
@@ -453,6 +678,55 @@ def check_state(name: str, expected: dict, result: dict, failures: list[str]) ->
         failures.append(f"{name}: climb progress {result['salience'].get('progress')} != {expected['progress']}")
     if "rung" in expected and result["salience"].get("rung") != expected["rung"]:
         failures.append(f"{name}: rung {result['salience'].get('rung')} != {expected['rung']}")
+    if expected.get("basis") == "repair":
+        # The line must name both answers and the moment the answer changed,
+        # and it must be the line the payload really carries.
+        told = result.get("repair") or {}
+        shown = result.get("printed_line") or ""
+        if not result.get("line", "").startswith("RÉPARATION — "):
+            failures.append(f"{name}: the repair line does not announce itself")
+        for piece in ("je disais", "je dis"):
+            if piece not in result.get("line", ""):
+                failures.append(f"{name}: the repair line does not say {piece!r}")
+        if told.get("old") and told["old"].split()[0] not in result.get("line", ""):
+            failures.append(f"{name}: the repair line does not name the old answer")
+        if told.get("new") and told["new"].split()[0] not in result.get("line", ""):
+            failures.append(f"{name}: the repair line does not name the new answer")
+        if told.get("since") and ph._date(float(told["since"])) not in result.get("line", ""):
+            failures.append(f"{name}: the repair line does not date the change")
+        if len(result.get("line", "").encode("utf-8")) > ph.MAX_HINT_BYTES:
+            failures.append(f"{name}: the repair line overruns the hint budget")
+        if shown and not shown.startswith("RÉPARATION — "):
+            failures.append(f"{name}: the printed line is not the repair")
+    if expected.get("basis") == "chapter":
+        told = result.get("chapter") or {}
+        line = result.get("line") or ""
+        printed = live.get("hint_text") or ""
+        if not line.startswith("CHAPITRE CLOS — "):
+            failures.append(f"{name}: the chapter line does not announce itself")
+        if not told:
+            failures.append(f"{name}: the chapter was not read from stored episodes")
+        else:
+            for stamp in (told.get("opened_at"), told.get("closed_at")):
+                if stamp and ph._date(float(stamp)) not in line:
+                    failures.append(f"{name}: the chapter line does not date its own evidence")
+            if "jours" not in line:
+                failures.append(f"{name}: the chapter line does not say how long it ran")
+            if told.get("topic", "").split()[-1] not in line:
+                failures.append(f"{name}: the chapter line does not name the closed subject")
+            if not str(told.get("closed_id") or "").startswith("verify-chapter-outcome"):
+                failures.append(f"{name}: the chapter does not point at the episode that closed it")
+        if len(line.encode("utf-8")) > ph.MAX_HINT_BYTES:
+            failures.append(f"{name}: the chapter line overruns the hint budget")
+        once = result.get("chapter_once") or {}
+        if (once.get("first") or {}).get("basis") != "chapter":
+            failures.append(f"{name}: a real turn about the closed subject did not say the chapter")
+        if once.get("second") is not None:
+            failures.append(f"{name}: the chapter was said twice")
+        if "CHAPITRE CLOS" not in (once.get("line") or ""):
+            failures.append(f"{name}: the reserved turn did not carry the chapter line")
+        if "CHAPITRE CLOS" not in printed:
+            failures.append(f"{name}: the printed payload does not carry the chapter line")
     if expected.get("share") is not None and (result["salience"].get("share") or 0) != expected["share"] \
             and not expected.get("withhold"):
         failures.append(f"{name}: in-process share {result['salience'].get('share')} != {expected['share']}")
@@ -549,14 +823,16 @@ def main() -> int:
         expected = spec["expected"]
         result = capture_state(opener, owner, live_cfg, spec.get("ages", ()), spec.get("corrections", 0),
                                spec.get("correction_age", 600), message=spec.get("message", MESSAGE),
-                               visit=spec.get("visit"), feedback=spec.get("feedback", ()))
+                               visit=spec.get("visit"), feedback=spec.get("feedback", ()),
+                               repair=spec.get("repair"), view=spec.get("view"),
+                               chapter=spec.get("chapter"))
         check_state(name, expected, result, failures)
         report["states"][name] = {
             "expected": expected,
             "seeded_ages_s": result["ages"],
             "salience": result["salience"],
             "live": {k: result["live"][k] for k in ("budget", "estimate", "totals", "personhood",
-                                                    "hint_in_payload")},
+                                                    "hint_in_payload", "page_text")},
             "inproc": {k: result["inproc"][k] for k in ("budget", "estimate", "totals", "personhood",
                                                         "hint_in_payload")},
             "read_only": result.get("read_only"),
@@ -571,6 +847,13 @@ def main() -> int:
             "repeats": result["salience"].get("repeats"),
             "line_bytes": len(result.get("line", "").encode("utf-8")),
             "printed_line": result.get("printed_line", ""),
+            "repair": result.get("repair"),
+            "repair_once": result.get("repair_once"),
+            "chapter": result.get("chapter"),
+            "chapter_once": result.get("chapter_once"),
+            "view": result.get("view"),
+            "view_status": result.get("view_status"),
+            "view_then_turn": result.get("view_then_turn"),
             "hint_excerpt": result["live"]["hint_text"][:150],
             "preview_status": result.get("preview_status"),
         }
@@ -686,6 +969,24 @@ def main() -> int:
         if not (cold["personhood"][0]["selected"] and hot["personhood"][0]["selected"]):
             failures.append("a named state was dropped from the packet")
 
+    # Growth over time: the correction is told once, and only when the corrected
+    # topic comes back; a store with no superseded answer says nothing.
+    repair_state = report["states"].get("repair_asked") or {}
+    once = repair_state.get("repair_once") or {}
+    if not once.get("first"):
+        failures.append("repair: the corrected topic did not yield a repair on a real turn")
+    elif once["first"].get("basis") != "repair":
+        failures.append("repair: the packet repair is not marked with basis repair")
+    if once.get("second"):
+        failures.append("repair: the line repeated on a second return")
+    if "RÉPARATION" not in (once.get("line") or ""):
+        failures.append("repair: the told line does not announce itself")
+    if "RÉPARATION" in (once.get("second_line") or ""):
+        failures.append("repair: the second return still carries the line")
+    absent = report["states"].get("repair_absent") or {}
+    if absent.get("repair") or "RÉPARATION" in (absent.get("printed_line") or ""):
+        failures.append("repair: a line appeared without a superseded answer")
+
     after = freshness(opener)
     report["pending_after"] = after.get("pending")
     if after.get("pending") is not False:
@@ -698,7 +999,7 @@ def main() -> int:
         for item in failures:
             print("  -", item)
         return 1
-    print("verify_live_personhood: OK (hot, warm, stale, cold_unasked, corrected, recovered, burst, climbing, deep, "
+    print("verify_live_personhood: OK (hot, warm, stale, cold_unasked, corrected, recovered, burst, climbing, repair_asked, repair_absent, repair_view, repair_pruned, repair_undated, chapter_closed, deep, "
           "deep_warm, deep_hot, fil_fresh, fil_stale, fil_repeat, fil_else_fresh, fil_else_stale, "
           "fil_else_repeat, point_fresh, point_stale, visit_fresh, visit_stale, visit_repeat, "
           "visit_else_fresh, visit_else_stale and visit_else_repeat states)")

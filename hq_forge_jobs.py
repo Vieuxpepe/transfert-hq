@@ -375,7 +375,7 @@ def usual_duration(root: Path, query: str) -> tuple[int, dict]:
     key = _bucket(number("width"), number("height"), number("steps"), (qs.get("hires") or ["0"])[0] == "1")
     if key is None:
         return 400, {"error": _MESSAGES["validation"], "code": "validation"}
-    count = max(1, min(2, number("n_iter") or 1))
+    count = max(1, min(4, number("n_iter") or 1))
     with _LOCK:
         table = _load(root).get("durations")
     rows = table.get(key, []) if isinstance(table, dict) else []
@@ -444,7 +444,17 @@ def _int(value, low: int, high: int) -> int | None:
     return value
 
 
-def submission_body(settings: dict, task_id: str) -> dict:
+def _same_checkpoint(requested: str | None, loaded: str | None) -> bool:
+    if not isinstance(requested, str) or not isinstance(loaded, str):
+        return False
+    req = requested.strip()
+    cur = loaded.strip()
+    if not req or not cur:
+        return False
+    return req == cur or req.split(" [", 1)[0].strip() == cur.split(" [", 1)[0].strip()
+
+
+def submission_body(settings: dict, task_id: str, loaded_model: str | None = None) -> dict:
     if not TASK_RE.fullmatch(task_id):
         raise ValueError("task")
     body = {
@@ -467,7 +477,7 @@ def submission_body(settings: dict, task_id: str) -> dict:
         "force_task_id": task_id,
         "override_settings_restore_afterwards": True,
     }
-    if settings.get("checkpoint"):
+    if settings.get("checkpoint") and not _same_checkpoint(settings.get("checkpoint"), loaded_model):
         body["override_settings"] = {"sd_model_checkpoint": settings["checkpoint"]}
     if settings.get("subseed_strength"):
         body["subseed"] = settings["subseed"]
@@ -556,7 +566,7 @@ def _validate(data: dict, catalog: dict) -> dict | tuple:
     variation = _variation(data)
     if variation is None:
         return ("validation",)
-    n_iter = _int(data.get("n_iter", 1), 1, VARIATION_MAX if variation else 2)
+    n_iter = _int(data.get("n_iter", 1), 1, VARIATION_MAX if variation else 4)
     seed = _int(data.get("seed", -1), -1, 2**32 - 1)
     if variation and (seed is None or seed < 0):
         return ("validation",)  # a variation always keeps the original, fixed seed
@@ -1057,7 +1067,7 @@ def _fail(root: Path, job_id: str, token: int, code: str, *, http_status: int | 
     )
 
 
-def _wait_for_idle(root: Path, job_id: str, token: int, transport) -> bool:
+def _wait_for_idle(root: Path, job_id: str, token: int, transport, probe_state: dict | None = None) -> bool:
     """Hold a queued job while Forge works for someone else. Read-only: only GET progress
     is used; nothing is interrupted. Returns False when the job must not be sent."""
     deadline = time.monotonic() + _wait_timeout
@@ -1073,6 +1083,8 @@ def _wait_for_idle(root: Path, job_id: str, token: int, transport) -> bool:
         except Exception:
             upstream = {"forge": "error"}
         if upstream.get("forge") == "ready":
+            if isinstance(probe_state, dict):
+                probe_state["model"] = upstream.get("model")
             _mutate(root, job_id, token, waiting=False, message="En file.")
             return True
         if upstream.get("forge") != "busy":
@@ -1085,15 +1097,22 @@ def _wait_for_idle(root: Path, job_id: str, token: int, transport) -> bool:
         time.sleep(_poll_interval)
 
 
-def _run(root: Path, job_id: str, token: int, transport, inline_settings=None, session_token: str | None = None) -> None:
-    if not _wait_for_idle(root, job_id, token, transport):
-        return
+def _run(root: Path, job_id: str, token: int, transport, inline_settings=None, session_token: str | None = None, loaded_model: str | None = None, waiting: bool = False) -> None:
+    if waiting:
+        probe_state = {"model": loaded_model}
+        if not _wait_for_idle(root, job_id, token, transport, probe_state):
+            return
+        loaded_model = probe_state.get("model")
     with _LOCK:
         data = _load(root)
         job = _find(data, job_id)
         if job is None or job.get("state") != "queued":
             return
-        job["state"] = "starting"
+        if _before_submit is not None:
+            job["state"] = "starting"
+        else:
+            job["submitted"] = True
+            job["state"] = "generating"
         job["updated"] = _now()
         _save(root, data)
         settings = dict(inline_settings) if inline_settings is not None else dict(job["settings"])
@@ -1102,15 +1121,21 @@ def _run(root: Path, job_id: str, token: int, transport, inline_settings=None, s
         task_id = job["task_id"]
     if _before_submit is not None:
         _before_submit(job_id)
-    with _LOCK:
-        data = _load(root)
-        job = _find(data, job_id)
-        if job is None or job.get("state") == "cancelled":
-            return
-        job["submitted"] = True
-        job["state"] = "generating"
-        job["updated"] = _now()
-        _save(root, data)
+        with _LOCK:
+            data = _load(root)
+            job = _find(data, job_id)
+            if job is None or job.get("state") == "cancelled":
+                return
+            job["submitted"] = True
+            job["state"] = "generating"
+            job["updated"] = _now()
+            _save(root, data)
+    if transport is None and forge._test_transport is None:
+        try:
+            import hq_voice_chatterbox as cb
+            cb.release_vram_if_idle()
+        except Exception:
+            pass
     stop = threading.Event()
 
     def poll() -> None:
@@ -1153,7 +1178,7 @@ def _run(root: Path, job_id: str, token: int, transport, inline_settings=None, s
             stats.record(root, {**base, "count": settings.get("n_iter")})
 
     try:
-        body = submission_body(settings, task_id)
+        body = submission_body(settings, task_id, loaded_model=loaded_model)
         parsed = forge.post_json(forge.SUBMIT_PATH, body, timeout=_job_timeout, transport=transport)
     except forge._Probe as exc:
         stop.set()
@@ -1385,7 +1410,7 @@ def create_job(root: Path, data: dict, idempotency_key: str, *, transport=None, 
             _job_vaults.pop(next(iter(_job_vaults)))
     threading.Thread(
         target=_run,
-        args=(root, job_id, token, transport, inline, session_token),
+        args=(root, job_id, token, transport, inline, session_token, upstream.get("model"), waiting),
         name="hq-forge-job",
         daemon=True,
     ).start()

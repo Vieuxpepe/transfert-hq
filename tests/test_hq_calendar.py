@@ -9,6 +9,7 @@ import json
 import shutil
 import tempfile
 import threading
+import time
 import unittest
 from datetime import datetime, timedelta
 from http.server import ThreadingHTTPServer
@@ -102,6 +103,23 @@ class ModelTests(unittest.TestCase):
         self.assertEqual(hq_calendar.summary()["next_mine"]["title"], "Cours")
         self.assertEqual(len(body["recent"]), 2)
 
+    def test_next_occurrence_keeps_series_scope(self):
+        saved = hq_calendar.save_event(self._payload(
+            title="Série proche",
+            start="2026-09-28T14:00",
+            end="2026-09-28T15:00",
+            recurrence={"frequency": "daily", "weekdays": [], "until": "2026-09-30", "count": None},
+        ))
+        nxt = hq_calendar.next_manual()
+        self.assertEqual(nxt["title"], "Série proche")
+        self.assertEqual(nxt["start"], "2026-09-28T14:00")
+        self.assertEqual(nxt["id"], saved["id"] + "@20260928T1400")
+        self.assertEqual(nxt["series_id"], saved["id"])
+        self.assertEqual(nxt["series_start"], saved["start"])
+        self.assertEqual(nxt["series_end"], saved["end"])
+        self.assertEqual(nxt["recurrence"], saved["recurrence"])
+        self.assertEqual(hq_calendar.summary()["next_mine"]["series_id"], saved["id"])
+
     def test_streak_counts_fully_done_days(self):
         def ev(day, done, hour=8):
             saved = hq_calendar.save_event(self._payload(start=f"2026-09-{day}T{hour:02d}:00", end=f"2026-09-{day}T{hour:02d}:30"))
@@ -190,6 +208,125 @@ class ModelTests(unittest.TestCase):
         self.assertTrue(saved["all_day"])
         self.assertEqual(saved["end"], "2026-09-30")
         self.assertNotIn("terminal_id", saved)
+
+    def test_recurrence_daily_boundaries_and_stable_occurrences(self):
+        saved = hq_calendar.save_event(self._payload(
+            title="Routine",
+            start="2026-12-30T14:00",
+            end="2026-12-30T15:00",
+            recurrence={"frequency": "daily", "weekdays": [], "until": "2027-01-02", "count": None},
+        ))
+        self.assertEqual(saved["recurrence"], {
+            "frequency": "daily", "weekdays": [], "until": "2027-01-02", "count": None,
+        })
+        body = hq_calendar.query(datetime(2026, 12, 1), datetime(2027, 2, 1))
+        occurrences = [item for item in body["items"] if item.get("series_id") == saved["id"]]
+        self.assertEqual([item["start"] for item in occurrences], [
+            "2026-12-30T14:00", "2026-12-31T14:00", "2027-01-01T14:00", "2027-01-02T14:00",
+        ])
+        self.assertEqual([item["end"] for item in occurrences], [
+            "2026-12-30T15:00", "2026-12-31T15:00", "2027-01-01T15:00", "2027-01-02T15:00",
+        ])
+        self.assertEqual(len({item["id"] for item in occurrences}), 4)
+        self.assertTrue(all(item["series_start"] == saved["start"] for item in occurrences))
+        self.assertTrue(all(item["series_end"] == saved["end"] for item in occurrences))
+        self.assertTrue(all(item["recurrence"] == saved["recurrence"] for item in occurrences))
+        self.assertEqual([item for item in body["items"] if item.get("id") == saved["id"]], [])
+        before = hq_calendar.query(datetime(2026, 11, 1), datetime(2026, 12, 30))
+        after = hq_calendar.query(datetime(2027, 1, 3), datetime(2027, 2, 1))
+        self.assertFalse([item for item in before["items"] if item.get("series_id")])
+        self.assertFalse([item for item in after["items"] if item.get("series_id")])
+
+    def test_recurrence_weekdays_weekly_count_and_dst(self):
+        weekdays = hq_calendar.save_event(self._payload(
+            title="Bureau",
+            start="2026-10-02T09:00",
+            end="2026-10-02T10:00",
+            recurrence={"frequency": "weekdays", "weekdays": [], "until": "2026-10-12", "count": None},
+        ))
+        body = hq_calendar.query(datetime(2026, 10, 1), datetime(2026, 10, 13))
+        starts = [item["start"] for item in body["items"] if item.get("series_id") == weekdays["id"]]
+        self.assertEqual(starts, [
+            "2026-10-02T09:00", "2026-10-05T09:00", "2026-10-06T09:00", "2026-10-07T09:00",
+            "2026-10-08T09:00", "2026-10-09T09:00", "2026-10-12T09:00",
+        ])
+
+        weekly = hq_calendar.save_event(self._payload(
+            title="Atelier",
+            start="2026-12-30T14:00",
+            end="2026-12-30T15:00",
+            recurrence={"frequency": "weekly", "weekdays": [0, 2], "until": None, "count": 4},
+        ))
+        body = hq_calendar.query(datetime(2026, 12, 1), datetime(2027, 2, 1))
+        starts = [item["start"] for item in body["items"] if item.get("series_id") == weekly["id"]]
+        self.assertEqual(starts, [
+            "2026-12-30T14:00", "2027-01-04T14:00", "2027-01-06T14:00", "2027-01-11T14:00",
+        ])
+        limited = hq_calendar.query(datetime(2027, 1, 12), datetime(2027, 2, 1))
+        self.assertFalse([item for item in limited["items"] if item.get("series_id") == weekly["id"]])
+
+        dst = hq_calendar.save_event(self._payload(
+            title="Nuit",
+            start="2026-03-07T02:30",
+            end="2026-03-07T03:30",
+            recurrence={"frequency": "daily", "weekdays": [], "until": "2026-03-10", "count": None},
+        ))
+        body = hq_calendar.query(datetime(2026, 3, 6), datetime(2026, 3, 12))
+        starts = [item["start"] for item in body["items"] if item.get("series_id") == dst["id"]]
+        self.assertEqual(starts, [
+            "2026-03-07T02:30", "2026-03-08T02:30", "2026-03-09T02:30", "2026-03-10T02:30",
+        ])
+
+    def test_recurrence_all_day_multi_day_and_series_edit_delete(self):
+        saved = hq_calendar.save_event(self._payload(
+            title="Fin de semaine",
+            all_day=True,
+            start="2026-12-31",
+            end="2027-01-02",
+            recurrence={"frequency": "daily", "weekdays": [], "until": "2027-01-01", "count": None},
+        ))
+        body = hq_calendar.query(datetime(2026, 12, 30), datetime(2027, 1, 4))
+        occurrences = [item for item in body["items"] if item.get("series_id") == saved["id"]]
+        self.assertEqual([(item["start"], item["end"]) for item in occurrences], [
+            ("2026-12-31", "2027-01-02"), ("2027-01-01", "2027-01-03"),
+        ])
+        updated = hq_calendar.save_event(self._payload(
+            id=saved["id"], title="Fin de semaine allongée", all_day=True,
+            start="2026-12-31", end="2027-01-02",
+            recurrence={"frequency": "weekly", "weekdays": [3], "until": None, "count": 2},
+        ), expected_rev=saved["rev"])
+        self.assertEqual(updated["recurrence"]["frequency"], "weekly")
+        disk = json.loads((self.tmp / "hq_calendar.json").read_text(encoding="utf-8"))
+        self.assertEqual(len(disk["events"]), 1)
+        body = hq_calendar.query(datetime(2026, 12, 30), datetime(2027, 1, 15))
+        occurrences = [item for item in body["items"] if item.get("series_id") == saved["id"]]
+        self.assertEqual([item["start"] for item in occurrences], ["2026-12-31", "2027-01-07"])
+        hq_calendar.delete_event(saved["id"], updated["rev"])
+        body = hq_calendar.query(datetime(2026, 12, 30), datetime(2027, 1, 15))
+        self.assertFalse([item for item in body["items"] if item.get("series_id") == saved["id"]])
+
+    def test_recurrence_validation_and_raw_strings(self):
+        raw = {"frequency": "daily", "weekdays": [], "until": None, "count": None}
+        for key in ("rrule", "cron"):
+            with self.assertRaises(hq_calendar.CalendarError):
+                hq_calendar.save_event(self._payload(**{key: "FREQ=DAILY"}))
+        with self.assertRaises(hq_calendar.CalendarError):
+            hq_calendar.save_event(self._payload(recurrence="FREQ=DAILY"))
+        for bad in ([], ["daily"], {"frequency": "monthly"},
+                    {"frequency": "weekly", "weekdays": []},
+                    {"frequency": "daily", "weekdays": [1]},
+                    {"frequency": "daily", "until": "2026-09-27"},
+                    {"frequency": "daily", "until": "2026-09-29", "count": 2},
+                    {"frequency": "daily", "count": 0},
+                    {"frequency": "daily", "count": 1001},
+                    {"frequency": "daily", "count": 2, "rrule": "FREQ=DAILY"}):
+            with self.assertRaises(hq_calendar.CalendarError):
+                hq_calendar.save_event(self._payload(recurrence=bad))
+        saved = hq_calendar.save_event(self._payload(recurrence=raw))
+        self.assertIn("recurrence", saved)
+        self.assertEqual(saved["recurrence"], raw)
+        cleared = hq_calendar.save_event(self._payload(id=saved["id"], recurrence=None), expected_rev=saved["rev"])
+        self.assertNotIn("recurrence", cleared)
 
     def test_revision_conflict_and_update(self):
         saved = hq_calendar.save_event(self._payload())
@@ -551,6 +688,8 @@ class ApiTests(unittest.TestCase):
         ]
         iphone_bridge.bind_cc_ext()
         iphone_bridge.bind_hq()
+        # Earlier test classes bind a frozen clock; the API tests save and read real "now" events.
+        hq_calendar.bind(local_now=datetime.now, now=time.time)
         cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), iphone_bridge.Handler)
         cls.port = cls.httpd.server_address[1]
         cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
@@ -678,6 +817,37 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(status, 200, body)
         self.assertEqual(json.loads(body)["target"], "scene")
         status, _h, body = self._post("/api/calendar/run", {"id": event["id"], "target": "action"})
+        self.assertEqual(status, 400)
+
+    def test_recurrence_pattern_over_http(self):
+        base = {
+            "title": "Série HTTP",
+            "all_day": False,
+            "start": "2026-10-01T09:00",
+            "end": "2026-10-01T10:00",
+            "category": "study",
+            "recurrence": {"frequency": "weekdays", "weekdays": [], "until": "2026-10-05", "count": None},
+        }
+        status, _h, body = self._post("/api/calendar", {"action": "save", "event": base})
+        self.assertEqual(status, 200, body)
+        event = json.loads(body)["event"]
+        self.assertEqual(event["recurrence"]["frequency"], "weekdays")
+        status, _h, body = self._get("/api/calendar?from=2026-10-01&to=2026-10-06")
+        self.assertEqual(status, 200)
+        occurrences = [item for item in json.loads(body)["items"] if item.get("series_id") == event["id"]]
+        self.assertEqual([item["start"] for item in occurrences], [
+            "2026-10-01T09:00", "2026-10-02T09:00", "2026-10-05T09:00",
+        ])
+        for raw in ("FREQ=DAILY", "RRULE:FREQ=DAILY"):
+            status, _h, _body = self._post("/api/calendar", {
+                "action": "save",
+                "event": {**base, "title": "Brut", "recurrence": raw},
+            })
+            self.assertEqual(status, 400)
+        status, _h, _body = self._post("/api/calendar", {
+            "action": "save",
+            "event": {**base, "title": "Brut", "rrule": "FREQ=DAILY"},
+        })
         self.assertEqual(status, 400)
 
     def test_projection_endpoint_does_not_write_queue(self):
@@ -857,6 +1027,21 @@ class ReminderTests(unittest.TestCase):
         fired = hq_calendar.tick()
         self.assertEqual(len(fired), 1)
         self.assertEqual(fired[0]["start"], "2026-09-28T12:15")
+        self.assertEqual(self.runs, [])
+
+    def test_recurrence_reminders_fire_for_each_occurrence(self):
+        hq_calendar.save_event(self._event(
+            recurrence={"frequency": "daily", "weekdays": [], "until": None, "count": None},
+        ))
+        starts = []
+        for day in (28, 29, 30):
+            self.moment = datetime(2026, 9, day, 10, 0, 0)
+            fired = hq_calendar.tick()
+            starts.extend(item["start"] for item in fired)
+        self.assertEqual(starts, [
+            "2026-09-28T10:15", "2026-09-29T10:15", "2026-09-30T10:15",
+        ])
+        self.assertEqual(len(self.alerts), 3)
         self.assertEqual(self.runs, [])
 
     def test_tick_leaves_missing_and_malformed_files(self):

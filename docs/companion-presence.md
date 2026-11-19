@@ -60,6 +60,50 @@ a meaningful return gap, topic relevance and a six-hour cooldown; an explicit
 question about previous events can request an episode immediately. If a selected
 item does not fit the outgoing budget, its unused slot reservation is released.
 
+The delivery cue follows the same modes. Social turns react before informing and
+hold at most one useful question. Practical turns answer the substance first — the
+mechanism in one clear sentence and a concrete example, two or three sentences,
+never a rhetorical question. Comfort turns stay a short presence without
+instructions and without judging him. Across modes her line avoids the tics live
+probes exposed: an article-led opening (the last two openings are named, so an
+*A/B/A* alternation is caught), any fact about the Master she was not told, and
+the reproach of an absence. The Accueil page voice no longer invites a word about
+the hour, so the clock is not used as furniture.
+
+### Reply guard (enforcement, not a cue)
+
+Prompt wording only asks; `hq_companion_guard.py` makes the two hard rules hold
+before a reply is stored, returned, spoken or drawn. `guard_reply(text,
+user_text=..., avoid=...)` runs on the generated text inside the Transferania
+send path, and the response reports what it changed (`guard: {opening, time}`):
+
+* **Opening.** The first word may not be a French article/determiner
+  (`un, une, des, le, la, les, l', du, de, d'`) and the reply may not open on a
+  bare noun fragment. Interjections (`Oui.`, `Tiens!`, `D'accord.`) pass. A
+  violation gets a rotating reaction particle in front (`Tiens,`, `Écoute,`,
+  `Bon,`…), chosen from a stable hash of the reply and never one of the last two
+  openings already forbidden in the payload. The sentence itself is preserved.
+* **Clock.** A reply may not volunteer a clock or time-of-day reference: `midi`,
+  `minuit`, `14 h`, `deux heures`, `ce matin/soir`, `cette heure-ci`,
+  `à l'heure`, `des heures`, `matin`, `après-midi`, `milieu du jour`. When the
+  Master states or asks the hour himself (`Il est 2 h`, `quelle heure ?`), that
+  turn's clock talk is his and is left alone; when he merely names a moment
+  (`ce matin`, `ce soir`), only his own wording may come back — a new hour or
+  day-part is repaired. Greetings such as `Bonne nuit` license nothing. The guard removes only the clause
+  that carried the reference; if the whole reply was clock talk it removes the
+  span with the preposition that introduced it (`avant midi`, `à cette heure-ci`,
+  `après-midi`), and if nothing warm survives it answers `Je suis là, avec toi.`
+  rather than shipping a husk. The longest span wins, so `après-midi` is not
+  mistaken for a bare `midi`.
+* Both repairs are pure text, idempotent, and cost no provider call, so a
+  violating reply is never shipped and no quota or latency is spent on a retry.
+
+The deterministic detectors (`opens_on_article`, `opens_on_fragment`,
+`mentions_time`) are also the auditors used by the live probe, so the guarantee
+is checked with the same code that enforces it. Classification additionally
+routes "how does X work / explain / what is the difference" to the practical
+mode, so a technical question gets the mechanism cue instead of small talk.
+
 ## Evolving continuity
 
 Up to 40 episodes record explicit user outcomes, decisions and corrections.

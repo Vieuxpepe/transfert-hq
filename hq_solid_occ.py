@@ -9,8 +9,8 @@ the ``rollback`` point:
   fillet / chamfer                   exact rounds or bevels on picked edges (any edge: straight or curved)
 
 Sketches live on planes: ``doc["sketches"]`` = [{id, name, plane: "XY"|"XZ"|"YZ", offset}]; a point or object without
-``sketch`` is on the base XY plane. Profiles may hold lines, arcs (centre + start + end, counter-clockwise) and a
-circle. Legacy ``faceFeatures`` and ``roundFeatures`` are rebuilt exactly too.
+``sketch`` is on the base XY plane. Profiles may hold lines, arcs (centre + start + end, counter-clockwise), or one
+circle / ellipse / closed spline. Legacy ``faceFeatures`` and ``roundFeatures`` are rebuilt exactly too.
 
 Everything returned to callers is plain Python (triangles, edges, bytes, numbers). Refusals are hq_solid.SolidError.
 """
@@ -39,7 +39,7 @@ try:  # load the engine once, on the importing (main) thread, like hq_solid_ops 
     from OCP.GC import GC_MakeArcOfCircle
     from OCP.GeomAbs import GeomAbs_Plane
     from OCP.GProp import GProp_GProps
-    from OCP.gp import gp_Ax1, gp_Ax2, gp_Circ, gp_Dir, gp_Pnt, gp_Trsf, gp_Vec
+    from OCP.gp import gp_Ax1, gp_Ax2, gp_Circ, gp_Dir, gp_Elips, gp_Pnt, gp_Trsf, gp_Vec
     from OCP.Interface import Interface_Static
     from OCP.STEPControl import STEPControl_AsIs, STEPControl_Writer
     from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_REVERSED, TopAbs_SOLID
@@ -57,6 +57,7 @@ try:  # load the engine once, on the importing (main) thread, like hq_solid_ops 
 except (ImportError, OSError):  # pragma: no cover - optional runtime package
     _AVAILABLE = False
 
+import hq_solid
 import hq_solid_ops
 
 PLANES = {  # (u, v, normal): u x v = normal
@@ -82,8 +83,7 @@ def available() -> bool:
 
 
 def _fail(message):
-    from hq_solid import SolidError
-    raise SolidError(message)
+    raise hq_solid.SolidError(message)
 
 
 def uses_occ(doc) -> bool:
@@ -135,13 +135,22 @@ def _ends(o):
 
 
 def _chain(doc, ids, closed=True):
-    """Order a profile's objects end to end. Returns [(object, forward)]; a lone circle is its own loop."""
+    """Order a profile's objects end to end. Returns [(object, forward)]; a lone circle, ellipse or closed spline is
+    its own loop."""
     objects, _points = _maps(doc)
     chosen = [objects[i] for i in ids]
-    if closed and len(chosen) == 1 and chosen[0]["type"] == "circle":
-        return [(chosen[0], True)]
+    if any(o.get("construction") for o in chosen):
+        _fail("La géométrie de construction ne forme pas un profil")
+    kinds = [hq_solid.curve_kind(o) for o in chosen]
+    if closed and len(chosen) == 1 and (chosen[0]["type"] == "circle" or kinds[0]):
+        o = chosen[0]
+        if o["type"] == "circle" and not (o.get("r", 0) > 0):
+            _fail("Cercle invalide")
+        return [(o, True)]
+    if any(kinds):
+        _fail("Une ellipse ou une spline fermée forme seule son contour")
     if any(o["type"] not in ("line", "arc") for o in chosen):
-        _fail("Un profil se compose de lignes et d'arcs (ou d'un seul cercle)")
+        _fail("Un profil se compose de lignes et d'arcs (ou d'un seul cercle, ellipse ou spline fermée)")
     graph = {}
     for o in chosen:
         a, b = _ends(o)
@@ -198,6 +207,23 @@ def _wire(doc, ids, closed=True):
         if o["type"] == "circle":
             c = points[o["center"]]
             edge = BRepBuilderAPI_MakeEdge(gp_Circ(gp_Ax2(_p3(fr, c["x"], c["y"]), gp_Dir(*fr[3])), o["r"])).Edge()
+        elif o["type"] == "ellipse":
+            c = points[o["center"]]
+            # gp_Elips wants MajorRadius first: put x on the longer radius, and -v for a tall ellipse so the
+            # parameterization stays counter-clockwise around the plane normal, like a wide one.
+            tall = o["ry"] > o["rx"]
+            major, minor = (o["ry"], o["rx"]) if tall else (o["rx"], o["ry"])
+            xdir = tuple(-c for c in fr[2]) if tall else fr[1]
+            ax2 = gp_Ax2(_p3(fr, c["x"], c["y"]), gp_Dir(*fr[3]), gp_Dir(*xdir))
+            edge = BRepBuilderAPI_MakeEdge(gp_Elips(ax2, major, minor)).Edge()
+        elif o["type"] == "spline":
+            poly = hq_solid.spline_polyline([(points[p]["x"], points[p]["y"]) for p in o["pts"]], True)
+            hq_solid._check_ring(poly)
+            for a, b in zip(poly, poly[1:] + poly[:1]):
+                builder.Add(BRepBuilderAPI_MakeEdge(_p3(fr, a[0], a[1]), _p3(fr, b[0], b[1])).Edge())
+                if not builder.IsDone():
+                    _fail("Profil discontinu")
+            continue
         elif o["type"] == "line":
             a, b = points[o["p1"]], points[o["p2"]]
             if not forward:

@@ -15,6 +15,8 @@ import sys
 import tempfile
 import threading
 import time
+import atexit
+import shutil
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
@@ -33,8 +35,8 @@ _PUBLICATION_SPEC = importlib.util.spec_from_file_location(
 publication = importlib.util.module_from_spec(_PUBLICATION_SPEC)
 _PUBLICATION_SPEC.loader.exec_module(publication)
 
-PRODUCTION_HEAD = "17831623039814a7a010537848efa5424294cea8"
-WORKTREE = Path(r"C:\Transfert-worktrees\forge-lifecycle-m1")
+PRODUCTION_HEAD = "a3a83012d4d2d85e108efd8378d0c92f84a6ac0d"
+WORKTREE = Path(tempfile.mkdtemp(prefix="m2b-approved-worktree-"))
 PRODUCTION_ROOT = Path(r"C:\Transfert")
 PAGE_BIND_PERMITTED = False
 PIN = "m2b-disposable-pin"
@@ -52,6 +54,83 @@ REQUIRED_FILES = (
 )
 FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 INVALID_FILE_ATTRIBUTES = 0xFFFFFFFF
+_WORKTREE_READY = False
+
+
+def _prepare_worktree() -> None:
+    """Materialize the reviewed tree in a private checkout for this test process.
+
+    The operator's real worktree may legitimately contain newer, uncommitted work;
+    these tests must not read or disturb it.  The private checkout has the approved
+    tree as HEAD, with the approved baseline as its parent.
+    """
+    global _WORKTREE_READY
+    if _WORKTREE_READY:
+        return
+    if not PRODUCTION_ROOT.is_dir():
+        raise RuntimeError("production checkout missing")
+    init = subprocess.run(
+        ["git", "init", "-b", "fixture", str(WORKTREE)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    if init.returncode != 0:
+        raise RuntimeError("approved checkout init failed")
+    index = WORKTREE.parent / f".{WORKTREE.name}.index"
+    env = os.environ.copy()
+    env.update(GIT_INDEX_FILE=str(index), GIT_WORK_TREE=str(WORKTREE))
+    commands = (
+        ["git", "-C", str(PRODUCTION_ROOT), "-c", "core.autocrlf=false", "read-tree", source_identity.APPROVED_TREE],
+        ["git", "-C", str(PRODUCTION_ROOT), "-c", "core.autocrlf=false", "checkout-index", "-a", "-f"],
+    )
+    try:
+        for command in commands:
+            done = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", env=env)
+            if done.returncode != 0:
+                raise RuntimeError("approved checkout materialization failed")
+        for args in (
+            ["config", "core.autocrlf", "false"],
+            ["fetch", "--no-tags", str(PRODUCTION_ROOT), f"{source_identity.APPROVED_BASELINE}:refs/heads/baseline"],
+        ):
+            done = subprocess.run(["git", "-C", str(WORKTREE), *args], capture_output=True, text=True, encoding="utf-8")
+            if done.returncode != 0:
+                raise RuntimeError("approved checkout preparation failed")
+        author = os.environ.copy()
+        author.update(
+            GIT_AUTHOR_NAME="fixture",
+            GIT_AUTHOR_EMAIL="fixture@example.invalid",
+            GIT_COMMITTER_NAME="fixture",
+            GIT_COMMITTER_EMAIL="fixture@example.invalid",
+        )
+        commit = subprocess.run(
+            ["git", "-C", str(PRODUCTION_ROOT), "commit-tree", source_identity.APPROVED_TREE,
+             "-p", source_identity.APPROVED_BASELINE, "-m", "approved"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            env=author,
+        )
+        if commit.returncode != 0:
+            raise RuntimeError("approved checkout commit failed")
+        head = commit.stdout.strip()
+        for args in (
+            ["fetch", "--no-tags", str(PRODUCTION_ROOT), f"{head}:refs/m2b/approved"],
+            ["update-ref", "refs/heads/fixture", head],
+            ["symbolic-ref", "HEAD", "refs/heads/fixture"],
+            ["reset", "--hard"],
+        ):
+            done = subprocess.run(["git", "-C", str(WORKTREE), *args], capture_output=True, text=True, encoding="utf-8")
+            if done.returncode != 0:
+                raise RuntimeError(f"approved checkout head failed: {done.stderr[:300]}")
+        if subprocess.run(["git", "-C", str(WORKTREE), "status", "--porcelain"], capture_output=True).stdout.strip():
+            raise RuntimeError("approved checkout is dirty")
+    finally:
+        index.unlink(missing_ok=True)
+    _WORKTREE_READY = True
+
+
+atexit.register(shutil.rmtree, WORKTREE, ignore_errors=True)
 
 
 def _git(root: Path, *args: str) -> str:
@@ -81,6 +160,7 @@ def _regular_file(path: Path) -> bool:
 
 def assert_checkout(*, fixed: bool) -> dict:
     """Require the reviewed worktree. A dirty tree can serve only an ephemeral port."""
+    _prepare_worktree()
     root = WORKTREE.resolve()
     production = PRODUCTION_ROOT.resolve()
     if root == production or production in root.parents or root in production.parents:
@@ -193,8 +273,17 @@ def start_ephemeral_page(*, origin_file: Path | None = None) -> PageHandle:
     existed = config_path.is_file()
     before = config_path.read_bytes() if existed else None
     sessions_existed = (WORKTREE / "bridge_sessions.json").is_file()
-    import iphone_bridge as bridge
-
+    # Load the bridge from the private approved checkout, not from whichever
+    # checkout happened to import ``iphone_bridge`` first in this process.
+    if str(WORKTREE) not in sys.path:
+        sys.path.insert(0, str(WORKTREE))
+    spec = importlib.util.spec_from_file_location("m2b_worktree_bridge", WORKTREE / "iphone_bridge.py")
+    if spec is None or spec.loader is None:
+        _restore_config(config_path, existed, before, sessions_existed)
+        raise RuntimeError("bridge import failed")
+    bridge = importlib.util.module_from_spec(spec)
+    sys.modules["m2b_worktree_bridge"] = bridge
+    spec.loader.exec_module(bridge)
     if Path(bridge.ROOT).resolve() != WORKTREE.resolve():
         _restore_config(config_path, existed, before, sessions_existed)
         raise RuntimeError("bridge import left the worktree")

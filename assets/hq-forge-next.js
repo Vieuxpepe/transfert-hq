@@ -8,6 +8,17 @@
   if (!H || !$("forge-form")) return;
   const post = (path, body) => H.api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
   const LABELS = { keep: "Garder", reject: "Rejeter", favorite: "Favori", none: "Non tri\u00e9" };
+  const fmtBytes = (bytes) => {
+    const value = Number(bytes) || 0;
+    if (value >= 1073741824) return (Math.round(value / 107374182.4) / 10).toFixed(1).replace(".", ",") + " Go";
+    return (value <= 0 ? 0 : Math.max(1, Math.round(value / 1048576))) + " Mo";
+  };
+  /* Above this size the page stops copying the ZIP through a Blob (which holds the whole
+     archive in page memory) and lets the browser write it straight to disk. */
+  const DIRECT_DOWNLOAD_BYTES = 64 * 1024 * 1024;
+  const usageText = (usage) => !usage || !usage.quota_images ? "" :
+    usage.images + " / " + usage.quota_images + " images \u00b7 " + fmtBytes(usage.bytes) + " / " + fmtBytes(usage.quota_bytes) +
+    (usage.images >= usage.quota_images ? " \u00b7 galerie pleine" : "");
 
   // ------------------------------------------------------------------ B: quick triage
   const dialog = $("forge-triage");
@@ -139,7 +150,7 @@
   });
   stage.addEventListener("pointercancel", () => { start = null; });
 
-  // Bin: rejected images, with Remettre. Nothing is deleted from here.
+  // Bin: rejected images, with Remettre and an explicit permanent Supprimer.
   const trash = $("forge-trash");
   let trashMode = "normal";
   const trashUrls = [];
@@ -149,6 +160,8 @@
   async function openTrash(kind) {
     trashMode = kind;
     $("forge-trash-title").textContent = kind === "private" ? "Corbeille du coffre" : "Corbeille";
+    const note = $("forge-trash-note");
+    if (note) note.textContent = "";  // a note from the previous visit must not describe this one
     await fillTrash();
     trash.showModal();
     $("forge-trash-close").focus();
@@ -157,9 +170,14 @@
     const grid = $("forge-trash-grid");
     dropTrashUrls();
     grid.replaceChildren();
-    let images = [];
-    try { images = (await H.api(listPath(trashMode, "trash"))).images || []; } catch (_) { images = []; }
+    let page = { images: [] };
+    try { page = (await H.api(listPath(trashMode, "trash"))) || page; } catch (_) { page = { images: [] }; }
+    const images = page.images || [];
+    const usage = $("forge-trash-usage");
+    if (usage) usage.textContent = usageText(page.usage);
     $("forge-trash-empty").hidden = images.length > 0;
+    const emptyAll = $("forge-trash-empty-all");
+    if (emptyAll) emptyAll.hidden = trashMode === "private" || images.length === 0;
     for (const image of images) {
       const cell = document.createElement("div");
       cell.className = "forge-trash-item";
@@ -179,7 +197,13 @@
           (trashMode === "private" ? H.loadVault() : H.loadGallery()).catch(() => {});
         } catch (_) { back.disabled = false; }
       });
-      cell.append(pic, back);
+      const drop = document.createElement("button");
+      drop.type = "button";
+      drop.className = "secondary forge-danger";
+      drop.textContent = "Supprimer";
+      drop.dataset.id = image.id;
+      drop.addEventListener("click", () => { removeForever(image, cell, back, drop); });
+      cell.append(pic, back, drop);
       grid.append(cell);
       if (trashMode === "private") {
         fetch(base("private") + image.id + "/thumb", { credentials: "same-origin", cache: "no-store" })
@@ -191,6 +215,30 @@
       }
     }
   }
+  /* The only permanent delete of the normal gallery: it frees the image's slot in
+     the quota, and the backend route refuses every id outside the gallery. */
+  const TRASH_ASK = {
+    normal: "Supprimer d\u00e9finitivement cette image ? Elle quittera la galerie, lib\u00e9rera sa place dans le quota et ne pourra pas \u00eatre r\u00e9cup\u00e9r\u00e9e. Les autres images ne sont pas touch\u00e9es.",
+    private: "Supprimer d\u00e9finitivement cette image du coffre ? Elle ne pourra pas \u00eatre r\u00e9cup\u00e9r\u00e9e."
+  };
+  async function removeForever(image, cell, back, drop) {
+    const note = $("forge-trash-note");
+    if (!window.confirm(TRASH_ASK[trashMode] || TRASH_ASK.normal)) return;
+    back.disabled = true;
+    drop.disabled = true;
+    try {
+      await post(base(trashMode) + image.id + "/delete", {});
+      cell.remove();
+      if (note) note.textContent = "Image supprim\u00e9e d\u00e9finitivement.";
+      await (trashMode === "private" ? H.loadVault() : H.loadGallery());
+      await fillTrash();
+      if (note) note.textContent = "Image supprim\u00e9e d\u00e9finitivement.";
+    } catch (error) {
+      back.disabled = false;
+      drop.disabled = false;
+      if (note) note.textContent = error.message || "La suppression a \u00e9chou\u00e9.";
+    }
+  }
   function closeTrash() {
     dropTrashUrls();
     $("forge-trash-grid").replaceChildren();
@@ -199,7 +247,262 @@
   $("forge-trash-open").addEventListener("click", () => { openTrash("normal"); });
   $("forge-vault-trash-open").addEventListener("click", () => { if (H.vaultUnlocked()) openTrash("private"); });
   $("forge-trash-close").addEventListener("click", closeTrash);
+  const emptyAllButton = $("forge-trash-empty-all");
+  if (emptyAllButton) emptyAllButton.addEventListener("click", async () => {
+    if (trashMode !== "normal") return;
+    const count = $("forge-trash-grid").children.length;
+    if (!count) return;
+    if (!window.confirm("Supprimer d\u00e9finitivement les " + count + " image(s) de la corbeille ? Cette action ne peut pas \u00eatre annul\u00e9e.")) return;
+    emptyAllButton.disabled = true;
+    try {
+      const result = await post("/api/forge/gallery/trash/empty", {});
+      await fillTrash();
+      await H.loadGallery();
+      const note = $("forge-trash-note");
+      if (note) note.textContent = (result.deleted || 0) + " image(s) supprim\u00e9e(s) d\u00e9finitivement.";
+    } catch (error) {
+      const note = $("forge-trash-note");
+      if (note) note.textContent = error.message || "La corbeille n\u2019a pas pu \u00eatre vid\u00e9e.";
+    } finally {
+      emptyAllButton.disabled = false;
+    }
+  });
   trash.addEventListener("cancel", (event) => { event.preventDefault(); closeTrash(); });
+
+  // ---------------------------------------------- Galerie: sauvegarde et restauration
+  function backupNote(text) {
+    const note = $("forge-gallery-backup-note");
+    if (note) note.textContent = text;
+  }
+  async function backupGallery() {
+    const button = $("forge-gallery-backup");
+    if (button) button.disabled = true;
+    backupNote("V\u00e9rification de la place\u2026");
+    try {
+      /* Ask first: the limit is free disk space, so the owner learns it before a 2 GiB
+         archive starts instead of after a refusal. */
+      const plan = await H.api("/api/forge/gallery/export/plan", { cache: "no-store" });
+      if (!plan || !plan.images) {
+        backupNote("La galerie est vide : rien \u00e0 sauvegarder.");
+        return;
+      }
+      const needed = fmtBytes(plan.bytes);
+      const limit = fmtBytes(plan.limit_bytes);
+      if (!plan.allowed) {
+        backupNote("Sauvegarde impossible : " + needed + " \u00e0 \u00e9crire, limite " + limit +
+          " d\u2019espace libre. Supprime des images (la Corbeille lib\u00e8re leur place) puis r\u00e9essaie.");
+        return;
+      }
+      if (plan.bytes > DIRECT_DOWNLOAD_BYTES) {
+        backupNote("Sauvegarde de " + plan.images + " image(s), " + needed + " (limite " + limit +
+          ") \u2014 t\u00e9l\u00e9chargement direct : le navigateur \u00e9crit le fichier sur le disque.");
+        const anchor = document.createElement("a");
+        anchor.href = "/api/forge/gallery/export";
+        anchor.download = "hq-forge-galerie.zip";
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        return;
+      }
+      backupNote("Sauvegarde de " + plan.images + " image(s), " + needed + " (limite " + limit + ") \u2014 pr\u00e9paration du ZIP\u2026");
+      const response = await fetch("/api/forge/gallery/export", { credentials: "same-origin", cache: "no-store" });
+      if (!response.ok) {
+        let detail = "";
+        try { detail = (await response.json()).error || ""; } catch (_) { detail = ""; }
+        throw new Error(detail || "L\u2019export a \u00e9chou\u00e9.");
+      }
+      const url = URL.createObjectURL(await response.blob());
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = "hq-forge-galerie.zip";
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1500);
+      backupNote("ZIP t\u00e9l\u00e9charg\u00e9 : les images et leurs r\u00e9glages. Les miniatures sont reconstruites \u00e0 la restauration.");
+      /* The marker now exists on the server: refresh the line that says how fresh it is. */
+      H.loadGallery().catch(() => {});
+    } catch (error) {
+      backupNote(error.message || "L\u2019export a \u00e9chou\u00e9.");
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }
+  async function restoreGallery(file) {
+    if (!file) return;
+    const size = Math.max(1, Math.round(file.size / 1048576));
+    if (!window.confirm("Restaurer \u00ab " + file.name + " \u00bb (" + size + " Mo) dans la galerie ? Les images sont ajout\u00e9es ; rien n\u2019est remplac\u00e9 ni supprim\u00e9.")) return;
+    const button = $("forge-gallery-restore");
+    if (button) button.disabled = true;
+    backupNote("Restauration en cours\u2026");
+    try {
+      const result = await H.api("/api/forge/gallery/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/zip" },
+        body: file
+      });
+      await H.loadGallery();
+      backupNote((result.imported || 0) + " image(s) restaur\u00e9e(s)" +
+        (result.duplicates ? ", " + result.duplicates + " d\u00e9j\u00e0 pr\u00e9sente(s) ignor\u00e9e(s)" : "") +
+        (result.skipped ? ", " + result.skipped + " ignor\u00e9e(s)" : "") +
+        (result.quota ? ". Galerie pleine : le reste du ZIP n\u2019a pas \u00e9t\u00e9 import\u00e9. Rien n\u2019a \u00e9t\u00e9 supprim\u00e9." : "."));
+    } catch (error) {
+      backupNote(error.message || "La restauration a \u00e9chou\u00e9.");
+    } finally {
+      if (button) button.disabled = false;
+      const input = $("forge-gallery-restore-file");
+      if (input) input.value = "";
+    }
+  }
+  const backupButton = $("forge-gallery-backup");
+  if (backupButton) backupButton.addEventListener("click", () => { backupGallery(); });
+  const restoreButton = $("forge-gallery-restore");
+  const restoreFile = $("forge-gallery-restore-file");
+  if (restoreButton && restoreFile) {
+    restoreButton.addEventListener("click", () => restoreFile.click());
+    restoreFile.addEventListener("change", () => { restoreGallery(restoreFile.files && restoreFile.files[0]); });
+  }
+
+  /* Verify a backup without touching the gallery: every member is read (so its CRC is
+     checked) and only counts come back. */
+  const verifyButton = $("forge-gallery-verify");
+  const verifyFile = $("forge-gallery-verify-file");
+  async function verifyGallery(file) {
+    if (!file) return;
+    if (verifyButton) verifyButton.disabled = true;
+    backupNote("V\u00e9rification du ZIP\u2026");
+    try {
+      const result = await H.api("/api/forge/gallery/restore/verify", {
+        method: "POST", headers: { "Content-Type": "application/zip" }, body: file
+      });
+      backupNote("ZIP v\u00e9rifi\u00e9 : " + (result.verified || 0) + " image(s) lisible(s)" +
+        (result.skipped ? ", " + result.skipped + " ignor\u00e9e(s)" : "") + ". Rien n\u2019a \u00e9t\u00e9 restaur\u00e9.");
+    } catch (error) {
+      backupNote(error.message || "Ce ZIP n\u2019a pas pu \u00eatre v\u00e9rifi\u00e9.");
+    } finally {
+      if (verifyButton) verifyButton.disabled = false;
+      if (verifyFile) verifyFile.value = "";
+    }
+  }
+  if (verifyButton && verifyFile) {
+    verifyButton.addEventListener("click", () => verifyFile.click());
+    verifyFile.addEventListener("change", () => verifyGallery(verifyFile.files && verifyFile.files[0]));
+  }
+
+  /* Galerie: selection mode. The cards stay the gallery's own buttons; in selection
+     mode a capture listener takes the tap before it can open the viewer. */
+  const galleryGrid = $("forge-gallery");
+  const selection = { on: false, ids: new Set() };
+  const selectNote = $("forge-gallery-select-note");
+  function selectedCards() { return galleryGrid ? [...galleryGrid.querySelectorAll(".forge-card")] : []; }
+  function syncSelection() {
+    const count = selection.ids.size;
+    const label = $("forge-gallery-select-count");
+    if (label) label.textContent = count + " image(s) s\u00e9lectionn\u00e9e(s)";
+    ["forge-gallery-archive", "forge-gallery-keep", "forge-gallery-fav", "forge-gallery-reject"].forEach((id) => {
+      const button = $(id);
+      if (button) button.disabled = count === 0;
+    });
+    selectedCards().forEach((card) => card.classList.toggle("is-selected", selection.ids.has(card.dataset.id)));
+  }
+  function setSelecting(on) {
+    selection.on = Boolean(on);
+    selection.ids.clear();
+    if (galleryGrid) galleryGrid.dataset.select = selection.on ? "on" : "";
+    const toggle = $("forge-gallery-select");
+    if (toggle) {
+      toggle.setAttribute("aria-pressed", String(selection.on));
+      toggle.textContent = selection.on ? "Terminer la s\u00e9lection" : "S\u00e9lectionner";
+    }
+    const bar = $("forge-gallery-selectbar");
+    if (bar) bar.hidden = !selection.on;
+    if (selectNote) selectNote.textContent = "";
+    syncSelection();
+  }
+  if (galleryGrid) {
+    galleryGrid.addEventListener("click", (event) => {
+      if (!selection.on) return;
+      const card = event.target.closest(".forge-card");
+      if (!card || !card.dataset.id) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      const id = card.dataset.id;
+      if (selection.ids.has(id)) selection.ids.delete(id); else selection.ids.add(id);
+      syncSelection();
+    }, true);
+    /* A reload replaces every card: re-apply the selected outline to the new nodes. */
+    new MutationObserver(() => { if (selection.on) syncSelection(); }).observe(galleryGrid, { childList: true });
+  }
+  $("forge-gallery-select")?.addEventListener("click", () => setSelecting(!selection.on));
+  $("forge-gallery-select-cancel")?.addEventListener("click", () => setSelecting(false));
+  $("forge-gallery-select-all")?.addEventListener("click", () => {
+    const cards = selectedCards();
+    const all = cards.length > 0 && cards.every((card) => selection.ids.has(card.dataset.id));
+    selection.ids.clear();
+    if (!all) cards.forEach((card) => { if (card.dataset.id) selection.ids.add(card.dataset.id); });
+    syncSelection();
+  });
+  async function bulkTriage(state) {
+    const ids = [...selection.ids];
+    if (!ids.length) return;
+    if (!window.confirm({ keep: "Garder", favorite: "Marquer favorite", reject: "Rejeter" }[state] +
+      " " + ids.length + " image(s) ? Toutes gardent leur place tant qu\u2019elles ne sont pas supprim\u00e9es.")) return;
+    if (selectNote) selectNote.textContent = "Enregistrement\u2026";
+    try {
+      for (const id of ids) await post("/api/forge/gallery/" + encodeURIComponent(id) + "/triage", { state });
+      await H.loadGallery();
+      setSelecting(false);
+    } catch (error) {
+      if (selectNote) selectNote.textContent = error.message || "Le tri a \u00e9chou\u00e9 pour une image.";
+    }
+  }
+  $("forge-gallery-keep")?.addEventListener("click", () => bulkTriage("keep"));
+  $("forge-gallery-fav")?.addEventListener("click", () => bulkTriage("favorite"));
+  $("forge-gallery-reject")?.addEventListener("click", () => bulkTriage("reject"));
+  $("forge-gallery-archive")?.addEventListener("click", async () => {
+    const ids = [...selection.ids];
+    if (!ids.length) return;
+    const query = ids.map((id) => encodeURIComponent(id)).join(",");
+    try {
+      const plan = await H.api("/api/forge/gallery/export/plan?ids=" + query, { cache: "no-store" });
+      if (!plan.images) { if (selectNote) selectNote.textContent = "La s\u00e9lection est vide."; return; }
+      if (!plan.allowed) {
+        if (selectNote) selectNote.textContent = "Sauvegarde impossible : " + fmtBytes(plan.bytes) + " \u00e0 \u00e9crire, limite " +
+          fmtBytes(plan.limit_bytes) + " d\u2019espace libre.";
+        return;
+      }
+      if (!window.confirm("Archiver " + ids.length + " image(s) (" + fmtBytes(plan.bytes) +
+        ") puis les d\u00e9placer dans la corbeille ? Le ZIP est t\u00e9l\u00e9charg\u00e9 d\u2019abord ; rien n\u2019est effac\u00e9.")) return;
+      if (plan.bytes > DIRECT_DOWNLOAD_BYTES) {
+        const anchor = document.createElement("a");
+        anchor.href = "/api/forge/gallery/export?ids=" + query;
+        anchor.download = "hq-forge-selection.zip";
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        if (selectNote) selectNote.textContent = "T\u00e9l\u00e9chargement direct de " + fmtBytes(plan.bytes) +
+          " : les images restent dans la galerie. Rejette-les apr\u00e8s v\u00e9rification.";
+        return;
+      }
+      if (selectNote) selectNote.textContent = "Pr\u00e9paration du ZIP\u2026";
+      const response = await fetch("/api/forge/gallery/export?ids=" + query, { credentials: "same-origin", cache: "no-store" });
+      if (!response.ok) throw new Error("L\u2019export a \u00e9chou\u00e9.");
+      const url = URL.createObjectURL(await response.blob());
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = "hq-forge-selection.zip";
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1500);
+      for (const id of ids) await post("/api/forge/gallery/" + encodeURIComponent(id) + "/triage", { state: "reject" });
+      await H.loadGallery();
+      setSelecting(false);
+      backupNote(ids.length + " image(s) archiv\u00e9e(s) puis d\u00e9plac\u00e9e(s) dans la corbeille.");
+    } catch (error) {
+      if (selectNote) selectNote.textContent = error.message || "L\u2019archivage a \u00e9chou\u00e9.";
+    }
+  });
 
   // Viewer row: change the flag of one image at any time (reversible).
   function viewerRow(kind, id, current) {
@@ -425,10 +728,44 @@
   function batchJournal(batch) {
     const list = $("forge-fleet-journal-list");
     if (!list) return;
-    const sig = JSON.stringify(batch.tasks.map((t) => [t.id, t.state, t.worker_id, t.dispatched_at, t.finished_at, t.resolution, t.retried]));
+    const sig = JSON.stringify([batch.paused, batch.state, batch.tasks.map((t) => [t.id, t.state, t.worker_id, t.dispatched_at, t.finished_at, t.resolution, t.retried, t.step, t.cancel_deferred])]);
     if (list.dataset.sig === sig) return;
     list.dataset.sig = sig;
     list.replaceChildren();
+    /* One line answers "what is the GPU doing now" for the whole batch: the images on
+       devices, or the next queued one, so the journal is not the only place to look. */
+    const live = batch.tasks.filter((t) => ["dispatched", "running", "saving"].includes(t.state));
+    const next = batch.tasks.slice().sort((a, b) => a.index - b.index).find((t) => t.state === "queued");
+    const now = el("li", "forge-journal-item forge-journal-now");
+    if (live.length) {
+      now.textContent = "Maintenant : " + live.map((t) => "image " + (t.index + 1) +
+        (t.worker_name ? " sur " + t.worker_name : "") + (t.steps ? " \u00b7 pas " + (t.step || 0) + " / " + t.steps : "")).join(" \u00b7 ");
+    } else if (next) {
+      now.textContent = "Rien sur le GPU : l\u2019image " + (next.index + 1) + " attend un appareil.";
+    } else {
+      now.textContent = "Rien sur le GPU pour ce lot.";
+    }
+    list.append(now);
+    const pause = $("forge-fleet-batch-pause");
+    if (pause) {
+      const live = batch.state === "running" || batch.state === "cancelling";
+      pause.hidden = !batch.paused && !(live && !batch.cancelled && batch.counts.pending > 0);
+      pause.textContent = batch.paused ? "Reprendre le lot" : "Mettre en pause";
+      pause.dataset.paused = batch.paused ? "1" : "";
+      pause.onclick = async () => {
+        pause.disabled = true;
+        try {
+          const payload = await post("/api/forge/batches/" + encodeURIComponent(batch.batch_id) +
+            (batch.paused ? "/resume" : "/pause"), {});
+          if (payload && payload.batch) H.showBatch(payload.batch);
+        } catch (error) {
+          const note = $("forge-fleet-batch-note");
+          if (note) note.textContent = error.message || "La pause n\u2019a pas pu \u00eatre enregistr\u00e9e.";
+        } finally {
+          pause.disabled = false;
+        }
+      };
+    }
     const tasks = batch.tasks.slice().sort((a, b) => String(a.dispatched_at || "~").localeCompare(String(b.dispatched_at || "~")) || a.index - b.index);
     tasks.forEach((t) => {
       const li = el("li", "forge-journal-item");
@@ -443,6 +780,32 @@
       if (t.retried) bits.push("relanc\u00e9e");
       li.append(el("span", "", bits.join(" \u00b7 ")));
       if (t.message && ["failed", "uncertain"].includes(t.state)) li.append(el("span", "forge-note", t.message));
+      /* One copyable line per failed image: device, code, seed and configuration, never
+         a prompt (fleet batches are normal-gallery only). */
+      if (["failed", "uncertain"].includes(t.state)) {
+        const diag = el("button", "secondary forge-journal-diagnostic", "Copier le diagnostic");
+        diag.type = "button";
+        diag.addEventListener("click", async () => {
+          const s = batch.settings || {};
+          const text = [
+            "Forge \u00b7 lot " + batch.batch_id,
+            "image " + (t.index + 1) + " \u00b7 " + (TASK_STATE[t.state] || t.state),
+            "appareil " + (t.worker_name || "aucun") + (t.worker_id ? " (" + t.worker_id + ")" : ""),
+            "essai " + (t.attempt || 1) + " \u00b7 graine " + (t.seed == null ? "-" : t.seed),
+            t.error ? "code " + t.error : "",
+            t.message ? "message " + t.message : "",
+            "mod\u00e8le " + (s.checkpoint || "-") + " \u00b7 " + (s.width || "?") + "\u00d7" + (s.height || "?") + " \u00b7 " + (s.steps || "?") + " pas"
+          ].filter(Boolean).join(" \u00b7 ");
+          try {
+            await navigator.clipboard.writeText(text);
+            diag.textContent = "Copi\u00e9";
+          } catch (_) {
+            diag.textContent = "Copie impossible";
+          }
+          setTimeout(() => { diag.textContent = "Copier le diagnostic"; }, 2000);
+        });
+        li.append(diag);
+      }
       if (t.state === "uncertain" && !t.resolution && !t.retried && batch.state !== "running" && batch.state !== "cancelling") {
         li.append(choiceButtons(async (action) => {
           const path = "/api/forge/batches/" + encodeURIComponent(batch.batch_id);
@@ -455,6 +818,27 @@
           }
           if (payload && payload.batch) H.showBatch(payload.batch);
         }, !t.retry_of_task));
+      }
+      const cancellable = ["queued", "dispatched", "running", "saving"].includes(t.state) && !t.cancel_deferred;
+      if (cancellable) {
+        const row = el("div", "forge-actions forge-journal-choice");
+        const stop = el("button", "secondary", t.state === "queued" ? "Retirer cette image" : "Annuler cette image");
+        stop.type = "button";
+        stop.addEventListener("click", async () => {
+          stop.disabled = true;
+          try {
+            const payload = await post("/api/forge/batches/" + encodeURIComponent(batch.batch_id) +
+              "/tasks/" + encodeURIComponent(t.id) + "/cancel", {});
+            if (payload && payload.batch) H.showBatch(payload.batch);
+          } catch (error) {
+            stop.disabled = false;
+            li.append(el("p", "forge-note", error.message || "L\u2019annulation a \u00e9chou\u00e9."));
+          }
+        });
+        row.append(stop);
+        li.append(row);
+      } else if (t.cancel_deferred) {
+        li.append(el("span", "forge-note", "Annulation demand\u00e9e : l\u2019appareil termine cette image, Forge n\u2019est pas interrompu."));
       }
       list.append(li);
     });

@@ -361,8 +361,8 @@ def required_assets(render_app: Callable[[], str] | None) -> list[str]:
         if isinstance(html, (bytes, bytearray)):
             html = bytes(html).decode("utf-8", errors="replace")
         names = {m for m in re.findall(r"/assets/([A-Za-z0-9._-]+\.(?:js|css|png|svg|wasm|json))", html)}
-        # Feature scripts loaded on demand (Carnet, Forge, Dessiner) are listed by bare name in the shell's loader arrays.
-        names |= set(re.findall(r"'(hq-[A-Za-z0-9._-]+\.js)'", html))
+        # Feature scripts and stylesheets loaded on demand (Carnet, Forge, Dessiner, Engine, ...) are listed by bare name in the shell's loader maps.
+        names |= set(re.findall(r"'(hq-[A-Za-z0-9._-]+\.(?:js|css))'", html))
         return sorted(names)
     except Exception:
         return []
@@ -1274,6 +1274,7 @@ AGENT_BRIEF_KEYS = frozenset(
         "config_effective",
         "agent_triage",
         "timeline",
+        "visit_telemetry",
         "brief_md",
         "packet_md",
         "playbook",
@@ -2264,6 +2265,11 @@ def agent_brief(
     identity = snap.get("identity") or {}
     config_eff = snap.get("config_effective") or build_config_effective(config, capture_effective)
     rid_index = snap.get("request_id_index") or {}
+    try:
+        import hq_assistant_visits
+        visit_telemetry = hq_assistant_visits.telemetry_snapshot()
+    except Exception:
+        visit_telemetry = {}
     brief_md = render_agent_brief_md(
         triage=triage,
         timeline=timeline,
@@ -2286,6 +2292,7 @@ def agent_brief(
         "config_effective": config_eff,
         "agent_triage": triage,
         "timeline": timeline,
+        "visit_telemetry": visit_telemetry,
         "brief_md": brief_md,
         "packet_md": packet_md,
         "playbook": "docs/agent-debugging.md",

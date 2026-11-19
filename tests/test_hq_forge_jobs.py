@@ -384,7 +384,7 @@ class Jobs(unittest.TestCase):
     def test_variation_validation(self):
         transport = Transport()
         bad = [dict(seed=-1, subseed=5, subseed_strength=0.3), dict(seed=1, subseed_strength=1.5),
-               dict(seed=1, subseed_strength=0.3, n_iter=7), dict(seed=1, n_iter=3), dict(seed=1, subseed=4),
+               dict(seed=1, subseed_strength=0.3, n_iter=7), dict(seed=1, n_iter=5), dict(seed=1, subseed=4),
                dict(seed=1, subseed_strength=True)]
         for index, extra in enumerate(bad):
             code, payload = J.create_job(self.root, _body(**extra), f"vary-bad-{index:02d}", transport=transport)
@@ -395,6 +395,13 @@ class Jobs(unittest.TestCase):
         self.assertEqual(J._variation({}), {})
         body = J.submission_body(dict(J._validate(_body(), {"samplers": [{"name": "Euler"}], "schedulers": [{"name": "automatic"}], "models": [{"title": "example.safetensors [abcd]"}]})), "task(hq-" + "ab" * 12 + ")")
         self.assertNotIn("subseed", body, "plain jobs are unchanged")
+        same_body = J.submission_body(
+            dict(J._validate(_body(n_iter=4), {"samplers": [{"name": "Euler"}], "schedulers": [{"name": "automatic"}], "models": [{"title": "example.safetensors [abcd]"}]})),
+            "task(hq-" + "ab" * 12 + ")",
+            loaded_model="example.safetensors",
+        )
+        self.assertNotIn("override_settings", same_body, "skip override_settings when checkpoint is already loaded")
+        self.assertEqual(same_body["n_iter"], 4)
 
     def test_bad_image_and_validation(self):
         def post(_body):
@@ -599,7 +606,7 @@ class Jobs(unittest.TestCase):
         for index, extra in enumerate((
             {"batch_size": 2},
             {"batch_size": 0},
-            {"n_iter": 3},
+            {"n_iter": 5},
             {"n_iter": 0},
             {"seed": -2},
             {"seed": 2**32},

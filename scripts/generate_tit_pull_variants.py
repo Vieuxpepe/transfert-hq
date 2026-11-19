@@ -72,7 +72,7 @@ CURATED_STEMS = {int(Path(n).stem.split("_")[-1]) for n, *_ in TIT_PULL_VARIANTS
 
 def catalog_name(preview: str) -> str:
     num = Path(preview).stem.split("_")[-1]
-    return f"Else_tit_pull_{num}.mp3"
+    return f"Transferania_tit_pull_{num}.mp3"
 
 
 def stem_kind(stem: int) -> str:
@@ -109,7 +109,7 @@ def trim_manifest_tit_pull_pool() -> int:
     if not isinstance(pool, list):
         return 0
     by_n: dict[int, dict] = {}
-    stem_re = re.compile(r"else_tit_pull_(\d+)", re.I)
+    stem_re = re.compile(r"transferania_tit_pull_(\d+)", re.I)
     for item in pool:
         m = stem_re.search(item.get("url", ""))
         if not m:
@@ -151,11 +151,11 @@ def reencode_tit_pull_oggs() -> None:
     urls = sorted(
         u
         for u in collect_manifest_urls(manifest)
-        if u.endswith(".ogg") and "else_tit_pull_" in u.lower()
+        if u.endswith(".ogg") and "transferania_tit_pull_" in u.lower()
     )
     encoded = 0
     for url in urls:
-        m = re.search(r"else_tit_pull_(\d+)", url, re.I)
+        m = re.search(r"transferania_tit_pull_(\d+)", url, re.I)
         if not m or int(m.group(1)) not in CURATED_STEMS:
             continue
         ogg_path = ROOT / url.lstrip("/")

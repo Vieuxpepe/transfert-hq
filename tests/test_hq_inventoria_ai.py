@@ -23,6 +23,9 @@ class _Base(unittest.TestCase):
         fin.bind(root=self.root, actor=lambda: "t", now=lambda: 600.0)
         inv.bind(root=self.root, now=lambda: 600.0)
         ivo.bind(root=self.root, actor=lambda: "t", now=lambda: 600.0, llm_adapter=iai.adapter)
+        # These tests exercise the review path (every change is a draft); auto-apply has its own tests.
+        import hq_inventoria_habits as habits
+        habits.set_prefs(self.root, auto_apply=False)
         inv.apply({"action": "place.create", "name": "Atelier", "kind": "shelf"})
         place = inv.snapshot()["places"][0]["id"]
         inv.apply({"action": "item.create", "name": "Vis M3", "qty": 4, "unit": "pcs", "min": 20, "place": place})
@@ -1439,3 +1442,177 @@ class PhotoParserTests(_IntakeHelpers, _Base):
                     "data:image/png;base64," + "A" * (ivo.PHOTO_B64_MAX + 1)):
             self.assertIsNone(ivo.parse_photo(bad))
         self.assertIsNotNone(ivo.parse_photo("data:image/png;base64," + "A" * ivo.PHOTO_B64_MAX))
+
+
+class TestInventoriaCancel(unittest.TestCase):
+    """A cancelled turn stops at its next round or tool call and stores nothing."""
+
+    def test_cancel_is_job_scoped_and_rejects_bad_ids(self) -> None:
+        self.assertFalse(iai.request_cancel("nope")["cancelled"])
+        self.assertFalse(iai.request_cancel(5)["cancelled"])
+        self.assertTrue(iai.request_cancel("iot-testjob")["cancelled"])
+        self.assertTrue(iai.is_cancelled("iot-testjob"))
+        self.assertFalse(iai.is_cancelled(""))
+        self.assertFalse(iai.is_cancelled("iot-otherjob"))
+
+    def test_cancelled_respond_raises_before_any_model_call(self) -> None:
+        with mock.patch("hq_ai.generate") as generate:
+            with self.assertRaises(iai.Cancelled):
+                iai.respond("Combien de lait ?", history=[], inv={"items": [], "places": []},
+                            should_cancel=lambda: True)
+        generate.assert_not_called()
+
+    def test_uncancelled_respond_still_answers(self) -> None:
+        with mock.patch("hq_ai.generate", return_value=(json.dumps({"reply": "Tout est là.", "tools": []}), "mock")):
+            reply, proposals = iai.respond("Bonjour", history=[], inv={"items": [], "places": []},
+                                           should_cancel=lambda: False)
+        self.assertEqual(reply, "Tout est là.")
+        self.assertEqual(proposals, [])
+
+    def test_cancel_route_answers_without_opening_the_store(self) -> None:
+        code, payload = ivo.http_post("/api/inventoria/cancel", {"job": "iot-routejob"})
+        self.assertEqual(code, 200)
+        self.assertTrue(payload["cancelled"])
+
+
+class TestInventoriaTurnSave(_Base):
+    """The final write of a chat turn: concurrent turns, trimmed history, photo record, cancel, card binding."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.sid = ivo.http_post("/api/inventoria/sessions", {"device_id": "d"})[1]["session"]["id"]
+
+    def _msg(self, payload: dict) -> tuple[int, dict]:
+        return ivo.http_post(f"/api/inventoria/sessions/{self.sid}/message", payload)
+
+    def _stored(self) -> dict:
+        return ivo.http_get(f"/api/inventoria/sessions/{self.sid}")[1]["session"]
+
+    def test_a_turn_that_lands_while_the_model_thinks_is_kept_and_ours_still_saves(self) -> None:
+        def adapter(text, session_id=None):
+            if text == "first":
+                code, _ = self._msg({"text": "second"})
+                self.assertEqual(code, 200)
+            return {"reply": "reply to " + text}
+        ivo.bind(llm_adapter=adapter)
+        code, out = self._msg({"text": "first"})
+        self.assertEqual(code, 200, out)
+        texts = [m["text"] for m in self._stored()["messages"]]
+        self.assertEqual(texts, ["second", "reply to second", "first", "reply to first"])
+        self.assertEqual(self._stored()["rev"], 3)
+        self.assertEqual([m["text"] for m in out["messages"]], texts)
+
+    def test_merge_on_a_full_transcript_keeps_this_turns_messages(self) -> None:
+        st = store.open_store(self.root)
+        try:
+            with st.transaction():
+                full = [{"role": "user", "text": f"old {i}", "at": 1.0} for i in range(ivo.MESSAGES_MAX)]
+                st.conn.execute("UPDATE inventoria_sessions SET messages_json = ? WHERE id = ?", (json.dumps(full), self.sid))
+        finally:
+            st.close()
+
+        def adapter(text, session_id=None):
+            if text == "first":
+                self._msg({"text": "second"})
+            return {"reply": "reply to " + text}
+        ivo.bind(llm_adapter=adapter)
+        code, out = self._msg({"text": "first"})
+        self.assertEqual(code, 200, out)
+        texts = [m["text"] for m in self._stored()["messages"]]
+        self.assertEqual(texts[-2:], ["first", "reply to first"])
+        self.assertIn("second", texts)
+        self.assertLessEqual(len(texts), ivo.MESSAGES_MAX)
+
+    def test_a_photo_is_not_marked_analysed_when_the_turn_is_not_saved(self) -> None:
+        import hq_inventoria_photos as photos
+        st = store.open_store(self.root)
+        try:
+            st.conn.execute("CREATE TRIGGER drop_turn BEFORE UPDATE OF messages_json ON inventoria_sessions "
+                            "BEGIN SELECT RAISE(IGNORE); END")
+            st.conn.commit()
+        finally:
+            st.close()
+        ivo.bind(llm_adapter=lambda text, session_id=None: {"reply": "vu"})
+        image = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg=="
+        code, out = self._msg({"text": "regarde", "image": image})
+        self.assertEqual((code, out.get("code"), out.get("retryable")), (409, "conflict", True))
+        fp = photos.fingerprint(ivo.parse_photo(image))
+        self.assertIsNone(photos.seen(self.root, fp, now=601.0))
+
+    def test_a_cancelled_turn_stores_nothing_and_reports_kept_changes(self) -> None:
+        ivo.bind(llm_adapter=lambda text, session_id=None: {"cancelled": True, "kept_changes": 2})
+        code, out = self._msg({"text": "retiens que le riz va au garde-manger", "job": "iot-keptjob"})
+        self.assertEqual(code, 200)
+        self.assertEqual((out["cancelled"], out["kept_changes"]), (True, 2))
+        self.assertEqual(self._stored()["messages"], [])
+
+    def test_the_model_turn_runs_without_an_open_write_transaction(self) -> None:
+        seen = []
+
+        def adapter(text, session_id=None):
+            seen.append(ivo.current_db()[0].in_transaction)
+            return {"reply": "ok"}
+        ivo.bind(llm_adapter=adapter)
+        self.assertEqual(self._msg({"text": "bonjour"})[0], 200)
+        self.assertEqual(seen, [False])
+
+    def test_the_grocery_card_op_is_bound_server_side_and_kept_with_her_message(self) -> None:
+        items = {i["name"]: i["id"] for i in inv.snapshot()["items"]}
+        vis, ruban = items["Vis M3"], items["Ruban adhésif"]
+
+        def prop(iid: str) -> dict:
+            return {"op": "item.adjust", "refs": {"item_id": iid}, "resolved": {"confidence": "high"},
+                    "payload": {"id": iid, "delta": 1}, "label_fr": "any wording"}
+        # Two drafted ops (a create forces a second batch); only the Vis M3 one matches the card.
+        create = {"op": "item.create", "refs": {}, "resolved": {"confidence": "high"},
+                  "payload": {"name": "Colle", "qty": 1, "unit": "pcs"}, "label_fr": "x"}
+        ivo.bind(llm_adapter=lambda text, session_id=None: {
+            "reply": "À acheter.", "proposals": [prop(vis), prop(ruban), create, dict(create, payload={"name": "Clous", "qty": 1, "unit": "pcs"})],
+            "grocery_lines": [{"name": "Vis M3", "qty": 16}]})
+        code, out = self._msg({"text": "liste"})
+        self.assertEqual(code, 200, out)
+        self.assertEqual(len(out["operations"]), 2)
+        first = out["operations"][0]["id"]       # holds both adjusts, so it is the one that touches Vis M3
+        self.assertEqual(out["cards"], {"grocery": first})
+        self.assertEqual(self._stored()["messages"][-1]["meta"]["grocery_op"], first)
+
+    def test_cancel_during_a_transient_retry_skips_the_second_call(self) -> None:
+        busy = hq_ai.AiError("high demand", 503, "busy")
+        calls = []
+
+        def gen(*a, **k):
+            calls.append(1)
+            iai.request_cancel("iot-retryjob")
+            raise busy
+        ivo.bind(llm_adapter=iai.adapter)
+        with mock.patch.object(hq_ai, "generate", side_effect=gen):
+            code, out = self._msg({"text": "combien de vis ?", "job": "iot-retryjob"})
+        self.assertEqual((code, out.get("cancelled")), (200, True))
+        self.assertEqual(len(calls), 1)
+
+
+class TestCardOperation(unittest.TestCase):
+    """A review card is bound to one drafted operation by item id or name, never by label wording or position."""
+
+    INV = {"items": [{"id": "itm-riz", "name": "Riz"}, {"id": "itm-lait", "name": "Lait"},
+                     {"id": "itm-riz-b", "name": "riz"}]}
+
+    @staticmethod
+    def _op(op_id: str, label: str, payload: dict) -> dict:
+        return {"id": op_id, "proposals": [{"op": "item.adjust", "label_fr": label, "payload": payload}]}
+
+    def test_name_only_line_binds_to_the_adjust_op_of_that_item_whatever_the_label(self) -> None:
+        ops = [self._op("op-1", "Adjust milk", {"id": "itm-lait"}), self._op("op-2", "anything", {"id": "itm-riz"})]
+        self.assertEqual(ivo._card_operation(ops, [{"name": "Riz"}], {"items": self.INV["items"][:2]}), "op-2")
+
+    def test_create_op_binds_by_its_own_name_and_item_id_binds_directly(self) -> None:
+        ops = [self._op("op-1", "x", {"id": "itm-lait"}), self._op("op-2", "y", {"name": "Papier"})]
+        self.assertEqual(ivo._card_operation(ops, [{"name": " papier "}], self.INV), "op-2")
+        self.assertEqual(ivo._card_operation(ops, [{"name": "?", "item_id": "itm-lait"}], self.INV), "op-1")
+
+    def test_ambiguous_spanning_or_unrelated_cards_bind_to_nothing(self) -> None:
+        same_name = [self._op("op-1", "x", {"id": "itm-riz"}), self._op("op-2", "y", {"id": "itm-riz-b"})]
+        self.assertIsNone(ivo._card_operation(same_name, [{"name": "Riz"}], self.INV))
+        two = [self._op("op-1", "x", {"id": "itm-lait"}), self._op("op-2", "y", {"id": "itm-riz"})]
+        self.assertIsNone(ivo._card_operation(two, [{"name": "Lait"}, {"name": "Riz"}], {"items": self.INV["items"][:2]}))
+        self.assertIsNone(ivo._card_operation([self._op("op-1", "x", {"id": "itm-lait"})], [{"name": "Papier"}], self.INV))

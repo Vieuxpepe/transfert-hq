@@ -15,6 +15,13 @@ import hq_voice
 import hq_voice_phonon as ph
 
 
+@pytest.fixture(autouse=True)
+def _bilingual_policy(monkeypatch):
+    """These tests cover the per-request language and the reply-language pins: the English-only
+    policy (tests/test_english_only.py) is switched off here on purpose."""
+    monkeypatch.setenv("HQ_ENGLISH_ONLY", "0")
+
+
 def _tone_wav(seconds=0.6, rate=24000) -> bytes:
     buf = io.BytesIO()
     with wave.open(buf, "wb") as w:
@@ -258,3 +265,18 @@ def test_reply_language_only_for_english_only_phonon_voices(stub):
     ph.save_profile("musica", "phonon", "Coralie", 0, 0)
     assert ph.reply_language("musica") is None  # French voice -> prompts untouched
     assert ph.language_directive("musica") == ""
+
+
+def test_pinned_reply_language_beats_the_voice_and_survives_saves(stub):
+    ph.set_reply_language("else", "en")
+    assert ph.reply_language("else") == "en" and "English" in ph.language_directive("else")
+    ph.save_profile("musica", "phonon", "Coralie", 0, 0)  # another character's save keeps Else's pin
+    ph.reset_profile("else")  # a voice reset keeps the pin too
+    assert ph.reply_language("else") == "en"
+    ph.set_reply_language("musica", "fr")
+    ph.save_profile("musica", "phonon", "Zoey", 0, 0)  # English-only voice, but French is pinned
+    assert ph.reply_language("musica") is None
+    ph.set_reply_language("musica", None)
+    assert ph.reply_language("musica") == "en"  # unpinned: back to following the voice
+    with pytest.raises(ValueError):
+        ph.set_reply_language("else", "de")

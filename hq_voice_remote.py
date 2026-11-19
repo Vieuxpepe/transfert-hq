@@ -37,6 +37,16 @@ POLL_WAIT = 8.0            # long poll
 JOB_MAX_AGE = 120.0
 BREAKER_FAILS = 2
 BREAKER_PAUSE = 60.0
+TEXT_QUIET = 5.0           # no text job within this many seconds of a voice request: a sentence is never made to wait for one
+TEXT_QUEUE_WAIT = 12.0     # a text job not claimed by then is dropped: the next provider answers instead
+TEXT_BREAKER_PAUSE = 120.0
+TEXT_MAX_MESSAGES = 24
+TEXT_MAX_CHARS = 12_000    # the worker's LLM runs with a 4096-token window
+TEXT_MAX_TOKENS = 400
+EMBED_MAX_TEXTS = 16       # texts per job (the worker's CPU model takes ~0.6 s per 800-character text)
+EMBED_MAX_CHARS = 1500
+EMBED_MAX_DIM = 4096
+EMBED_QUIET = 2.0          # a query typed by the owner may follow a sentence this closely; batch indexing waits TEXT_QUIET
 MAX_RESULT_B64 = 9_000_000  # ~6.5 MB of WAV: one sentence at 24 kHz is far below this
 MAX_VOICE_B64 = 24_000_000  # a ~30 s reference clip at 24 kHz is ~3 MB of WAV (4.2 MB base64); this allows ~18 MB
 ENROLL_MAX = 6              # per ip per 10 minutes
@@ -47,6 +57,10 @@ _cond = threading.Condition()
 _jobs: dict[str, dict[str, Any]] = {}
 _live: dict[str, Any] = {"seen": 0.0, "info": {}, "busy": None, "last_ms": None, "last_error": None, "done": 0}
 _breaker: dict[str, Any] = {"fails": 0, "until": 0.0}
+_text_breaker: dict[str, Any] = {"fails": 0, "until": 0.0}
+_embed_breaker: dict[str, Any] = {"fails": 0, "until": 0.0}
+_STARTED = time.time()     # a bridge restart forgets the last poll: silence is counted from here at the earliest
+OFFLINE_ALERT_AFTER = 600.0  # seconds of silence before HQ flags a paired worker (the laptop's task relaunches it within ~6 min)
 _hits: dict[str, list[float]] = {}
 
 
@@ -115,6 +129,18 @@ def online() -> bool:
     return bool(_worker()) and _alive()
 
 
+def offline_alert() -> dict[str, Any] | None:
+    """A paired, enabled worker that has been silent for OFFLINE_ALERT_AFTER seconds: ``{"name", "quiet_sec"}`` for the
+    Accueil attention list. None when it is fine, off, not paired, or HQ itself has only just started."""
+    worker = _worker()
+    if not worker or not _state().get("enabled", True) or _alive():
+        return None
+    quiet = time.time() - max(float(_live["seen"]), _STARTED)
+    if quiet < OFFLINE_ALERT_AFTER:
+        return None
+    return {"name": str(worker.get("name") or "PC voix")[:40], "quiet_sec": int(quiet)}
+
+
 def available() -> bool:
     """Should the synth path try the worker? Enabled, paired, answering lately, and the breaker closed."""
     if not _state().get("enabled", True) or not _worker():
@@ -139,6 +165,8 @@ def status() -> dict[str, Any]:
         "gpu": info.get("gpu"), "vram_mb": info.get("vram_mb"), "device": info.get("device"), "ready": info.get("ready"),
         "last_ms": _live["last_ms"], "last_error": _live["last_error"], "done": int(_live["done"]),
         "breaker_open": now < float(_breaker["until"]),
+        "llm": bool(info.get("llm")), "embed": bool(info.get("embed")), "text_done": int(_live.get("text_done") or 0),
+        "text_breaker_open": now < float(_text_breaker["until"]),
         "code_pending": float(code.get("expires") or 0) > now,
     }
 
@@ -164,32 +192,147 @@ def generate(payload: dict[str, Any], voice_stamp: int, timeout: float) -> bytes
            "wav": None, "error": None}
     work = max(3.0, float(timeout))                     # the time allowed once the worker has the job
     queue_cap = time.monotonic() + work + QUEUE_EXTRA   # the time allowed behind other jobs
+    _live["voice_last"] = time.time()                   # a conversation is under way: text jobs keep out of its way
     with _cond:
-        for stale in [k for k, v in _jobs.items() if time.time() - v["created"] > JOB_MAX_AGE]:
-            _jobs.pop(stale, None)
-        _jobs[job_id] = job
-        _cond.notify_all()
-        while job["state"] in ("queued", "claimed"):
-            if job["state"] == "claimed":
-                left = job["claimed_mono"] + work - time.monotonic()
-            else:
-                left = queue_cap - time.monotonic()
-                if left > 0 and not _alive():  # queued and nobody is there any more: do not wait for nothing
-                    left = 0
-            if left <= 0:
-                job["state"] = "abandoned"  # a late result is discarded
-                _live["last_error"] = "délai dépassé"
-                _fail()
-                _cond.notify_all()
-                return None
-            _cond.wait(min(left, 1.0))
-        wav = job["wav"] if job["state"] == "done" else None
-        _jobs.pop(job_id, None)
+        wav = _await(job, work, queue_cap)
     if wav:
         _breaker["fails"] = 0
         return wav
     _fail()
     return None
+
+
+def _await(job: dict[str, Any], work: float, queue_cap: float) -> Any:
+    """Queue ``job`` and wait for it (call with ``_cond`` held). Its result (wav or text), or None when it was
+    abandoned (too slow, nobody polling), failed or came back empty. The caller counts the failure."""
+    for stale in [k for k, v in _jobs.items() if time.time() - v["created"] > JOB_MAX_AGE]:
+        _jobs.pop(stale, None)
+    _jobs[job["id"]] = job
+    _cond.notify_all()
+    while job["state"] in ("queued", "claimed"):
+        if job["state"] == "claimed":
+            left = job["claimed_mono"] + work - time.monotonic()
+        else:
+            left = queue_cap - time.monotonic()
+            if left > 0 and not _alive():  # queued and nobody is there any more: do not wait for nothing
+                left = 0
+        if left <= 0:
+            job["state"] = "abandoned"  # a late result is discarded
+            _live["last_error"] = "délai dépassé"
+            _cond.notify_all()
+            return None
+        _cond.wait(min(left, 1.0))
+    kind = job.get("kind")
+    result = (job.get("text") if kind == "text" else job.get("vectors") if kind == "embed" else job["wav"]) if job["state"] == "done" else None
+    _jobs.pop(job["id"], None)
+    return result
+
+
+# ---- the text path: a small local LLM on the same PC, only while the voice is idle ----------------------------------
+
+def llm_ready() -> bool:
+    """A worker that says it has a language model, answering lately, text breaker closed."""
+    if not _state().get("enabled", True) or not _worker() or not (_live["info"] or {}).get("llm"):
+        return False
+    return online() and time.time() >= float(_text_breaker["until"])
+
+
+def _clean_messages(messages: Any) -> list[dict[str, str]]:
+    out: list[dict[str, str]] = []
+    total = 0
+    for m in (messages if isinstance(messages, list) else [])[-TEXT_MAX_MESSAGES:]:
+        if not isinstance(m, dict) or m.get("role") not in ("system", "user", "assistant"):
+            continue
+        content = str(m.get("content") or "").strip()
+        if not content:
+            continue
+        total += len(content)
+        out.append({"role": str(m["role"]), "content": content})
+    return out if total <= TEXT_MAX_CHARS and any(m["role"] == "user" for m in out) else []
+
+
+def generate_text(messages: Any, *, temperature: float = 0.7, max_tokens: int = 256, timeout: float = 25.0,
+                  json_mode: bool = False) -> str | None:
+    """One short completion on the worker's LLM. The text, or None (not available, voice busy, failed, too slow) and
+    the caller goes on to the next provider. Voice always wins: nothing is sent while a sentence is queued, being
+    made, or was asked for in the last ``TEXT_QUIET`` seconds (the LLM shares the GPU with Chatterbox and the worker
+    does one job at a time)."""
+    clean = _clean_messages(messages)
+    if not clean or not llm_ready():
+        return None
+    now = time.time()
+    if now - float(_live.get("voice_last") or 0.0) < TEXT_QUIET:
+        return None
+    job_id = secrets.token_hex(8)
+    job = {"id": job_id, "kind": "text", "state": "queued", "created": now, "voice_stamp": 0,
+           "payload": {"messages": clean, "temperature": max(0.0, min(1.5, float(temperature))),
+                       "max_tokens": max(16, min(TEXT_MAX_TOKENS, int(max_tokens))), "json": bool(json_mode)},
+           "text": None, "error": None}
+    work = max(5.0, float(timeout))
+    with _cond:
+        if any(j["state"] in ("queued", "claimed") for j in _jobs.values()):
+            return None  # the worker is busy: do not stack text behind a sentence
+        text = _await(job, work, time.monotonic() + TEXT_QUEUE_WAIT)
+    if text:
+        _text_breaker["fails"] = 0
+        return text
+    _text_fail()
+    return None
+
+
+def embed_ready() -> bool:
+    """A worker that says it has an embedding model, answering lately, embed breaker closed."""
+    if not _state().get("enabled", True) or not _worker() or not (_live["info"] or {}).get("embed"):
+        return False
+    return online() and time.time() >= float(_embed_breaker["until"])
+
+
+def embed(texts: Any, *, timeout: float = 30.0, urgent: bool = False) -> list[list[float]] | None:
+    """Vectors for ``texts`` (same order, one per text) from the worker's embedding model, or None (not available, voice
+    busy, failed, too slow, malformed answer) and the caller simply has no semantic result. ``urgent`` is a query the owner is
+    waiting for: it only waits ``EMBED_QUIET`` after a sentence instead of ``TEXT_QUIET``. CPU only on the worker, so it never
+    takes VRAM from Chatterbox, but the worker does one job at a time and a sentence is always claimed first."""
+    if not isinstance(texts, list) or not 0 < len(texts) <= EMBED_MAX_TEXTS or not embed_ready():
+        return None
+    clean = [t.strip()[:EMBED_MAX_CHARS] if isinstance(t, str) else "" for t in texts]
+    if not all(clean):
+        return None
+    now = time.time()
+    if now - float(_live.get("voice_last") or 0.0) < (EMBED_QUIET if urgent else TEXT_QUIET):
+        return None
+    job = {"id": secrets.token_hex(8), "kind": "embed", "state": "queued", "created": now, "voice_stamp": 0,
+           "payload": {"texts": clean}, "vectors": None, "error": None}
+    with _cond:
+        if any(j["state"] in ("queued", "claimed") for j in _jobs.values()):
+            return None
+        vectors = _await(job, max(5.0, float(timeout)), time.monotonic() + TEXT_QUEUE_WAIT)
+    if vectors:
+        _embed_breaker["fails"] = 0
+        return vectors
+    _embed_breaker["fails"] = int(_embed_breaker["fails"]) + 1
+    if _embed_breaker["fails"] >= BREAKER_FAILS:
+        _embed_breaker.update(until=time.time() + TEXT_BREAKER_PAUSE, fails=0)
+    return None
+
+
+def _clean_vectors(raw: Any, count: int) -> list[list[float]] | None:
+    """``count`` finite vectors of one common length, or None (a malformed worker answer is a failed job)."""
+    if not isinstance(raw, list) or len(raw) != count:
+        return None
+    out: list[list[float]] = []
+    for row in raw:
+        if not isinstance(row, list) or not 8 <= len(row) <= EMBED_MAX_DIM:
+            return None
+        if any(isinstance(x, bool) or not isinstance(x, (int, float)) or x != x or x in (float("inf"), float("-inf")) for x in row):
+            return None
+        out.append([float(x) for x in row])
+    return out if len({len(r) for r in out}) == 1 else None
+
+
+def _text_fail() -> None:
+    _text_breaker["fails"] = int(_text_breaker["fails"]) + 1
+    if _text_breaker["fails"] >= BREAKER_FAILS:
+        _text_breaker.update(until=time.time() + TEXT_BREAKER_PAUSE, fails=0)
 
 
 # ---- the worker API (no cookie, no CSRF: bearer token) --------------------------------------------------------------
@@ -229,8 +372,9 @@ def _clean_info(raw: Any) -> dict[str, Any]:
             out[key] = raw[key][:80]
     if isinstance(raw.get("vram_mb"), (int, float)) and not isinstance(raw.get("vram_mb"), bool):
         out["vram_mb"] = int(raw["vram_mb"])
-    if isinstance(raw.get("ready"), bool):
-        out["ready"] = raw["ready"]
+    for key in ("ready", "llm", "embed"):
+        if isinstance(raw.get(key), bool):
+            out[key] = raw[key]
     return out
 
 
@@ -275,14 +419,16 @@ def handle_worker(method: str, path: str, headers: Any, body: Any, ip: str) -> t
         end = time.monotonic() + POLL_WAIT
         with _cond:
             while True:
-                job = next((j for j in sorted(_jobs.values(), key=lambda j: j["created"]) if j["state"] == "queued"), None)
+                job = next((j for j in sorted(_jobs.values(), key=lambda j: (j.get("kind") in ("text", "embed"), j["created"]))
+                            if j["state"] == "queued"), None)  # a sentence always goes before a text job
                 if job:
                     job["state"] = "claimed"
                     job["claimed_mono"] = time.monotonic()
                     _live["busy"] = job["id"]
                     _live["busy_since"] = time.time()
                     _live["seen"] = time.time()
-                    return 200, {"job": {"id": job["id"], "voice_stamp": job["voice_stamp"], **job["payload"]}}
+                    return 200, {"job": {"id": job["id"], "kind": job.get("kind", "voice"), "voice_stamp": job["voice_stamp"],
+                                         **job["payload"]}}
                 left = end - time.monotonic()
                 if left <= 0:
                     _live["seen"] = time.time()
@@ -310,6 +456,26 @@ def handle_worker(method: str, path: str, headers: Any, body: Any, ip: str) -> t
                 return 200, {"ok": False, "ignored": True}  # abandoned or unknown: nothing to do
             _live["busy"] = None
             _live["seen"] = time.time()
+            if job.get("kind") == "embed":
+                vectors = _clean_vectors(data.get("vectors"), len(job["payload"]["texts"])) if data.get("ok") is True else None
+                if vectors:
+                    job.update(state="done", vectors=vectors)
+                    _live["text_done"] = int(_live.get("text_done") or 0) + 1
+                else:
+                    job.update(state="failed", error=str(data.get("error") or "vecteurs invalides")[:160])
+                    _live["last_error"] = job["error"]
+                _cond.notify_all()
+                return 200, {"ok": True}
+            if job.get("kind") == "text":
+                text = str(data.get("text") or "").strip()[:4000] if data.get("ok") is True else ""
+                if text:
+                    job.update(state="done", text=text)
+                    _live["text_done"] = int(_live.get("text_done") or 0) + 1
+                else:
+                    job.update(state="failed", error=str(data.get("error") or "")[:160])
+                    _live["last_error"] = job["error"] or "échec"
+                _cond.notify_all()
+                return 200, {"ok": True}
             if data.get("ok") is True and isinstance(data.get("wav_b64"), str):
                 try:
                     wav = base64.b64decode(data["wav_b64"], validate=True)

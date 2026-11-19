@@ -1,0 +1,23 @@
+{
+  "assistant": "inventoria",
+  "samples": {
+    "open": [
+      {
+        "url": "/assets/assistant-sfx/inventoria/open.e43096bd.ogg",
+        "duration_ms": 1010
+      }
+    ],
+    "think": [
+      {
+        "url": "/assets/assistant-sfx/inventoria/think.90b05bb2.ogg",
+        "duration_ms": 690
+      }
+    ],
+    "reply": [
+      {
+        "url": "/assets/assistant-sfx/inventoria/reply.87f950ff.ogg",
+        "duration_ms": 190
+      }
+    ]
+  }
+}

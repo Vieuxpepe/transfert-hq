@@ -50,7 +50,18 @@
     }
     const center = lo.map((v, i) => (v + hi[i]) / 2);
     const radius = Math.max(Math.hypot(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]) / 2, 1e-9);
-    return { format, triangles: t, positions, normals, colors, notices, bounds: { min: lo, max: hi, center, radius } };
+    // Signed tetrahedra sum: exact for a closed, consistently wound mesh and a useful upper-bound
+    // estimate otherwise (the model detail labels it as such). Units follow the file's coordinates.
+    let signedVolume = 0;
+    for (let f = 0; f < t; f++) {
+      const o = f * 9;
+      const ax = positions[o], ay = positions[o + 1], az = positions[o + 2];
+      const bx = positions[o + 3], by = positions[o + 4], bz = positions[o + 5];
+      const cx = positions[o + 6], cy = positions[o + 7], cz = positions[o + 8];
+      signedVolume += ax * (by * cz - bz * cy) - ay * (bx * cz - bz * cx) + az * (bx * cy - by * cx);
+    }
+    return { format, triangles: t, positions, normals, colors, notices,
+      volume_mm3: Math.abs(signedVolume) / 6, bounds: { min: lo, max: hi, center, radius } };
   }
 
   // ---- STL (binary or ASCII, auto-detected) ----------------------------------
@@ -74,18 +85,34 @@
       fail(n < 84 ? "Fichier STL trop court ou invalide." : "Fichier STL binaire invalide ou tronqué (taille incohérente avec le nombre de triangles).");
     }
     const text = new TextDecoder().decode(new Uint8Array(buffer));
-    const re = /vertex\s+(\S+)\s+(\S+)\s+(\S+)/gi, values = [];
-    let m;
-    while ((m = re.exec(text))) {
-      if (values.length / 9 >= limits.maxTriangles) checkTriangles(values.length / 9 + 1, limits);
-      for (let k = 1; k <= 3; k++) {
-        const v = Number(m[k]);
-        if (!Number.isFinite(v)) fail("Fichier STL ASCII invalide : coordonnée illisible.");
-        values.push(v);
+    const NUM_RE = /^[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?$/;
+    const values = [];
+    let curFacet = 0, inFacet = false;
+    for (const raw of text.split(/\r?\n/)) {
+      const s = raw.trim();
+      if (!s) continue;
+      const parts = s.split(/\s+/);
+      const kw = parts[0].toLowerCase();
+      if (kw === "facet") {
+        if (inFacet) fail("Fichier STL ASCII invalide : facette imbriquée.");
+        inFacet = true; curFacet = 0;
+      } else if (kw === "vertex") {
+        if (parts.length !== 4) fail("Fichier STL ASCII invalide : coordonnée illisible.");
+        for (let k = 1; k <= 3; k++) {
+          const v = NUM_RE.test(parts[k]) ? Number(parts[k]) : NaN;
+          if (!Number.isFinite(v)) fail("Fichier STL ASCII invalide : coordonnée illisible.");
+          values.push(v);
+        }
+        curFacet += 1;
+        if (curFacet > 3) fail("Fichier STL ASCII invalide : une facette a plus de trois sommets.");
+        if (values.length / 9 > limits.maxTriangles) checkTriangles(values.length / 9, limits);
+      } else if (kw === "endloop" || kw === "endfacet") {
+        if (curFacet > 0 && curFacet !== 3) fail("Fichier STL ASCII invalide : un triangle a moins de trois sommets.");
+        if (kw === "endfacet") { inFacet = false; curFacet = 0; }
       }
     }
     if (!values.length) fail(n >= 84 ? "Fichier STL invalide : ni STL ASCII lisible, ni STL binaire de taille cohérente." : "Fichier STL ASCII invalide : aucun sommet.");
-    if (values.length % 9) fail("Fichier STL ASCII invalide : un triangle a moins de trois sommets.");
+    if (values.length % 9 || (inFacet && curFacet !== 0 && curFacet !== 3)) fail("Fichier STL ASCII invalide : un triangle a moins de trois sommets.");
     checkTriangles(values.length / 9, limits);
     return finish("STL ASCII", Float32Array.from(values), null, null, []);
   }
@@ -279,13 +306,228 @@
     return finish("GLB", positions, normals, colors, notices);
   }
 
+  // ---- OBJ (geometry only: v / f, negative indices, polygons fan-triangulated) ----
+  function parseOBJ(buffer, opts) {
+    const limits = limitsOf(opts);
+    checkBytes(buffer.byteLength, limits);
+    const text = new TextDecoder().decode(new Uint8Array(buffer));
+    const vs = [], out = [];
+    for (const raw of text.split(/\r?\n/)) {
+      const line = raw.trim();
+      if (line.charCodeAt(0) === 118 && line.charCodeAt(1) === 32) {  // "v "
+        const p = line.slice(2).trim().split(/\s+/);
+        const x = Number(p[0]), y = Number(p[1]), z = Number(p[2]);
+        if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) fail("Fichier OBJ invalide : coordonnée illisible.");
+        vs.push(x, y, z);
+      } else if (line.charCodeAt(0) === 102 && line.charCodeAt(1) === 32) {  // "f "
+        const idx = line.slice(2).trim().split(/\s+/).map(tok => {
+          const n = parseInt(tok.split("/")[0], 10);
+          return n < 0 ? vs.length / 3 + n : n - 1;
+        });
+        if (idx.length < 3) continue;
+        for (let k = 1; k + 1 < idx.length; k++) {
+          if (out.length / 9 >= limits.maxTriangles) checkTriangles(out.length / 9 + 1, limits);
+          for (const i of [idx[0], idx[k], idx[k + 1]]) {
+            if (!(i >= 0) || i * 3 + 2 >= vs.length) fail("Fichier OBJ invalide : une face utilise un sommet inexistant.");
+            out.push(vs[i * 3], vs[i * 3 + 1], vs[i * 3 + 2]);
+          }
+        }
+      }
+    }
+    checkTriangles(out.length / 9, limits);
+    return finish("OBJ", Float32Array.from(out), null, null, ["Couleurs et textures ignorées : formes seulement."]);
+  }
+
+  // ---- 3MF (ZIP of XML; async because the browser inflates through DecompressionStream) ----
+  const U32 = (dv, o) => dv.getUint32(o, true), U16 = (dv, o) => dv.getUint16(o, true);
+  async function inflateRaw(bytes) {
+    if (typeof DecompressionStream !== "function") fail("Ce navigateur ne sait pas décompresser les 3MF (DecompressionStream manquant).");
+    const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
+    return new Uint8Array(await new Response(stream).arrayBuffer());
+  }
+  function zipEntries(buffer) {
+    const dv = new DataView(buffer), n = buffer.byteLength;
+    let eocd = -1;
+    for (let i = n - 22; i >= Math.max(0, n - 65557); i--) if (U32(dv, i) === 0x06054b50) { eocd = i; break; }
+    if (eocd < 0) fail("Fichier 3MF invalide : archive ZIP illisible.");
+    const count = U16(dv, eocd + 10);
+    let pos = U32(dv, eocd + 16);
+    const entries = [];
+    for (let i = 0; i < count && pos + 46 <= n && U32(dv, pos) === 0x02014b50; i++) {
+      const nameLen = U16(dv, pos + 28), extra = U16(dv, pos + 30), comment = U16(dv, pos + 32);
+      entries.push({ method: U16(dv, pos + 10), csize: U32(dv, pos + 20), usize: U32(dv, pos + 24), offset: U32(dv, pos + 42),
+        name: new TextDecoder().decode(new Uint8Array(buffer, pos + 46, nameLen)).replace(/^\/+/, "") });
+      pos += 46 + nameLen + extra + comment;
+    }
+    return entries;
+  }
+  async function zipRead(buffer, entry, maxBytes) {
+    const dv = new DataView(buffer);
+    if (entry.usize > maxBytes) fail(`Fichier 3MF trop volumineux une fois décompressé (${mb(entry.usize)} Mo).`);
+    const o = entry.offset;
+    if (o + 30 > buffer.byteLength || U32(dv, o) !== 0x04034b50) fail("Fichier 3MF invalide : entrée ZIP corrompue.");
+    const start = o + 30 + U16(dv, o + 26) + U16(dv, o + 28);
+    const raw = new Uint8Array(buffer, start, entry.csize);
+    if (entry.method === 0) return raw;
+    if (entry.method === 8) return inflateRaw(raw);
+    return fail("Fichier 3MF invalide : compression ZIP non prise en charge.");
+  }
+  const UNIT_MM = { micron: 0.001, millimeter: 1, centimeter: 10, inch: 25.4, foot: 304.8, meter: 1000 };
+  const parseXml = bytes => {
+    const doc = new DOMParser().parseFromString(new TextDecoder().decode(bytes), "application/xml");
+    if (doc.getElementsByTagName("parsererror").length) fail("Fichier 3MF invalide : XML illisible.");
+    return doc;
+  };
+  const matrixOf = s => {
+    const m = String(s || "").trim().split(/\s+/).map(Number);
+    return m.length === 12 && m.every(Number.isFinite) ? m : null;
+  };
+  const applyM = (m, x, y, z) => m ? [x * m[0] + y * m[3] + z * m[6] + m[9], x * m[1] + y * m[4] + z * m[7] + m[10], x * m[2] + y * m[5] + z * m[8] + m[11]] : [x, y, z];
+  const composeM = (a, b) => {  // a then b (row-vector convention)
+    if (!a) return b; if (!b) return a;
+    const out = [];
+    for (let r = 0; r < 4; r++) for (let c = 0; c < 3; c++) {
+      const A = r < 3 ? [a[r * 3], a[r * 3 + 1], a[r * 3 + 2]] : [a[9], a[10], a[11]];
+      out.push(A[0] * b[c] + A[1] * b[3 + c] + A[2] * b[6 + c] + (r === 3 ? b[9 + c] : 0));
+    }
+    return out;
+  };
+  function readModelObjects(doc) {
+    const objects = new Map();
+    for (const el of doc.getElementsByTagName("object")) {
+      if (el.getAttribute("type") === "support") continue;
+      const obj = { mesh: null, comps: [] };
+      const mesh = el.getElementsByTagName("mesh")[0];
+      if (mesh) {
+        const vs = [], ts = [];
+        for (const v of mesh.getElementsByTagName("vertex")) vs.push(Number(v.getAttribute("x")), Number(v.getAttribute("y")), Number(v.getAttribute("z")));
+        for (const t of mesh.getElementsByTagName("triangle")) ts.push(Number(t.getAttribute("v1")), Number(t.getAttribute("v2")), Number(t.getAttribute("v3")));
+        obj.mesh = { vs, ts };
+      }
+      for (const c of el.getElementsByTagName("component")) {
+        obj.comps.push({ id: c.getAttribute("objectid"), path: (c.getAttribute("p:path") || "").replace(/^\/+/, ""), m: matrixOf(c.getAttribute("transform")) });
+      }
+      objects.set(el.getAttribute("id"), obj);
+    }
+    return objects;
+  }
+  async function parse3MF(buffer, opts) {
+    const limits = limitsOf(opts);
+    checkBytes(buffer.byteLength, limits);
+    const entries = zipEntries(buffer).filter(e => /\.model$/i.test(e.name));
+    if (!entries.length) fail("Fichier 3MF invalide : aucun modèle 3D dans l'archive.");
+    const rootEntry = entries.find(e => /^3D\/3dmodel\.model$/i.test(e.name)) || entries[0];
+    const maxXml = Math.min(160 * 1048576, limits.maxBytes * 2);
+    const rootDoc = parseXml(await zipRead(buffer, rootEntry, maxXml));
+    const unit = UNIT_MM[(rootDoc.getElementsByTagName("model")[0] || { getAttribute: () => "" }).getAttribute("unit") || "millimeter"] || 1;
+    const docs = new Map([[rootEntry.name, { objects: readModelObjects(rootDoc) }]]);
+    const getDoc = async path => {
+      const key = path || rootEntry.name;
+      if (!docs.has(key)) {
+        const e = entries.find(x => x.name.toLowerCase() === key.toLowerCase());
+        if (!e) fail("Fichier 3MF invalide : un objet référence un fichier absent de l'archive.");
+        docs.set(key, { objects: readModelObjects(parseXml(await zipRead(buffer, e, maxXml))) });
+      }
+      return docs.get(key);
+    };
+    const out = [];
+    const emit = async (path, id, m, depth) => {
+      if (depth > 8) fail("Fichier 3MF invalide : composants imbriqués trop profondément.");
+      const obj = (await getDoc(path)).objects.get(String(id));
+      if (!obj) return;
+      if (obj.mesh) {
+        const { vs, ts } = obj.mesh;
+        for (let i = 0; i + 2 < ts.length; i += 3) {
+          if (out.length / 9 >= limits.maxTriangles) checkTriangles(out.length / 9 + 1, limits);
+          for (let k = 0; k < 3; k++) {
+            const vi = ts[i + k];
+            if (!(vi >= 0) || vi * 3 + 2 >= vs.length) fail("Fichier 3MF invalide : un triangle utilise un sommet inexistant.");
+            const q = applyM(m, vs[vi * 3], vs[vi * 3 + 1], vs[vi * 3 + 2]);
+            out.push(q[0] * unit, q[1] * unit, q[2] * unit);
+          }
+        }
+      }
+      for (const c of obj.comps) await emit(c.path || path, c.id, composeM(c.m, m), depth + 1);
+    };
+    const items = [...rootDoc.getElementsByTagName("item")];
+    if (items.length) for (const it of items) await emit(rootEntry.name, it.getAttribute("objectid"), matrixOf(it.getAttribute("transform")), 0);
+    else for (const id of docs.get(rootEntry.name).objects.keys()) await emit(rootEntry.name, id, null, 0);
+    checkTriangles(out.length / 9, limits);
+    return finish("3MF", Float32Array.from(out), null, null, ["Couleurs et matériaux ignorés : formes seulement."]);
+  }
+
   function parse(name, buffer, opts) {
     if (!(buffer instanceof ArrayBuffer)) fail("Fichier illisible.");
     const ext = (/\.([a-z0-9]+)$/i.exec(String(name || "")) || [])[1];
     const lower = ext ? ext.toLowerCase() : "";
     if (lower === "glb" || (buffer.byteLength >= 4 && new DataView(buffer).getUint32(0, true) === 0x46546c67)) return parseGLB(buffer, opts);
     if (lower === "stl") return parseSTL(buffer, opts);
-    fail("Format 3D non pris en charge (STL ou GLB seulement).");
+    if (lower === "obj") return parseOBJ(buffer, opts);
+    if (lower === "3mf") fail("Le format 3MF se lit avec parseAsync().");
+    fail("Format 3D non pris en charge (STL, GLB, OBJ ou 3MF).");
+  }
+  // Same as parse() plus 3MF. The Atelier keeps calling the synchronous parse() for STL / GLB.
+  const WORKER_PARSE_MIN_BYTES = 200 * 1024;
+  let parseWorker = null;
+  let parseWorkerSeq = 0;
+  const parseWorkerPending = new Map();
+
+  function assetUrl(name) {
+    const env = typeof window !== "undefined" ? window : (typeof self !== "undefined" ? self : root);
+    if (env && typeof env.hqAssetUrl === "function") return env.hqAssetUrl(name);
+    return "/assets/" + name;
+  }
+
+  function ensureParseWorker() {
+    if (parseWorker || typeof Worker === "undefined") return parseWorker;
+    try {
+      parseWorker = new Worker(assetUrl("hq-model-parse.worker.js"));
+      parseWorker.onmessage = function (e) {
+        const msg = e.data || {};
+        const pending = parseWorkerPending.get(msg.id);
+        if (!pending) return;
+        parseWorkerPending.delete(msg.id);
+        if (msg.ok) pending.resolve(msg.model);
+        else pending.reject(new ModelError(msg.message || "Échec du parseur 3D (worker)."));
+      };
+      parseWorker.onerror = function (err) {
+        const msg = err && err.message ? err.message : "worker";
+        parseWorkerPending.forEach(function (p) { p.reject(new ModelError(msg)); });
+        parseWorkerPending.clear();
+        try { parseWorker.terminate(); } catch (_) {}
+        parseWorker = null;
+      };
+    } catch (_) {
+      parseWorker = null;
+    }
+    return parseWorker;
+  }
+
+  function parseInWorker(name, buffer, opts) {
+    const worker = ensureParseWorker();
+    if (!worker) return Promise.resolve(parse(name, buffer, opts));
+    const id = ++parseWorkerSeq;
+    const fallback = buffer.slice(0);
+    return new Promise(function (resolve, reject) {
+      const fallbackOrReject = function (err) {
+        try { resolve(parse(name, fallback, opts)); }
+        catch (e) { reject(err || e); }
+      };
+      parseWorkerPending.set(id, { resolve, reject: fallbackOrReject });
+      try {
+        worker.postMessage({ id, name, buffer, opts }, [buffer]);
+      } catch (err) {
+        parseWorkerPending.delete(id);
+        fallbackOrReject(err);
+      }
+    });
+  }
+
+  async function parseAsync(name, buffer, opts) {
+    if (!(buffer instanceof ArrayBuffer)) fail("Fichier illisible.");
+    if (/\.3mf$/i.test(String(name || ""))) return parse3MF(buffer, opts);
+    if (buffer.byteLength >= WORKER_PARSE_MIN_BYTES) return parseInWorker(name, buffer, opts);
+    return parse(name, buffer, opts);
   }
 
   // ---- view math (pure; shared with tests) ------------------------------------
@@ -308,9 +550,11 @@
   // ---- viewer ------------------------------------------------------------------
   const BG = [0.93, 0.96, 0.98];
   function modelViewer(canvas) {
-    let gl = null, prog = null, model = null, buffers = null, loc = {}, raf = 0;
+    let gl = null, prog = null, model = null, buffers = null, loc = {}, raf = 0, ro = null, disposed = false;
+    let wire = false, wireBuf = null, auto = false, lastT = 0;  // Lecteur extras: wireframe + turntable
+    const WIRE_MAX = 150000;  // triangles; above this the wireframe toggle refuses (edge buffers triple the memory)
     let view = Object.assign({}, DEFAULT_VIEW);
-    try { gl = canvas.getContext("webgl", { antialias: true, alpha: false, preserveDrawingBuffer: true }); } catch (_) { gl = null; }
+    try { gl = canvas.getContext("webgl", { antialias: true, alpha: false, preserveDrawingBuffer: false }); } catch (_) { gl = null; }
     if (gl) {
       try {
         const sh = (kind, src) => { const s = gl.createShader(kind); gl.shaderSource(s, src); gl.compileShader(s); if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; };
@@ -339,6 +583,14 @@
     }
     function draw() {
       raf = 0;
+      if (disposed) return;
+      if (auto && model) {  // turntable: time-based so a slow frame does not change the speed
+        const now = (root.performance && root.performance.now) ? root.performance.now() : Date.now();
+        const dt = lastT ? Math.min(0.1, (now - lastT) / 1000) : 0.016;
+        lastT = now;
+        view = Object.assign({}, view, { yaw: view.yaw + dt * 0.6 });
+        schedule();
+      } else lastT = 0;
       const { w, h } = size();
       if (gl) {
         gl.viewport(0, 0, w, h); gl.clearColor(BG[0], BG[1], BG[2], 1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
@@ -350,11 +602,16 @@
         gl.uniform4f(loc.v, 0.8 * view.zoom / b.radius, 1 / Math.max(1, aspect), view.panX, view.panY);
         gl.uniform1f(loc.depth, 1 / (b.radius * 1.05));
         gl.uniform1f(loc.useColor, model.colors ? 1 : 0);
-        for (const [a, buf] of [["p", buffers.p], ["n", buffers.n], ["c", buffers.c]]) {
+        let use = buffers, count = model.triangles * 3, mode = gl.TRIANGLES;
+        if (wire) {
+          if (!wireBuf) wireBuf = buildWire();
+          if (wireBuf) { use = wireBuf; count = model.triangles * 6; mode = gl.LINES; }
+        }
+        for (const [a, buf] of [["p", use.p], ["n", use.n], ["c", use.c]]) {
           if (buf) { gl.bindBuffer(gl.ARRAY_BUFFER, buf); gl.enableVertexAttribArray(loc[a]); gl.vertexAttribPointer(loc[a], 3, gl.FLOAT, false, 0, 0); }
           else if (loc[a] >= 0) { gl.disableVertexAttribArray(loc[a]); gl.vertexAttrib3f(loc[a], 0, 0, 0); }
         }
-        gl.drawArrays(gl.TRIANGLES, 0, model.triangles * 3);
+        gl.drawArrays(mode, 0, count);
       } else if (ctx) {
         ctx.fillStyle = "rgb(237,245,250)"; ctx.fillRect(0, 0, w, h);
         if (!model) return;
@@ -371,12 +628,40 @@
         faces.sort((a, c) => c.depth - a.depth);
         for (const f of faces) {
           ctx.beginPath(); ctx.moveTo(f.pts[0][0], f.pts[0][1]); ctx.lineTo(f.pts[1][0], f.pts[1][1]); ctx.lineTo(f.pts[2][0], f.pts[2][1]); ctx.closePath();
-          ctx.fillStyle = `rgb(${f.rgb.map(x => Math.round(x * 255)).join(",")})`; ctx.fill();
+          const css = `rgb(${f.rgb.map(x => Math.round(x * 255)).join(",")})`;
+          if (wire) { ctx.strokeStyle = css; ctx.lineWidth = 1; ctx.stroke(); } else { ctx.fillStyle = css; ctx.fill(); }
         }
       }
     }
-    const schedule = () => { if (!raf) raf = (root.requestAnimationFrame || (fn => setTimeout(fn, 16)))(draw); };
-    function freeBuffers() { if (gl && buffers) for (const k of ["p", "n", "c"]) if (buffers[k]) gl.deleteBuffer(buffers[k]); buffers = null; }
+    const schedule = () => { if (disposed || raf) return; raf = (root.requestAnimationFrame || (fn => setTimeout(fn, 16)))(draw); };
+    function freeBuffers() {
+      if (gl && buffers) for (const k of ["p", "n", "c"]) if (buffers[k]) gl.deleteBuffer(buffers[k]);
+      if (gl && wireBuf) for (const k of ["p", "n", "c"]) if (wireBuf[k]) gl.deleteBuffer(wireBuf[k]);
+      buffers = null; wireBuf = null;
+    }
+    // Edge buffers (3 segments per triangle) for the wireframe; built on first use, dropped with the model.
+    function buildWire() {
+      if (!gl || !model || model.triangles > WIRE_MAX) return null;
+      const t = model.triangles, EDGES = [[0, 1], [1, 2], [2, 0]];
+      const expand = src => {
+        if (!src) return null;
+        const out = new Float32Array(t * 18);
+        for (let f = 0; f < t; f++) for (let e = 0; e < 3; e++) {
+          const a = f * 9 + EDGES[e][0] * 3, b = f * 9 + EDGES[e][1] * 3, q = f * 18 + e * 6;
+          for (let k = 0; k < 3; k++) { out[q + k] = src[a + k]; out[q + 3 + k] = src[b + k]; }
+        }
+        const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf); gl.bufferData(gl.ARRAY_BUFFER, out, gl.STATIC_DRAW);
+        return buf;
+      };
+      return { p: expand(model.positions), n: expand(model.normals), c: expand(model.colors) };
+    }
+    function setWireframe(on) {
+      wire = !!on;
+      if (wire && gl && model && model.triangles > WIRE_MAX) { wire = false; return false; }
+      schedule();
+      return wire;
+    }
+    function setAutoRotate(on) { auto = !!on; lastT = 0; if (auto) schedule(); return auto; }
     function setModel(m) {
       freeBuffers();
       if (m && !gl && m.triangles > LIMITS.maxTriangles2D) { model = null; draw(); fail(`Ce navigateur n'a pas WebGL : modèle limité à ${fmt(LIMITS.maxTriangles2D)} triangles ici (${fmt(m.triangles)}).`); }
@@ -397,14 +682,14 @@
       const [a, b] = [...pointers.values()];
       return { mid: [(a.x + b.x) / 2, (a.y + b.y) / 2], d: Math.max(1, Math.hypot(a.x - b.x, a.y - b.y)) };
     };
-    canvas.addEventListener("pointerdown", e => {
+    const onDown = e => {
       if (!model) return;
       try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
       pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, pan: e.button === 1 || e.button === 2 || (e.shiftKey && e.pointerType !== "touch") });
       pinch = pinchState();
       if (e.button === 1 || e.button === 2) e.preventDefault();
-    });
-    canvas.addEventListener("pointermove", e => {
+    };
+    const onMove = e => {
       const p = pointers.get(e.pointerId);
       if (!p || !model) return;
       const dx = e.clientX - p.x, dy = e.clientY - p.y;
@@ -417,21 +702,41 @@
         pinch = { mid, d };
       }
       schedule();
-    });
+    };
     const release = e => { pointers.delete(e.pointerId); pinch = pinchState(); };
+    const onWheel = e => { if (!model) return; e.preventDefault(); view = zoomBy(view, e.deltaY > 0 ? 0.9 : 1.1); schedule(); };
+    const onCtx = e => e.preventDefault();
+    canvas.addEventListener("pointerdown", onDown);
+    canvas.addEventListener("pointermove", onMove);
     canvas.addEventListener("pointerup", release);
     canvas.addEventListener("pointercancel", release);
-    canvas.addEventListener("wheel", e => { if (!model) return; e.preventDefault(); view = zoomBy(view, e.deltaY > 0 ? 0.9 : 1.1); schedule(); }, { passive: false });
-    canvas.addEventListener("contextmenu", e => e.preventDefault());
-    if (root.ResizeObserver) new ResizeObserver(() => schedule()).observe(canvas);
+    canvas.addEventListener("wheel", onWheel, { passive: false });
+    canvas.addEventListener("contextmenu", onCtx);
+    if (root.ResizeObserver) { ro = new ResizeObserver(() => schedule()); ro.observe(canvas); }
     // Read-only test hooks.
     canvas.hqModelView = () => Object.assign({}, view, { triangles: model ? model.triangles : 0, webgl: !!gl });
     canvas.hqModelProject = p => { const { w, h } = size(); return model ? project(view, model.bounds, w / h, p) : null; };
-    canvas.hqModelSnapshot = () => {
+    function snapshotPixelData() {
       draw();
-      const c = document.createElement("canvas"); c.width = canvas.width; c.height = canvas.height;
-      const x = c.getContext("2d"); x.drawImage(canvas, 0, 0);
-      const d = x.getImageData(0, 0, c.width, c.height).data, bg = BG.map(v => Math.round(v * 255));
+      const { w, h } = size();
+      const out = new Uint8ClampedArray(w * h * 4);
+      if (gl) {
+        const raw = new Uint8Array(w * h * 4);
+        gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, raw);
+        for (let y = 0; y < h; y += 1) {
+          const src = (h - 1 - y) * w * 4;
+          out.set(raw.subarray(src, src + w * 4), y * w * 4);
+        }
+      } else {
+        const c = document.createElement("canvas"); c.width = w; c.height = h;
+        const x = c.getContext("2d"); x.drawImage(canvas, 0, 0);
+        out.set(x.getImageData(0, 0, w, h).data);
+      }
+      return { w, h, data: out };
+    }
+    canvas.hqModelSnapshot = () => {
+      const snap = snapshotPixelData();
+      const d = snap.data, c = { width: snap.w, height: snap.h }, bg = BG.map(v => Math.round(v * 255));
       let n = 0, x0 = 1e9, y0 = 1e9, x1 = -1, y1 = -1;
       for (let i = 0, px = 0; i < d.length; i += 4, px++) {
         if (Math.abs(d[i] - bg[0]) + Math.abs(d[i + 1] - bg[1]) + Math.abs(d[i + 2] - bg[2]) > 24) {
@@ -441,10 +746,51 @@
       }
       return { width: c.width, height: c.height, nonBackground: n, bbox: n ? [x0, y0, x1, y1] : null };
     };
-    return { setModel, fit: refit, draw, get view() { return Object.assign({}, view); }, get webgl() { return !!gl; } };
+    function snapshot() {
+      return new Promise(function (res) {
+        try {
+          if (!gl) { draw(); canvas.toBlob(function (b) { res(b || null); }, "image/png"); return; }
+          const snap = snapshotPixelData();
+          const c = document.createElement("canvas");
+          c.width = snap.w; c.height = snap.h;
+          const x = c.getContext("2d");
+          x.putImageData(new ImageData(snap.data, snap.w, snap.h), 0, 0);
+          c.toBlob(function (b) { res(b || null); }, "image/png");
+        } catch (_) { res(null); }
+      });
+    }
+    // Release the GL context, its buffers and the observer: the sheet owning this canvas can close
+    // and open another model without piling up WebGL contexts.
+    function dispose() {
+      if (disposed) return;
+      disposed = true;
+      if (raf && root.cancelAnimationFrame) { try { root.cancelAnimationFrame(raf); } catch (_) {} }
+      raf = 0;
+      if (ro) { try { ro.disconnect(); } catch (_) {} ro = null; }
+      freeBuffers();
+      model = null;
+      pointers.clear();
+      try {
+        canvas.removeEventListener("pointerdown", onDown);
+        canvas.removeEventListener("pointermove", onMove);
+        canvas.removeEventListener("pointerup", release);
+        canvas.removeEventListener("pointercancel", release);
+        canvas.removeEventListener("wheel", onWheel);
+        canvas.removeEventListener("contextmenu", onCtx);
+      } catch (_) {}
+      if (gl) {
+        try { if (prog) { gl.deleteProgram(prog); prog = null; } } catch (_) {}
+        try { const ext = gl.getExtension("WEBGL_lose_context"); if (ext) ext.loseContext(); } catch (_) {}
+        gl = null;
+      }
+    }
+    return { setModel, fit: refit, draw, dispose, setWireframe, setAutoRotate, snapshot, get model() { return model; }, get wireframe() { return wire; }, get autoRotate() { return auto; }, get view() { return Object.assign({}, view); }, get webgl() { return !!gl; } };
   }
 
-  const api = { LIMITS, ModelError, parse, parseSTL, parseGLB, project, orbit, pan, zoomBy, fit, DEFAULT_VIEW, viewer: modelViewer };
+  const api = {
+    LIMITS, ModelError, parse, parseAsync, parseInWorker, parseSTL, parseGLB, parseOBJ, parse3MF,
+    project, orbit, pan, zoomBy, fit, DEFAULT_VIEW, viewer: modelViewer,
+  };
   root.HQModel = api;
   if (typeof module === "object" && module && module.exports) module.exports = api;
 })(typeof window !== "undefined" ? window : globalThis);

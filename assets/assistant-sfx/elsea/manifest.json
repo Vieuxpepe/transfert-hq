@@ -1,0 +1,45 @@
+{
+  "assistant": "elsea",
+  "samples": {
+    "error": [
+      {
+        "url": "/assets/assistant-sfx/elsea/error_1.5a6fdf08.ogg",
+        "duration_ms": 1609
+      },
+      {
+        "url": "/assets/assistant-sfx/elsea/error_2.de4db731.ogg",
+        "duration_ms": 1469
+      }
+    ],
+    "open": [
+      {
+        "url": "/assets/assistant-sfx/elsea/open_1.6b278350.ogg",
+        "duration_ms": 1840
+      },
+      {
+        "url": "/assets/assistant-sfx/elsea/open_2.9c91a9ba.ogg",
+        "duration_ms": 1493
+      }
+    ],
+    "reply": [
+      {
+        "url": "/assets/assistant-sfx/elsea/reply_1.fdb3d6a9.ogg",
+        "duration_ms": 858
+      },
+      {
+        "url": "/assets/assistant-sfx/elsea/reply_2.38b54e01.ogg",
+        "duration_ms": 1500
+      }
+    ],
+    "think": [
+      {
+        "url": "/assets/assistant-sfx/elsea/think_1.0c8bece9.ogg",
+        "duration_ms": 871
+      },
+      {
+        "url": "/assets/assistant-sfx/elsea/think_2.b61efcf1.ogg",
+        "duration_ms": 754
+      }
+    ]
+  }
+}

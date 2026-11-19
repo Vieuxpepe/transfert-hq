@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 import threading
 from contextvars import ContextVar
 from pathlib import Path
@@ -71,7 +72,16 @@ def prepare_agent_state(root: Path | str) -> Path:
             + ", ".join(conflicts)
             + ") — présent à la racine et dans .hq-agent-state. Aucun fichier écrasé."
         )
-    dest_dir.mkdir(parents=True, exist_ok=True)
+    if dest_dir.is_symlink():
+        raise RuntimeError(".hq-agent-state ne peut pas être un lien symbolique")
+    dest_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if dest_dir.is_symlink():
+        raise RuntimeError(".hq-agent-state ne peut pas être un lien symbolique")
+    if os.name == "posix":
+        try:
+            os.chmod(dest_dir, 0o700)
+        except OSError:
+            pass
     linked: list[tuple[Path, Path]] = []
     try:
         for old, new in planned:
@@ -98,7 +108,10 @@ def prepare_agent_state(root: Path | str) -> Path:
 
 
 def path_lock(path: Path | str) -> threading.RLock:
-    key = str(Path(path))
+    try:
+        key = str(Path(path).resolve())
+    except OSError:
+        key = str(Path(path))
     with _GUARD:
         lock = _LOCKS.get(key)
         if lock is None:
@@ -126,14 +139,26 @@ def write_json_atomic(path: Path | str, data: Any, *, verify_existing: bool = Tr
             if not isinstance(existing, (dict, list)):
                 raise RuntimeError(f"{dest.name} illisible — fichier conservé")
         if compact:
-            text = json.dumps(data, ensure_ascii=False, separators=(",", ":")) + "\n"
+            text = json.dumps(data, ensure_ascii=False, allow_nan=False, separators=(",", ":")) + "\n"
         else:
-            text = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
-        # Same directory as dest, so a private-state temp file inherits that
-        # directory ACL (controller-only) before os.replace.
-        tmp = dest.parent / (dest.name + ".tmp")
+            text = json.dumps(data, ensure_ascii=False, allow_nan=False, indent=2) + "\n"
+        # Same directory as dest, unique private temp file (0o600 on POSIX) before os.replace.
+        for anc in (dest.parent, *dest.parent.parents):
+            if anc.is_symlink():
+                raise RuntimeError(f"{anc.name} est un lien symbolique — écriture refusée")
+        dest.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        for anc in (dest.parent, *dest.parent.parents):
+            if anc.is_symlink():
+                raise RuntimeError(f"{anc.name} est un lien symbolique — écriture refusée")
+        if os.name == "posix" and dest.parent.name in (".hq-agent-state", ".hq-print3d"):
+            try:
+                os.chmod(dest.parent, 0o700)
+            except OSError:
+                pass
+        fd, tmp_name = tempfile.mkstemp(prefix=f".{dest.name}.", suffix=".tmp", dir=str(dest.parent))
+        tmp = Path(tmp_name)
         try:
-            with tmp.open("w", encoding="utf-8") as handle:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 handle.write(text)
                 handle.flush()
                 os.fsync(handle.fileno())

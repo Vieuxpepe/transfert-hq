@@ -33,7 +33,15 @@ Upload-only sessions cannot access memory operations.
 
 Transferania's profile lives under `.hq-ai/companion-memory/<owner-hash>.json`;
 Else uses her own subfolder (`else/<owner-hash>.json`), and any other assistant
-that opts into the shared companion store gets its own subfolder too. A scope
+that opts into the shared companion store gets its own subfolder too. The hash is
+``sha256(owner_key)[:32]`` where ``owner_key`` is the session's stable account
+id (`user_id` from PIN or WebAuthn login), falling back to the session display
+name and then ``admin`` for legacy installs (`hq_security.session_memory_owner`).
+Relationships (``.hq-ai/relationships/<owner-hash>.json``) use the same key.
+If companion data was written under an older key (for example literal ``admin``
+while the live account id was already present), run
+``python scripts/reconcile_companion_owner_scope.py``, inspect the report, then
+``--apply`` after backup. A scope
 name that is not declared in `hq_personas` is refused rather than falling back to
 Transferania's file. Most domain assistants keep their purpose-built stores
 instead (`.hq-household` for Culinia, `.hq-forge` for Forgia, `.hq-inventoria`

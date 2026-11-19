@@ -75,8 +75,9 @@
   function pctOf(used, total) { return total > 0 && used != null ? Math.max(0, Math.min(100, (used / total) * 100)) : null; }
   function level(p) { return p == null ? "" : (p >= 90 ? " is-hot" : (p >= 70 ? " is-warm" : "")); }
 
-  function meter(label, pct, text) {
-    var m = el("div", "hq-eng-meter" + level(pct));
+  function meter(label, pct, text, lvl) {
+    var lvCls = lvl === "hot" || lvl === "warm" ? (" is-" + lvl) : level(pct);
+    var m = el("div", "hq-eng-meter" + lvCls);
     var top = el("div", "hq-eng-meter-top");
     top.appendChild(el("span", "hq-eng-meter-label", label));
     top.appendChild(el("span", "hq-eng-meter-val", text));
@@ -255,6 +256,14 @@
     if (facts.childNodes.length) c.appendChild(facts);
     var usage = usageBlock(d, state.data && state.data.system);
     if (usage) c.appendChild(usage);
+    if (d.meters && d.meters.length) {
+      var mbox = el("div", "hq-eng-meters is-stack");
+      d.meters.forEach(function (m) {
+        if (!m || !m.label) return;
+        mbox.appendChild(meter(m.label, m.pct, m.text || "", m.level || ""));
+      });
+      if (mbox.childNodes.length) c.appendChild(mbox);
+    }
     if (d.auto_stop) c.appendChild(autoStopRow(d));
 
     if (det.errors) {

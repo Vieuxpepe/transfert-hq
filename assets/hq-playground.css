@@ -1,0 +1,1691 @@
+/* Transfert HQ — Playground (loaded with the view, like Robotique).
+ *
+ * A walnut table for the board: a deep frame, tiled squares with a soft sheen, pieces
+ * given real weight, and a quiet glass column for the assistant and the score sheet.
+ * Everything here is presentation only — the module in hq-playground.js owns the rules
+ * and writes the state classes (is-light, is-white, is-selected, is-target, is-last,
+ * is-check, is-cursor) that this file dresses.
+ */
+
+.hq-playground {
+  --pg-light-1: #fbf1d9;
+  --pg-light-2: #eddcb6;
+  --pg-dark-1: #a3774f;
+  --pg-dark-2: #7e5535;
+  --pg-frame-1: #3a2a1e;
+  --pg-frame-2: #1b1310;
+  --pg-tile-radius: 5px;
+}
+
+.hq-playground .pg-shell {
+  display: grid;
+  gap: 18px;
+  align-items: start;
+}
+
+.hq-playground .pg-main {
+  min-width: 0;
+  display: grid;
+  gap: 12px;
+  justify-items: start;
+}
+
+.hq-playground .pg-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+}
+
+.hq-playground .pg-who {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding: 5px;
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--panel) 82%, transparent);
+  border: 1px solid color-mix(in srgb, var(--line) 80%, transparent);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+.hq-playground .pg-chip {
+  width: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: var(--tap-min);
+  padding: 6px 11px 6px 7px;
+  font-size: var(--text-md);
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: var(--text-sm);
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  transition: color var(--hq-dur-fast) var(--hq-out), background var(--hq-dur-fast) var(--hq-out),
+    box-shadow var(--hq-dur-fast) var(--hq-out);
+}
+
+/* the same badge as the assistant card, shrunk into the selector chip */
+.hq-playground .pg-chip-badge {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: radial-gradient(122% 122% at 32% 18%, #7b4ad8 0%, #4f1f9e 58%, #340f6b 100%);
+  font-family: var(--font-display);
+  font-size: var(--text-xs);
+  font-weight: 700;
+  line-height: 1;
+  color: #fdfbff;
+}
+
+.hq-playground .pg-chip-badge img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: 50% 14%;
+}
+
+.hq-playground .pg-chip-badge.is-photo {
+  background: none;
+}
+
+.hq-playground .pg-chip:hover {
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.hq-playground .pg-chip[aria-pressed="true"] {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, var(--panel));
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--accent) 58%, transparent),
+    0 8px 20px -14px color-mix(in srgb, var(--accent) 80%, transparent);
+}
+
+.hq-playground .pg-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.hq-playground .pg-actions button {
+  width: auto;
+  min-height: var(--tap-min);
+  border-radius: 12px;
+  font-size: var(--text-sm);
+  transition: transform var(--hq-dur-fast) var(--hq-spring), border-color var(--hq-dur-fast) var(--hq-out);
+}
+
+.hq-playground .pg-actions button:hover:not(:disabled) {
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+}
+
+.hq-playground .pg-actions button:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+/* which two sisters are on the board: only shown during a duel */
+.hq-playground .pg-duelbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 14px;
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--line));
+  background: color-mix(in srgb, var(--accent) 8%, var(--panel));
+  font-size: var(--text-sm);
+}
+
+.hq-playground .pg-duelbar[hidden] {
+  display: none;
+}
+
+/* not duelling yet: the pair is readable, one pick starts the game */
+.hq-playground .pg-duelbar.is-idle {
+  border-color: color-mix(in srgb, var(--line) 80%, transparent);
+  background: color-mix(in srgb, var(--panel) 80%, transparent);
+}
+
+.hq-playground .pg-duelbar.is-idle .pg-duel-label {
+  color: var(--muted);
+}
+
+.hq-playground .pg-duel-label {
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.hq-playground .pg-duel-vs {
+  color: var(--muted);
+}
+
+.hq-playground .pg-duel-shuffle {
+  margin-left: auto;
+  min-height: var(--tap-min);
+  padding: 0 12px;
+  border-radius: 10px;
+  font-size: var(--text-xs);
+  white-space: nowrap;
+}
+
+.hq-playground .pg-duel-select {
+  width: auto;
+  min-height: var(--tap-min);
+  padding: 4px 10px;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--line) 80%, transparent);
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--text-sm);
+  font-weight: 700;
+}
+
+.hq-playground .pg-status {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 0;
+  min-height: 1.5em;
+  font-size: var(--text-sm);
+  font-weight: 650;
+  letter-spacing: 0.005em;
+  color: var(--text);
+}
+
+.hq-playground .pg-status::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--accent) 75%, transparent);
+}
+
+/* ------------------------------------------------------------------ board */
+
+.hq-playground .pg-board {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+  grid-template-rows: repeat(8, minmax(0, 1fr));
+  gap: 1px;
+  aspect-ratio: 1 / 1;
+  justify-self: stretch;
+  align-self: start;
+  width: auto;
+  max-width: clamp(270px, 66vh, 480px);
+  padding: 12px;
+  border-radius: 20px;
+  background:
+    radial-gradient(130% 120% at 18% 0%, var(--pg-frame-1) 0%, #241a13 58%, var(--pg-frame-2) 100%);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.13),
+    inset 0 1px 0 rgba(255, 255, 255, 0.2),
+    inset 0 0 0 7px rgba(0, 0, 0, 0.12),
+    0 30px 60px -34px rgba(0, 0, 0, 0.9),
+    0 26px 54px -44px color-mix(in srgb, var(--accent) 70%, transparent),
+    0 4px 14px rgba(0, 0, 0, 0.28);
+  overflow: hidden;
+  isolation: isolate;
+  container-type: inline-size;
+  touch-action: manipulation;
+}
+
+/* glass sheen across the table, above the squares but never in the way */
+.hq-playground .pg-board::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  border-radius: inherit;
+  pointer-events: none;
+  background:
+    linear-gradient(152deg, rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0) 34%,
+      rgba(255, 255, 255, 0) 66%, rgba(0, 0, 0, 0.22));
+  mix-blend-mode: soft-light;
+  opacity: 0.85;
+}
+
+.hq-playground .pg-sq {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: var(--pg-tile-radius);
+  background: linear-gradient(158deg, var(--pg-dark-1), var(--pg-dark-2));
+  color: #101010;
+  font-size: clamp(var(--text-lg), 5.6vmin, var(--text-2xl));
+  font-size: clamp(var(--text-lg), 9.9cqw, var(--text-2xl));
+  line-height: 1;
+  cursor: pointer;
+  transition: box-shadow var(--hq-dur-fast) var(--hq-out), filter var(--hq-dur-fast) var(--hq-out);
+}
+
+.hq-playground .pg-sq.is-light {
+  background: linear-gradient(158deg, var(--pg-light-1), var(--pg-light-2));
+}
+
+.hq-playground .pg-sq:hover {
+  filter: brightness(1.07) saturate(1.02);
+}
+
+/* coordinates: ranks up the left edge, files along the bottom */
+.hq-playground .pg-sq::before {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 5px;
+  z-index: 2;
+  font-family: var(--font);
+  font-size: max(11px, 1.9cqw);
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  pointer-events: none;
+  opacity: 0.6;
+}
+
+.hq-playground .pg-sq.is-light::before { color: #6d5334; }
+.hq-playground .pg-sq.is-dark::before { color: #f8ead2; opacity: 0.5; }
+
+.hq-playground .pg-sq[data-i="0"]::before  { content: "8"; }
+.hq-playground .pg-sq[data-i="8"]::before  { content: "7"; }
+.hq-playground .pg-sq[data-i="16"]::before { content: "6"; }
+.hq-playground .pg-sq[data-i="24"]::before { content: "5"; }
+.hq-playground .pg-sq[data-i="32"]::before { content: "4"; }
+.hq-playground .pg-sq[data-i="40"]::before { content: "3"; }
+.hq-playground .pg-sq[data-i="48"]::before { content: "2"; }
+
+.hq-playground .pg-sq[data-i="56"]::before,
+.hq-playground .pg-sq[data-i="57"]::before,
+.hq-playground .pg-sq[data-i="58"]::before,
+.hq-playground .pg-sq[data-i="59"]::before,
+.hq-playground .pg-sq[data-i="60"]::before,
+.hq-playground .pg-sq[data-i="61"]::before,
+.hq-playground .pg-sq[data-i="62"]::before,
+.hq-playground .pg-sq[data-i="63"]::before {
+  top: auto;
+  left: auto;
+  right: 5px;
+  bottom: 3px;
+}
+
+.hq-playground .pg-sq[data-i="56"]::before { content: "a"; }
+.hq-playground .pg-sq[data-i="57"]::before { content: "b"; }
+.hq-playground .pg-sq[data-i="58"]::before { content: "c"; }
+.hq-playground .pg-sq[data-i="59"]::before { content: "d"; }
+.hq-playground .pg-sq[data-i="60"]::before { content: "e"; }
+.hq-playground .pg-sq[data-i="61"]::before { content: "f"; }
+.hq-playground .pg-sq[data-i="62"]::before { content: "g"; }
+.hq-playground .pg-sq[data-i="63"]::before { content: "h"; }
+
+/* ------------------------------------------------------------------ pieces */
+
+.hq-playground .pg-glyph {
+  position: relative;
+  z-index: 1;
+  pointer-events: none;
+  transform: translateY(-2%);
+  transition: transform var(--hq-dur) var(--hq-spring), opacity var(--hq-dur) var(--hq-out);
+}
+
+.hq-playground .pg-sq.is-white .pg-glyph {
+  color: #fdf8ec;
+  text-shadow:
+    0 1px 0 #503b28,
+    0 2px 3px rgba(0, 0, 0, 0.38),
+    0 0 1px rgba(28, 18, 10, 0.95);
+}
+
+.hq-playground .pg-sq.is-black .pg-glyph {
+  color: #14100c;
+  text-shadow:
+    0 0 2px rgba(255, 240, 219, 0.5),
+    0 1px 0 rgba(255, 245, 230, 0.34),
+    0 2px 1px rgba(255, 240, 219, 0.18),
+    0 3px 5px rgba(0, 0, 0, 0.42);
+}
+
+/* a hairline inside each tile keeps the grid crisp against the frame */
+.hq-playground .pg-sq.is-light {
+  box-shadow: inset 0 0 0 1px rgba(92, 62, 34, 0.09);
+}
+
+.hq-playground .pg-sq.is-dark {
+  box-shadow: inset 0 0 0 1px rgba(38, 24, 14, 0.14);
+}
+
+/* ------------------------------------------------------------------ states */
+
+.hq-playground .pg-sq.is-last {
+  box-shadow:
+    inset 0 0 0 2px color-mix(in srgb, var(--accent) 62%, transparent),
+    inset 0 0 26px color-mix(in srgb, var(--accent) 20%, transparent);
+}
+
+.hq-playground .pg-sq.is-check {
+  animation: pg-check 1.9s ease-in-out infinite;
+}
+
+.hq-playground .pg-sq.is-selected {
+  box-shadow:
+    inset 0 0 0 3px var(--accent),
+    inset 0 0 26px color-mix(in srgb, var(--accent) 42%, transparent);
+}
+
+.hq-playground .pg-sq.is-selected .pg-glyph {
+  transform: translateY(-7%) scale(1.07);
+}
+
+.hq-playground .pg-sq.is-target::after {
+  content: "";
+  position: absolute;
+  z-index: 2;
+  width: 22%;
+  height: 22%;
+  border-radius: 50%;
+  background: radial-gradient(circle, color-mix(in srgb, var(--accent) 92%, white 8%),
+    color-mix(in srgb, var(--accent) 58%, transparent));
+  box-shadow: 0 0 14px color-mix(in srgb, var(--accent) 55%, transparent);
+  pointer-events: none;
+  animation: pg-target 1.6s ease-in-out infinite;
+}
+
+.hq-playground .pg-sq.is-target:has(.pg-glyph:not(:empty))::after {
+  inset: 7%;
+  width: auto;
+  height: auto;
+  border-radius: 8px;
+  background: none;
+  border: 3px solid color-mix(in srgb, var(--accent) 82%, transparent);
+  box-shadow:
+    inset 0 0 18px color-mix(in srgb, var(--accent) 30%, transparent),
+    0 0 16px color-mix(in srgb, var(--accent) 35%, transparent);
+  animation: none;
+}
+
+.hq-playground .pg-sq.is-cursor,
+.hq-playground .pg-sq:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--accent) 92%, white 8%);
+  outline-offset: -3px;
+}
+
+.hq-playground .pg-sq.is-cursor:not(.is-selected) {
+  box-shadow: inset 0 0 20px color-mix(in srgb, var(--accent) 26%, transparent);
+}
+
+/* ------------------------------------------------------------------ entry */
+
+.hq-playground .pg-entry {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+  max-width: clamp(270px, 66vh, 480px);
+  margin-top: 2px;
+}
+
+.hq-playground .pg-entry input {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: var(--tap-min);
+  padding: 0 14px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--panel) 86%, black 14%);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  letter-spacing: 0.06em;
+  transition: border-color var(--hq-dur-fast) var(--hq-out), box-shadow var(--hq-dur-fast) var(--hq-out);
+}
+
+.hq-playground .pg-entry input::placeholder {
+  color: color-mix(in srgb, var(--muted) 70%, transparent);
+  letter-spacing: 0.1em;
+}
+
+.hq-playground .pg-entry input:focus {
+  outline: none;
+  border-color: color-mix(in srgb, var(--accent) 65%, var(--line));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent);
+}
+
+.hq-playground .pg-entry button {
+  width: auto;
+  min-height: var(--tap-min);
+  padding: 0 18px;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--line));
+  background: color-mix(in srgb, var(--accent) 16%, var(--panel));
+  color: var(--accent);
+  font-weight: 750;
+  cursor: pointer;
+  transition: background var(--hq-dur-fast) var(--hq-out), transform var(--hq-dur-fast) var(--hq-spring);
+}
+
+.hq-playground .pg-entry button:hover {
+  background: color-mix(in srgb, var(--accent) 24%, var(--panel));
+  transform: translateY(-1px);
+}
+
+.hq-playground .pg-keys {
+  margin: 2px 0 0;
+  padding-top: 10px;
+  max-width: 62ch;
+  border-top: 1px solid color-mix(in srgb, var(--line) 65%, transparent);
+  font-size: var(--text-xs);
+  line-height: 1.65;
+  color: var(--muted);
+}
+
+/* ------------------------------------------------------------------ column */
+
+.hq-playground .pg-side {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+}
+
+.hq-playground .pg-assistant {
+  position: relative;
+  padding: 14px 16px 16px;
+  border-radius: 16px;
+  border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--line));
+  background:
+    radial-gradient(120% 110% at 0% 0%, color-mix(in srgb, var(--accent) 15%, transparent), transparent 62%),
+    linear-gradient(180deg, color-mix(in srgb, var(--panel-2) 92%, transparent), var(--panel));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.07),
+    0 18px 38px -28px rgba(0, 0, 0, 0.85);
+  overflow: hidden;
+}
+
+.hq-playground .pg-assistant-top {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.hq-playground .pg-assistant-head {
+  min-width: 0;
+}
+
+/* the companion chip, kept small: a soft accent halo behind the portrait, or the initial when no chip exists */
+.hq-playground .pg-avatar {
+  position: relative;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  overflow: hidden;
+  /* Else's published SFW chip is a violet badge with her initial, so her sister's fallback badge copies it */
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: radial-gradient(122% 122% at 32% 18%, #7b4ad8 0%, #4f1f9e 58%, #340f6b 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.24),
+    0 8px 18px -14px rgba(0, 0, 0, 0.9);
+}
+
+.hq-playground .pg-avatar img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: 50% 16%;
+}
+
+.hq-playground .pg-avatar.is-initial img,
+.hq-playground .pg-chip-badge.is-initial img {
+  display: none;
+}
+
+.hq-playground .pg-badge-initial {
+  font-family: var(--font-display);
+  font-weight: 700;
+  line-height: 1;
+  color: #fdfbff;
+}
+
+.hq-playground .pg-avatar .pg-badge-initial {
+  font-size: var(--text-xl);
+}
+
+.hq-playground .pg-chip-badge .pg-badge-initial {
+  font-size: var(--text-xs);
+}
+
+.hq-playground .pg-avatar.is-photo .pg-badge-initial,
+.hq-playground .pg-chip-badge.is-photo .pg-badge-initial {
+  display: none;
+}
+
+.hq-playground .pg-assistant-name {
+  display: block;
+  font-family: var(--font-display);
+  font-size: var(--text-lg);
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  color: var(--accent);
+}
+
+/* the assistant's own growth, right on her card */
+.hq-playground .pg-assistant-growth {
+  display: grid;
+  gap: 2px;
+  margin: 10px 0 0;
+  padding-top: 8px;
+  border-top: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+  font-size: var(--text-xs);
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.hq-playground .pg-growth-head {
+  font-weight: 750;
+  color: color-mix(in srgb, var(--text) 84%, var(--muted));
+}
+
+.hq-playground .pg-growth-traits {
+  font-variant-numeric: tabular-nums;
+}
+
+.hq-playground .pg-card-book {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 3px;
+}
+
+.hq-playground .pg-card-book:empty {
+  display: none;
+}
+
+.hq-playground .pg-assistant-tag {
+  display: block;
+  margin-top: 3px;
+  font-size: var(--text-xs);
+  font-weight: 650;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.hq-playground .pg-assistant-line {
+  margin: 12px 0 0;
+  padding-left: 11px;
+  min-height: 2.6em;
+  border-left: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  font-family: var(--font-display);
+  font-size: var(--text-md);
+  font-style: italic;
+  line-height: 1.5;
+  color: color-mix(in srgb, var(--text) 90%, var(--accent));
+}
+
+.hq-playground .pg-history {
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--panel-2) 90%, transparent), var(--panel));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  overflow: hidden;
+}
+
+.hq-playground .pg-history h3,
+.hq-playground .pg-duels h3,
+.hq-playground .pg-duels .pg-read-title,
+.hq-playground .pg-watch h3,
+.hq-playground .pg-styles h3,
+.hq-playground .pg-ladder h3,
+.hq-playground .pg-saves h3 {
+  margin: 0;
+  padding: 12px 14px 6px;
+  font-family: var(--font);
+  font-size:var(--text-xs);
+  font-weight: 750;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.hq-playground .pg-moves {
+  counter-reset: pg-move;
+  margin: 0;
+  padding: 2px 8px 10px;
+  max-height: 300px;
+  overflow: auto;
+  list-style: none;
+  font-size: var(--text-sm);
+}
+
+.hq-playground .pg-moves:empty::after {
+  content: "Aucun coup joué. Tape e2e4 ou touche deux cases pour commencer.";
+  display: block;
+  padding: 8px 10px 10px;
+  font-size: var(--text-xs);
+  line-height: 1.55;
+  color: color-mix(in srgb, var(--muted) 82%, transparent);
+}
+
+.hq-playground .pg-moves li {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0;
+  padding: 6px 8px;
+  border-radius: 9px;
+  counter-increment: pg-move;
+}
+
+.hq-playground .pg-moves li::before {
+  content: counter(pg-move);
+  flex: 0 0 auto;
+  width: 1.5em;
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  opacity: 0.65;
+}
+
+.hq-playground .pg-moves li.is-you {
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+}
+
+.hq-playground .pg-moves li.is-them {
+  background: color-mix(in srgb, var(--panel-2) 55%, transparent);
+}
+
+.hq-playground .pg-moves .pg-who-label {
+  flex: 0 0 auto;
+  min-width: 4.4em;
+  font-size: var(--text-xs);
+  font-weight: 650;
+  color: var(--muted);
+}
+
+.hq-playground .pg-moves li.is-you .pg-who-label { color: color-mix(in srgb, var(--accent) 75%, var(--muted)); }
+
+.hq-playground .pg-moves .pg-move-label {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+/* ------------------------------------------------------------------ duel history */
+
+.hq-playground .pg-duels {
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--panel-2) 90%, transparent), var(--panel));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  overflow: hidden;
+}
+
+.hq-playground .pg-duel-list {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 2px 14px 12px;
+  list-style: none;
+  font-size: var(--text-sm);
+}
+
+.hq-playground .pg-duel-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: baseline;
+  color: var(--muted);
+}
+
+.hq-playground .pg-duel-pair {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 650;
+  color: color-mix(in srgb, var(--text) 84%, var(--muted));
+}
+
+.hq-playground .pg-duel-meta {
+  font-variant-numeric: tabular-nums;
+  font-size: var(--text-xs);
+  color: color-mix(in srgb, var(--muted) 85%, transparent);
+}
+
+.hq-playground .pg-duel-empty {
+  margin: 0;
+  padding: 2px 14px 12px;
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  color: color-mix(in srgb, var(--muted) 85%, transparent);
+}
+
+.hq-playground .pg-duel-empty[hidden] {
+  display: none;
+}
+
+.hq-playground .pg-read-title {
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.hq-playground .pg-read-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 2px 14px 12px;
+  list-style: none;
+}
+
+.hq-playground .pg-read-row {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  font-size: var(--text-sm);
+}
+
+.hq-playground .pg-read-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  align-items: baseline;
+  min-width: 0;
+}
+
+.hq-playground .pg-read-who {
+  font-weight: 700;
+  color: color-mix(in srgb, var(--text) 88%, var(--muted));
+}
+
+.hq-playground .pg-read-style {
+  font-size: var(--text-xs);
+  color: color-mix(in srgb, var(--muted) 88%, transparent);
+}
+
+.hq-playground .pg-read-habit {
+  padding: 1px 7px;
+  border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--line));
+  border-radius: 999px;
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  color: color-mix(in srgb, var(--accent) 70%, var(--text));
+  white-space: nowrap;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The reply family, worn on its own pill: a series can move it without renaming a single answer. */
+.hq-playground .pg-read-family {
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--line) 90%, transparent);
+  color: color-mix(in srgb, var(--text) 74%, var(--muted));
+}
+
+.hq-playground .pg-read-note {
+  min-width: 0;
+  max-width: 100%;
+  font-size: var(--text-xs);
+  line-height: 1.35;
+  color: color-mix(in srgb, var(--accent) 58%, var(--muted));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hq-playground .pg-read-line {
+  font-size: var(--text-xs);
+  line-height: 1.45;
+  color: color-mix(in srgb, var(--muted) 92%, var(--text));
+  overflow-wrap: anywhere;
+}
+
+.hq-playground .pg-read-empty {
+  margin: 0;
+  padding: 2px 14px 12px;
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  color: color-mix(in srgb, var(--muted) 85%, transparent);
+}
+
+.hq-playground .pg-read-empty[hidden] {
+  display: none;
+}
+
+/* ------------------------------------------------------------------ background duel */
+
+.hq-playground .pg-watch {
+  container-type: inline-size;
+  border: 1px solid color-mix(in srgb, var(--accent) 26%, var(--line));
+  border-radius: 16px;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--panel-2) 92%, transparent), var(--panel));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  overflow: hidden;
+}
+
+.hq-playground .pg-watch-board {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  margin: 0 12px;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--line) 85%, transparent);
+}
+
+.hq-playground .pg-watch-sq {
+  position: relative;
+  display: grid;
+  place-items: center;
+  aspect-ratio: 1;
+  /* A glyph roughly two thirds of its square: the old 9–14 px read as dust in 46 px cells. */
+  font-size: clamp(var(--text-sm), 2.5vw, var(--text-xl));
+  font-size: clamp(var(--text-sm), 7.2cqw, var(--text-2xl));
+  line-height: 1;
+  user-select: none;
+}
+
+.hq-playground .pg-watch-sq.is-light {
+  background: linear-gradient(158deg, var(--pg-light-1), var(--pg-light-2));
+  color: #3a2c4f;
+}
+
+.hq-playground .pg-watch-sq.is-dark {
+  background: linear-gradient(158deg, var(--pg-dark-1), var(--pg-dark-2));
+  color: #f7f1e8;
+}
+
+.hq-playground .pg-watch-sq.is-last {
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent) 72%, transparent);
+}
+
+.hq-playground .pg-watch-names {
+  margin: 8px 12px 0;
+  font-size: var(--text-xs);
+  font-weight: 700;
+  color: var(--text);
+}
+
+.hq-playground .pg-watch-status {
+  margin: 3px 12px 0;
+  font-size: var(--text-xs);
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.hq-playground .pg-watch.is-over .pg-watch-status {
+  color: var(--accent);
+}
+
+.hq-playground .pg-watch-open {
+  width: auto;
+  margin: 8px 12px 12px;
+  min-height: var(--tap-min);
+  border-radius: 10px;
+  font-size: var(--text-xs);
+}
+
+/* ------------------------------------------------------------------ learned styles */
+
+.hq-playground .pg-styles {
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--panel-2) 90%, transparent), var(--panel));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  overflow: hidden;
+}
+
+.hq-playground .pg-style-list {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding: 2px 14px 12px;
+  list-style: none;
+  font-size: var(--text-sm);
+}
+
+.hq-playground .pg-style-row {
+  display: grid;
+  grid-template-columns: auto 1.4em 1fr;
+  gap: 8px;
+  align-items: baseline;
+  color: var(--muted);
+}
+
+.hq-playground .pg-style-row.is-playing {
+  color: var(--text);
+}
+
+.hq-playground .pg-style-name {
+  font-weight: 700;
+}
+
+.hq-playground .pg-style-games {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: color-mix(in srgb, var(--muted) 80%, transparent);
+}
+
+.hq-playground .pg-style-word {
+  color: color-mix(in srgb, var(--text) 78%, var(--muted));
+}
+
+.hq-playground .pg-style-row.is-playing .pg-style-word {
+  color: var(--accent);
+}
+
+/* ------------------------------------------------------------------ leaderboard */
+
+.hq-playground .pg-ladder {
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--panel-2) 90%, transparent), var(--panel));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  overflow: hidden;
+}
+
+.hq-playground .pg-ladder-list {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding: 2px 14px 12px;
+  list-style: none;
+  font-size: var(--text-sm);
+}
+
+.hq-playground .pg-ladder-row {
+  display: grid;
+  grid-template-columns: 1.2em 1fr auto auto;
+  gap: 8px;
+  align-items: baseline;
+  color: var(--muted);
+}
+
+.hq-playground .pg-ladder-row.is-playing {
+  color: var(--text);
+}
+
+.hq-playground .pg-ladder-rank {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  color: color-mix(in srgb, var(--muted) 85%, transparent);
+}
+
+.hq-playground .pg-ladder-name {
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hq-playground .pg-ladder-record {
+  font-variant-numeric: tabular-nums;
+  color: color-mix(in srgb, var(--muted) 90%, transparent);
+}
+
+.hq-playground .pg-ladder-points {
+  font-variant-numeric: tabular-nums;
+  font-weight: 750;
+  color: color-mix(in srgb, var(--text) 82%, var(--muted));
+}
+
+.hq-playground .pg-ladder-row.is-playing .pg-ladder-points {
+  color: var(--accent);
+}
+
+/* ------------------------------------------------------------------ growth leaderboard */
+
+.hq-playground .pg-switch {
+  grid-column: 1 / -1;
+  display: flex;
+  gap: 6px;
+  width: fit-content;
+  padding: 4px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--panel) 82%, transparent);
+  border: 1px solid color-mix(in srgb, var(--line) 80%, transparent);
+}
+
+.hq-playground .pg-switch-btn {
+  width: auto;
+  min-height: var(--tap-min);
+  padding: 6px 16px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 700;
+  font-size: var(--text-sm);
+}
+
+.hq-playground .pg-switch-btn.is-on {
+  background: color-mix(in srgb, var(--accent) 18%, var(--panel));
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  color: var(--text);
+}
+
+.hq-playground .pg-growth {
+  grid-column: 1 / -1;
+  display: none;
+  padding: 14px 14px 10px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--panel-2) 90%, transparent), var(--panel));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+/* The classement has its own section too: the same quiet card as the growth table, one line per sister. */
+.hq-playground .pg-ranking {
+  grid-column: 1 / -1;
+  display: none;
+  padding: 14px 14px 10px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--panel-2) 90%, transparent), var(--panel));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+.hq-playground .pg-shell.is-ranking > .pg-main,
+.hq-playground .pg-shell.is-ranking > .pg-side {
+  display: none;
+}
+
+.hq-playground .pg-shell.is-ranking > .pg-ranking {
+  display: block;
+}
+
+.hq-playground .pg-ranking > .pg-growth-head {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+
+.hq-playground .pg-rank-list {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* Reading orders for the classement: the same rows, grouped by opening, lesson or the trait the sister leans on. */
+.hq-playground .pg-rank-sort {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 10px;
+}
+
+.hq-playground .pg-rank-sort .pg-switch-btn {
+  padding: 4px 12px;
+}
+
+.hq-playground .pg-rank-style {
+  padding: 0 7px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  font-size: var(--text-xs);
+  color: color-mix(in srgb, var(--text) 82%, transparent);
+}
+
+.hq-playground .pg-rank-row {
+  display: grid;
+  grid-template-columns: 1.6em minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: start;
+  padding: 8px 10px;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+  background: color-mix(in srgb, var(--panel) 70%, transparent);
+  color: var(--muted);
+}
+
+.hq-playground .pg-rank-row.is-playing {
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+  color: var(--text);
+}
+
+.hq-playground .pg-rank-rank,
+.hq-playground .pg-rank-points {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+
+.hq-playground .pg-rank-rank {
+  padding-top: 1px;
+}
+
+.hq-playground .pg-rank-points {
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.hq-playground .pg-rank-body {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.hq-playground .pg-rank-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.hq-playground .pg-rank-name {
+  font-weight: 700;
+  color: var(--text);
+}
+
+.hq-playground .pg-rank-record {
+  font-variant-numeric: tabular-nums;
+}
+
+.hq-playground .pg-rank-fact {
+  font-size: var(--text-sm);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.hq-playground .pg-rank-label {
+  margin-right: 5px;
+  font-style: normal;
+  font-weight: 700;
+  color: color-mix(in srgb, var(--text) 72%, transparent);
+}
+
+/* The progression reads as a direction rather than a decimal: a short scale whose bar leaves the centre toward the
+   trait that moved most, so a sister's growth is visible without reading a number. */
+.hq-playground .pg-rank-drift {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+}
+
+.hq-playground .pg-rank-scale {
+  position: relative;
+  display: inline-block;
+  width: 92px;
+  max-width: 46vw;
+  height: 9px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--line) 88%, transparent);
+  background: color-mix(in srgb, var(--panel-2) 76%, transparent);
+}
+
+.hq-playground .pg-rank-scale-mid {
+  position: absolute;
+  top: -3px;
+  bottom: -3px;
+  left: 50%;
+  width: 1px;
+  background: color-mix(in srgb, var(--text) 45%, transparent);
+}
+
+.hq-playground .pg-rank-scale-fill {
+  position: absolute;
+  top: 1px;
+  bottom: 1px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 72%, var(--text));
+}
+
+.hq-playground .pg-rank-scale.is-up .pg-rank-scale-fill {
+  left: 50%;
+}
+
+.hq-playground .pg-rank-scale.is-down .pg-rank-scale-fill {
+  right: 50%;
+}
+
+.hq-playground .pg-rank-scale.is-flat .pg-rank-scale-fill {
+  display: none;
+}
+
+/* The style ranking shares the card: a small heading, then the same row layout ranked on growth instead of points. */
+.hq-playground .pg-ranking .pg-rank-title {
+  margin: 16px 0 2px;
+  font-size:var(--text-lg);
+}
+
+.hq-playground .pg-ranking .pg-growth-lead + .pg-rank-list {
+  margin-top: 8px;
+}
+
+/* A section replaces the table while it is up; the duel underneath keeps running. */
+.hq-playground .pg-shell.is-growth > .pg-main,
+.hq-playground .pg-shell.is-growth > .pg-side {
+  display: none;
+}
+
+.hq-playground .pg-shell.is-growth > .pg-growth {
+  display: block;
+}
+
+.hq-playground .pg-growth > .pg-growth-head {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+
+.hq-playground .pg-growth .pg-growth-title {
+  margin: 0;
+  font-size:var(--text-lg);
+}
+
+.hq-playground .pg-growth .pg-growth-lead {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-sm);
+  line-height: 1.45;
+}
+
+/* The way back to a clean table: small, set apart, and visibly armed before it wipes anything. */
+.hq-playground .pg-growth-reset {
+  width: auto;
+  justify-self: start;
+  margin-top: 6px;
+  min-height: var(--tap-min);
+  font-size: var(--text-xs);
+}
+
+.hq-playground .pg-growth-reset.is-armed {
+  border-color: color-mix(in srgb, var(--accent) 62%, var(--line));
+  color: var(--text);
+}
+
+/* Saving the series before wiping it: two quiet buttons, then the line that says what happened. */
+.hq-playground .pg-growth-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.hq-playground .pg-growth-tools button {
+  width: auto;
+  min-height: var(--tap-min);
+  padding: 4px 12px;
+  font-size: var(--text-xs);
+}
+
+.hq-playground .pg-growth-file {
+  display: none;
+}
+
+.hq-playground .pg-growth-keep {
+  display: flex;
+  width: fit-content;
+  max-width: 100%;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  min-height: var(--tap-min);
+  font-size: var(--text-xs);
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.hq-playground .pg-growth-keep input {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.hq-playground .pg-growth-note {
+  margin: 6px 0 0;
+  font-size: var(--text-xs);
+  line-height: 1.45;
+  color: color-mix(in srgb, var(--accent) 70%, var(--muted));
+}
+
+.hq-playground .pg-growth-note:empty {
+  display: none;
+}
+
+.hq-playground .pg-growth-list {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.hq-playground .pg-growth-row {
+  display: grid;
+  grid-template-columns: 1.6em minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  padding: 8px 10px;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+  background: color-mix(in srgb, var(--panel) 70%, transparent);
+  color: var(--muted);
+}
+
+.hq-playground .pg-growth-row.is-playing {
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+  color: var(--text);
+}
+
+.hq-playground .pg-growth-rank {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  padding-top: 1px;
+}
+
+.hq-playground .pg-growth-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.hq-playground .pg-growth-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.hq-playground .pg-growth-name {
+  font-weight: 700;
+  color: var(--text);
+}
+
+.hq-playground .pg-growth-record {
+  font-variant-numeric: tabular-nums;
+  font-size: var(--text-sm);
+}
+
+.hq-playground .pg-growth-tags,
+.hq-playground .pg-growth-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  font-size: var(--text-sm);
+}
+
+.hq-playground .pg-growth-tag,
+.hq-playground .pg-growth-stat {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 5px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.hq-playground .pg-growth-tag-label {
+  font-style: normal;
+  font-size: var(--text-xs);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--muted) 80%, transparent);
+}
+
+.hq-playground .pg-growth-stat-value {
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.hq-playground .pg-growth-tag.is-empty {
+  color: color-mix(in srgb, var(--muted) 80%, transparent);
+}
+
+.hq-playground .pg-growth-words {
+  font-size: var(--text-sm);
+  color: color-mix(in srgb, var(--muted) 92%, transparent);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hq-playground .pg-growth-note {
+  font-size: var(--text-sm);
+  color: color-mix(in srgb, var(--text) 84%, var(--muted));
+  max-width: 100%;
+  overflow-wrap: anywhere;   /* la leçon se lit en entier : elle tient sur deux lignes plutôt qu'en ellipse */
+}
+
+/* ------------------------------------------------------------------ saved games */
+
+.hq-playground .pg-saves {
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--panel-2) 90%, transparent), var(--panel));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  overflow: hidden;
+}
+
+.hq-playground .pg-save-empty {
+  margin: 0;
+  padding: 2px 14px 12px;
+  font-size: var(--text-xs);
+  line-height: 1.55;
+  color: color-mix(in srgb, var(--muted) 85%, transparent);
+}
+
+.hq-playground .pg-save-list {
+  display: grid;
+  gap: 2px;
+  padding: 2px 8px 10px;
+  max-height: 232px;
+  overflow: auto;
+}
+
+.hq-playground .pg-save {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.hq-playground .pg-save-open {
+  flex: 1 1 auto;
+  width: auto;
+  display: grid;
+  gap: 2px;
+  min-height: 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--hq-dur-fast) var(--hq-out), border-color var(--hq-dur-fast) var(--hq-out);
+}
+
+.hq-playground .pg-save-open:hover {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 32%, transparent);
+}
+
+.hq-playground .pg-save-title {
+  font-size: var(--text-sm);
+  font-weight: 650;
+}
+
+.hq-playground .pg-save-meta {
+  font-size: var(--text-xs);
+  color: var(--muted);
+}
+
+.hq-playground .pg-save-del {
+  flex: 0 0 auto;
+  width: 26px;
+  min-height: 26px;
+  padding: 0;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--text-md);
+  line-height: 1;
+  cursor: pointer;
+  transition: color var(--hq-dur-fast) var(--hq-out), background var(--hq-dur-fast) var(--hq-out);
+}
+
+.hq-playground .pg-save-del:hover {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 40%, transparent);
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+}
+
+.hq-playground .pg-actions button[hidden] {
+  display: none;
+}
+
+.hq-playground .pg-actions button[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
+  background: color-mix(in srgb, var(--accent) 16%, var(--panel));
+  color: var(--accent);
+}
+
+.hq-playground .pg-entry input:disabled,
+.hq-playground .pg-entry button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* ------------------------------------------------------------------ motion */
+
+@keyframes pg-check {
+  0%, 100% {
+    box-shadow:
+      inset 0 0 0 3px var(--danger),
+      inset 0 0 16px color-mix(in srgb, var(--danger) 45%, transparent);
+  }
+  50% {
+    box-shadow:
+      inset 0 0 0 3px var(--danger),
+      inset 0 0 34px color-mix(in srgb, var(--danger) 65%, transparent);
+  }
+}
+
+@keyframes pg-target {
+  0%, 100% { transform: scale(1); opacity: 0.9; }
+  50% { transform: scale(1.14); opacity: 1; }
+}
+
+@keyframes pg-rise {
+  from { opacity: 0; transform: translateY(7px); }
+  to { opacity: 1; transform: none; }
+}
+
+.hq-playground .pg-main,
+.hq-playground .pg-side {
+  animation: pg-rise 0.46s var(--hq-out) both;
+}
+
+.hq-playground .pg-side { animation-delay: 0.07s; }
+
+/* ------------------------------------------------------------------ layout */
+
+@media (min-width: 760px) {
+  .hq-playground .pg-shell { grid-template-columns: minmax(0, 1fr) 272px; }
+  .hq-playground .pg-main { justify-items: stretch; }
+  .hq-playground .pg-board,
+  .hq-playground .pg-entry { max-width: clamp(320px, 66vh, 480px); }
+}
+
+/* Phone widths: the five actions become an even two-column grid, so the rows line up on both edges instead of
+   leaving a ragged gap, and the duel pause keeps a full-width row of its own. */
+@media (max-width: 560px) {
+  .hq-playground .pg-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+    width: 100%;
+  }
+
+  .hq-playground .pg-actions button {
+    width: 100%;
+    padding: 0 10px;
+  }
+
+  .hq-playground .pg-actions button[data-pg-action="pause"] {
+    grid-column: 1 / -1;
+  }
+}
+
+/* a landed piece slides in from its old square, and a capture flashes the square it took */
+.hq-playground .pg-glyph.is-moving {
+  z-index: 5;
+  animation: pg-slide var(--pg-slide-dur, 240ms) var(--hq-out) both;
+}
+
+@keyframes pg-slide {
+  from { transform: translate(var(--pg-dx, 0), var(--pg-dy, 0)); }
+  to { transform: translateY(-2%); }
+}
+
+.hq-playground .pg-sq.is-hit {
+  animation: pg-hit 400ms var(--hq-out);
+}
+
+@keyframes pg-hit {
+  0% { filter: brightness(0.92); }
+  35% {
+    filter: brightness(1.42) saturate(1.08);
+    box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--danger) 55%, transparent);
+  }
+  100% { filter: none; }
+}
+
+@media (prefers-color-scheme: light) {
+  .hq-playground {
+    --pg-light-1: #fdf4e2;
+    --pg-light-2: #f1dfba;
+    --pg-dark-1: #b98a5e;
+    --pg-dark-2: #94643d;
+  }
+  .hq-playground .pg-board {
+    box-shadow:
+      inset 0 0 0 1px rgba(0, 0, 0, 0.14),
+      inset 0 1px 0 rgba(255, 255, 255, 0.2),
+      0 22px 44px -30px rgba(38, 24, 12, 0.6),
+      0 3px 10px rgba(38, 24, 12, 0.14);
+  }
+  .hq-playground .pg-sq.is-white .pg-glyph {
+    text-shadow: 0 1px 0 #6b5136, 0 2px 3px rgba(0, 0, 0, 0.28), 0 0 1px rgba(28, 18, 10, 0.9);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hq-playground *,
+  .hq-playground .pg-sq.is-check,
+  .hq-playground .pg-sq.is-target::after {
+    transition: none;
+    animation: none;
+  }
+}

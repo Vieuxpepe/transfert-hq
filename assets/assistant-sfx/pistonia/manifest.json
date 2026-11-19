@@ -1,0 +1,29 @@
+{
+  "assistant": "pistonia",
+  "samples": {
+    "open": [
+      {
+        "url": "/assets/assistant-sfx/pistonia/open.7d732044.ogg",
+        "duration_ms": 190
+      }
+    ],
+    "think": [
+      {
+        "url": "/assets/assistant-sfx/pistonia/think.8ace60f0.ogg",
+        "duration_ms": 750
+      }
+    ],
+    "done": [
+      {
+        "url": "/assets/assistant-sfx/pistonia/done.02f7c1ae.ogg",
+        "duration_ms": 500
+      }
+    ],
+    "error": [
+      {
+        "url": "/assets/assistant-sfx/pistonia/error.f054909e.ogg",
+        "duration_ms": 830
+      }
+    ]
+  }
+}

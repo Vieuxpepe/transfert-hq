@@ -12,6 +12,8 @@ probability per event, and no line repeated within the last twelve. All of it li
 
 from __future__ import annotations
 
+import hq_language
+
 import random
 import re
 import time
@@ -61,7 +63,7 @@ def mood_of(line: str) -> str:
 
 
 def lines_for(event: str, language: str) -> list[str]:
-    return list(EVENTS[event]["lines"].get("en" if language == "en" else "fr", []))
+    return list(EVENTS[event]["lines"].get(hq_language.pick(language), []))
 
 
 def _live(state: dict[str, Any]) -> dict[str, Any]:

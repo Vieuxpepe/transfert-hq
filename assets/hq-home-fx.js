@@ -101,8 +101,11 @@
     projets: { name: "Plan au crépuscule", dark: ["#1a2a55", "#f0955a", "#2c5d9a", "#111b38"], light: ["#d7e1f7", "#fdd2b2", "#cfdcf5", "#edf1fb"] },
     inventaire: { name: "Forêt au soir", dark: ["#23352a", "#d8a04c", "#4f6b3a", "#16211a"], light: ["#e1ecdc", "#f7dcab", "#d8e6c8", "#f1f6ec"] },
     lecteur: { name: "Cinéma de nuit", dark: ["#2c1846", "#e0568f", "#5a2a7a", "#170c28"], light: ["#eadcf5", "#f9c6dc", "#e3cdf2", "#f6eefb"] },
+    playground: { name: "Salon d'échecs", dark: ["#2b2440", "#ffd166", "#4a3d6b", "#171225"], light: ["#efe6d6", "#ffe0a8", "#dfd3ee", "#f7f1e8"] },
     musique: { name: "Scène, lumières basses", dark: ["#191a3d", "#f0619c", "#41307a", "#0e0f24"], light: ["#e6e2f8", "#fbb4d3", "#d3cdf0", "#f4f1fd"] },
     engine: { name: "Atelier machines", dark: ["#2a2b33", "#e0a03c", "#5b6472", "#17181e"], light: ["#e8e9ee", "#f7d9a6", "#cdd3dc", "#f4f5f8"] },
+    robotique: { name: "Serre au crépuscule", dark: ["#1f3326", "#a8d96b", "#3f6b4a", "#121d16"], light: ["#e4f0e2", "#d6efa4", "#c8e2c0", "#f0f7ee"] },
+    atelier3d: { name: "Atelier des fées", dark: ["#2a1838", "#ff8fd8", "#5b2f6e", "#160c20"], light: ["#f5e4f2", "#ffc6ea", "#e8d2f0", "#fbf1f8"] },
     securite: { name: "Veille de nuit", dark: ["#12262b", "#d98a3f", "#2f5a5f", "#0a171a"], light: ["#dbecec", "#f9d2a4", "#c6e0dd", "#eef7f6"] },
     plus: { name: "Aurore boréale", dark: ["#152c3e", "#7fd6b4", "#2f5f7a", "#0d1a26"], light: ["#d9eaf2", "#cdeedd", "#d3e5ef", "#eef6f8"] },
     ops: { name: "Aurore boréale", dark: ["#152c3e", "#7fd6b4", "#2f5f7a", "#0d1a26"], light: ["#d9eaf2", "#cdeedd", "#d3e5ef", "#eef6f8"] },
@@ -224,19 +227,14 @@
       c.style.cssText = "top:" + y + "%;--s:" + sc + ";animation-delay:" + delay + "s";
       clouds.appendChild(c);
     });
+    // Two depth layers of one tiled sheet each: the drops used to be 24 elements with 24
+    // animations for 1px streaks, i.e. 24 of the home's motion budget spent on something the
+    // pale sky barely showed. The sheet is denser and the parallax survives.
     const precip = el("div", "home-precip");
-    for (let i = 0; i < 24; i += 1) {
-      const p = el("span", "home-drop-item");
-      const left = ((i * 17) % 98) + 1;
-      const delay = -((i * 1.3) % 7).toFixed(1);
-      const dur = (2.2 + ((i * 0.7) % 2.5)).toFixed(1);
-      const size = 2 + (i % 3);
-      p.style.cssText = "left:" + left + "%;animation-delay:" + delay + "s;animation-duration:" + dur + "s;--drop-size:" + size + "px";
-      precip.appendChild(p);
-    }
+    precip.append(el("div", "home-precip-layer is-far"), el("div", "home-precip-layer is-near"));
     const orb = el("div", "home-orb");
     orb.append(el("span", "home-orb-rays"), el("span", "home-orb-core"));
-    sky.append(aurora, stars, clouds, precip, orb);
+    sky.append(aurora, stars, clouds, orb, precip); // precipitation in front of the sun: mist and rain veil it by occlusion
     S.hero.insertBefore(sky, S.hero.firstChild);
     S.sky = sky;
     S.orb = orb;
@@ -435,9 +433,11 @@
       g.dataset.fxText = text;
       g.setAttribute("aria-label", text);
       g.textContent = "";
-      [...text].forEach((ch, i) => {
-        const s = el("span", "home-ch" + (ch === " " ? " is-sp" : ""), { "aria-hidden": "true" });
-        s.textContent = ch;
+      // Words, not letters: the greeting is two to four groups, so the entrance costs a handful of animations
+      // instead of one per character (25 on « De retour, Marc-Antoine ? »). Each group keeps its trailing space.
+      (text.match(/\S+\s*/g) || [text]).forEach((word, i) => {
+        const s = el("span", "home-ch", { "aria-hidden": "true" });
+        s.textContent = word;
         s.style.setProperty("--c", String(i));
         g.appendChild(s);
       });

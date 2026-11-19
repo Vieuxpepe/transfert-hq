@@ -198,7 +198,7 @@ class Checkout(unittest.TestCase):
         self.assertEqual(facts["baseline"], "7fb650bb4097c789cc2027164f20a7b44cfe99c2")
         self.assertEqual(facts["tree"], recovery.WORKTREE_HEAD)
         self.assertEqual(len(facts["head"]), 40)
-        self.assertEqual(facts["root"], str(recovery.PAGE_SCRIPT and Path(r"C:\Transfert-worktrees\forge-lifecycle-m1")))
+        self.assertEqual(facts["root"], str(page_launcher.WORKTREE.resolve()))
         with self.assertRaises(RuntimeError):
             assert_disposable_session_path(Path(r"C:\Transfert\bridge_sessions.json"))
         with self.assertRaises(RuntimeError):
@@ -299,7 +299,7 @@ class Checkout(unittest.TestCase):
         before = listening()
         handle = start_ephemeral_page()
         try:
-            self.assertEqual(handle.identity["bridge_root"], str(SOURCE.resolve()))
+            self.assertEqual(handle.identity["bridge_root"], str(page_launcher.WORKTREE.resolve()))
             self.assertEqual(handle.identity["script"], str((SOURCE / "tests" / "m2b_exact_port_page.py").resolve()))
             self.assertEqual(handle.identity["pid"], os.getpid())
             self.assertNotIn(handle.port, gate.RESERVED_PORTS)

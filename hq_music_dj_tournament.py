@@ -5,6 +5,8 @@ through `dj.` so tests and callers keep patching the one place. hq_music_dj re-e
 
 from __future__ import annotations
 
+import hq_language
+
 from collections import Counter
 from datetime import date, timedelta
 from typing import Any
@@ -534,7 +536,7 @@ def _make_cameo_inner(bracket_id: str, champion: dict[str, Any], same_pick: bool
 
     who = random.choice(list(dj.GUEST_VOICES))
     language = dj.show_language()
-    text = CAMEO_FALLBACK[who]["en" if language == "en" else "fr"].format(name=champion["name"])
+    text = CAMEO_FALLBACK[who][hq_language.pick(language)].format(name=champion["name"])
     system = (f"Tu es {dj.GUEST_VOICES[who]} Tu viens commenter en direct la finale d'un tournoi de {label} "
               "animé par ta sœur Musica pour le Maître. Une seule réplique parlée (30 mots max), dans TA propre voix, "
               "bienveillante envers Musica et le Maître, qui commente le vainqueur. N'invente aucun fait sur le titre ; "

@@ -146,8 +146,8 @@ body:not([data-view="forge"]) .hq-forgia-drawer { display: none !important; }
   box-shadow: 0 0 12px rgba(245, 158, 11, 0.45);
 }
 
-.hq-forgia-drawer-title { font-weight: 800; font-size: 0.95rem; letter-spacing: 0.02em; }
-.hq-forgia-drawer-sub { font-size: 0.72rem; color: #fcd34d; }
+.hq-forgia-drawer-title { font-weight: 800; font-size:var(--text-md); letter-spacing: 0.02em; }
+.hq-forgia-drawer-sub { font-size: var(--text-xs); color: #fcd34d; }
 .hq-forgia-drawer-controls { display: flex; gap: 6px; }
 
 .hq-forgia-icon-btn {
@@ -156,7 +156,7 @@ body:not([data-view="forge"]) .hq-forgia-drawer { display: none !important; }
   color: #fef3c7;
   border-radius: 8px;
   padding: 4px 8px;
-  font-size: 0.75rem;
+  font-size: var(--text-sm);
   cursor: pointer;
 }
 .hq-forgia-icon-btn:hover { background: rgba(245, 158, 11, 0.2); border-color: rgba(245, 158, 11, 0.5); }
@@ -175,7 +175,7 @@ body:not([data-view="forge"]) .hq-forgia-drawer { display: none !important; }
   max-width: 90%;
   padding: 9px 12px;
   border-radius: 12px;
-  font-size: 0.85rem;
+  font-size: var(--text-sm);
   line-height: 1.45;
   word-wrap: break-word;
 }
@@ -200,7 +200,7 @@ body:not([data-view="forge"]) .hq-forgia-drawer { display: none !important; }
 }
 
 .hq-forgia-tool-tag {
-  font-size: 0.68rem;
+  font-size: var(--text-xs);
   padding: 1px 6px;
   border-radius: 999px;
   background: rgba(245, 158, 11, 0.16);
@@ -222,7 +222,7 @@ body:not([data-view="forge"]) .hq-forgia-drawer { display: none !important; }
   color: #fde68a;
   border-radius: 999px;
   padding: 4px 9px;
-  font-size: 0.72rem;
+  font-size: var(--text-xs);
   cursor: pointer;
 }
 .hq-forgia-quick-btn:hover { background: rgba(245, 158, 11, 0.26); }
@@ -242,7 +242,7 @@ body:not([data-view="forge"]) .hq-forgia-drawer { display: none !important; }
   border-radius: 9px;
   padding: 8px 11px;
   color: #fef3c7;
-  font-size: 16px;
+  font-size: var(--text-md);
   outline: none;
 }
 .hq-forgia-input:focus { border-color: #f59e0b; }
@@ -254,7 +254,7 @@ body:not([data-view="forge"]) .hq-forgia-drawer { display: none !important; }
   border: none;
   border-radius: 9px;
   padding: 0 14px;
-  font-size: 0.82rem;
+  font-size: var(--text-sm);
   cursor: pointer;
 }
 .hq-forgia-send:disabled { opacity: 0.5; cursor: default; }
@@ -276,7 +276,7 @@ body:not([data-view="forge"]) .hq-forgia-drawer { display: none !important; }
   background: rgba(24, 17, 11, 0.95);
   border: 1px solid rgba(245, 158, 11, 0.58);
   color: #fef3c7;
-  font-size: 12.5px;
+  font-size: var(--text-sm);
   line-height: 1.42;
   box-shadow: 0 10px 24px rgba(0, 0, 0, 0.48), 0 0 16px rgba(245, 158, 11, 0.22);
   cursor: pointer;
@@ -322,6 +322,6 @@ body:not([data-view="forge"]) .hq-forgia-drawer { display: none !important; }
   background: rgba(245, 158, 11, 0.16);
   padding: 2px 5px;
   border-radius: 4px;
-  font-size: 0.79em;
+  font-size: var(--text-xs);
   user-select: all;
 }

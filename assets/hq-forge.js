@@ -415,7 +415,7 @@
       // Forge takes a while to load: poll status for a minute after a start.
       let tries = 0;
       const timer = setInterval(() => {
-        refreshStatus().catch(() => {});
+        refreshStatus(true).catch(() => {});
         if (++tries >= 30 || (action === "start" ? forgeState !== "offline" : forgeState === "offline")) clearInterval(timer);
       }, 2000);
     });
@@ -461,7 +461,14 @@
     const hiresLarge = hiresOn() && !hiresFits();
     // B: a busy Forge (someone else's work) does not block a normal job; HQ waits politely.
     const forgeOk = forgeState === "ready" || (forgeState === "busy" && !privateMode);
-    const ready = !active && !hiresPrivate && !hiresMissing && !hiresLarge && forgeOk && catalogState === "ready" && checkpointEl.value && samplerEl.value && schedulerEl.value;
+    /* A full gallery fails only when the finished image is saved, after the GPU work.
+       Refuse before dispatch and say how many slots are left. */
+    const remaining = galleryUsage && galleryUsage.quota_images
+      ? Math.max(0, Number(galleryUsage.quota_images) - Number(galleryUsage.images || 0)) : Infinity;
+    const wanted = galleryUsage ? Number((fleetMode() ? $("forge-fleet-count") : $("forge-iter")).value || 1) : 1;
+    const quotaFull = !privateMode && galleryFull;
+    const quotaShort = !privateMode && !quotaFull && Number.isFinite(remaining) && wanted > remaining;
+    const ready = !active && !hiresPrivate && !hiresMissing && !hiresLarge && !quotaFull && !quotaShort && forgeOk && catalogState === "ready" && checkpointEl.value && samplerEl.value && schedulerEl.value;
     generateBtn.disabled = !ready;
     privateBtn.disabled = !ready || !vaultState.private_generation;
     if (reasonEl) {
@@ -474,6 +481,8 @@
       else if (!checkpointEl.value) reasonEl.textContent = "Générer est désactivé : aucun modèle n'est choisi.";
       else if (!samplerEl.value) reasonEl.textContent = "Générer est désactivé : aucun échantillonneur n'est choisi.";
       else if (!schedulerEl.value) reasonEl.textContent = "Générer est désactivé : aucun planificateur n'est choisi.";
+      else if (quotaFull) reasonEl.textContent = "Générer est désactivé : la galerie est pleine. Supprime des images (la Corbeille libère leur place) ou sauvegarde-la.";
+      else if (quotaShort) reasonEl.textContent = "Générer est désactivé : " + remaining + " place(s) restante(s) pour " + wanted + " image(s). Réduis le nombre ou libère de la place.";
       else if (hiresPrivate) reasonEl.textContent = "Générer est désactivé : Hires. fix n'est pas disponible en génération privée.";
       else if (hiresMissing) reasonEl.textContent = "Générer est désactivé : l'agrandisseur n'est pas disponible.";
       else if (hiresLarge) reasonEl.textContent = "Générer est désactivé : le second passage dépasserait 2048 pixels.";
@@ -499,27 +508,36 @@
   // Concurrent callers (e.g. the two chains in hqForgeShow) share one in-flight refresh,
   // so opening the studio reads status and catalog once and nothing overwrites the result.
   let statusInFlight = null;
-  function refreshStatus() {
+  function refreshStatus(fresh = false) {
+    if (fresh) return readStatus(true);  // the "start Forge" poll must not read a cached verdict
     if (!statusInFlight) {
       statusInFlight = readStatus().finally(() => { statusInFlight = null; });
     }
     return statusInFlight;
   }
 
-  async function readStatus() {
+  async function readStatus(fresh = false) {
     const first = catalogState === "offline" && forgeState === "offline" && !checkpointEl.options.length;
     if (first) {
       statusEl.dataset.state = "busy";
       statusEl.textContent = "Connexion à Forge…";
     }
     try {
-      const status = await api("/api/forge/status");
-      const catalog = await api("/api/forge/catalog");
+      // Two probes, one wait: serially they cost the offline verdict twice before anything paints.
+      const [status, catalog] = await Promise.all([
+        api("/api/forge/status" + (fresh ? "?fresh=1" : "")),
+        api("/api/forge/catalog" + (fresh ? "?fresh=1" : "")),
+      ]);
       forgeUnreachable = false;
       catalogState = catalog && catalog.forge === "ready" ? "ready" : (catalog && catalog.code) || "error";
       setStatus(status);
       if (catalog && catalog.forge === "ready") {
-        const staleModel = fillSelect(checkpointEl, catalog.models || [], (item) => item.title ? { value: item.title, label: item.title } : null, "");
+        const activeModel = status && typeof status.model === "string" ? status.model.trim() : "";
+        const activeBase = activeModel.split(" [")[0];
+        const matchedModel = activeModel && Array.isArray(catalog.models)
+          ? (catalog.models.find((m) => m && m.title && (m.title === activeModel || m.model_name === activeModel || m.title.split(" [")[0] === activeBase)) || {}).title || ""
+          : "";
+        const staleModel = fillSelect(checkpointEl, catalog.models || [], (item) => item.title ? { value: item.title, label: item.title } : null, matchedModel);
         const staleSampler = fillSelect(samplerEl, catalog.samplers || [], (item) => item.name ? { value: item.name, label: item.name } : null, "Euler a");
         const stalePlan = fillSelect(schedulerEl, catalog.schedulers || [], (item) => item.name ? { value: item.name, label: item.label || item.name } : null, "automatic");
         fillUpscalers(catalog.upscalers || []);
@@ -581,6 +599,54 @@
     clearDeepCheck();
   }
 
+  /* Galerie: the quota is fixed (400 images, 2 GiB) and the bin counts too, so the
+     header states it instead of letting a full gallery fail a generation later. */
+  function bytesLabel(bytes) {
+    const value = Number(bytes) || 0;
+    if (value >= 1073741824) return (Math.round(value / 107374182.4) / 10).toFixed(1).replace(".", ",") + " Go";
+    return (value <= 0 ? 0 : Math.max(1, Math.round(value / 1048576))) + " Mo";
+  }
+  let galleryUsage = null;
+  let galleryFull = false;
+  function renderUsage(usage) {
+    const box = $("forge-gallery-usage");
+    if (!box) return;
+    if (!usage || !usage.quota_images) { galleryUsage = null; galleryFull = false; box.textContent = ""; box.removeAttribute("data-near"); return; }
+    galleryUsage = usage;
+    const images = Number(usage.images) || 0;
+    const share = Math.min(100, Math.round((100 * images) / usage.quota_images));
+    const byteShare = usage.quota_bytes ? (Number(usage.bytes) || 0) / usage.quota_bytes : 0;
+    box.textContent = images + " / " + usage.quota_images + " images \u00b7 " + bytesLabel(usage.bytes) +
+      " / " + bytesLabel(usage.quota_bytes) + " \u00b7 " + share + " % de la place" +
+      (images >= usage.quota_images || byteShare >= 1 ? " \u00b7 galerie pleine : supprime ou sauvegarde" : "");
+    box.dataset.near = String(share >= 90 || byteShare >= 0.9);
+    galleryFull = images >= Number(usage.quota_images) || byteShare >= 1;
+    /* The backup limit is stated here, before the owner asks for a ZIP: the archive is
+       bounded by free disk space, not by a fixed size that a full gallery cannot meet.
+       The last full backup and the images created since answer the other question: is
+       this archive recent enough to trust? */
+    const backup = $("forge-gallery-backup-limit");
+    if (!backup) return;
+    if (usage.export_images == null) { backup.textContent = ""; return; }
+    if (!usage.export_images) { backup.textContent = "Sauvegarde : la galerie est vide."; return; }
+    const fits = Number(usage.export_bytes) <= Number(usage.export_limit_bytes);
+    let line = "Sauvegarde : " + usage.export_images + " image(s) \u00b7 \u2248 " + bytesLabel(usage.export_bytes) +
+      " \u00b7 limite " + bytesLabel(usage.export_limit_bytes) + " d\u2019espace libre" +
+      (fits ? "" : " \u00b7 insuffisant : supprime des images (la Corbeille lib\u00e8re leur place)");
+    const status = usage.backup || null;
+    const stamp = status && status.at ? Date.parse(status.at) : NaN;
+    if (!Number.isNaN(stamp)) {
+      const days = Math.max(0, Math.floor((Date.now() - stamp) / 86400000));
+      const when = days === 0 ? "aujourd\u2019hui" : days === 1 ? "hier" : "il y a " + days + " jours";
+      const since = Number(status.since_images) || 0;
+      line += " \u00b7 derni\u00e8re sauvegarde " + when + (since ? " \u00b7 " + since + " image(s) depuis" : " \u00b7 \u00e0 jour");
+    } else {
+      line += " \u00b7 aucune sauvegarde encore";
+    }
+    backup.textContent = line;
+    backup.dataset.near = String(!fits);
+  }
+
   async function loadGallery(reset) {
     if (!galleryUi) await ensureGalleryUi();
     if (reset) {
@@ -590,6 +656,7 @@
     }
     const path = "/api/forge/gallery?limit=24" + (cursor ? "&cursor=" + encodeURIComponent(cursor) : "");
     const page = await api(path);
+    renderUsage(page.usage);
     (page.images || []).forEach((image) => { const node = card(image); if (node) gallery.appendChild(node); });
     const galleryEmpty = $("forge-gallery-empty");
     if (galleryEmpty) galleryEmpty.hidden = gallery.children.length > 0;
@@ -1230,8 +1297,8 @@
     closeViewer();
     requestRestore(settings, "all", "image de la galerie");
   });
-  /* Reversible by default: rejected images wait in the Corbeille, which has its
-     own permanent delete. A native confirm() used to be the only way back. */
+  /* Reversible by default: rejected images wait in the Corbeille, where they can be
+     put back or deleted for good (with a confirmation, from the bin itself). */
   deleteBtn.addEventListener("click", async () => {
     if (!currentDetail) return;
     try {
@@ -3857,7 +3924,7 @@
     setWake("batch", running);
     syncFleetFx(batch);
     const setText = (id, value) => { const n = $(id); if (n.textContent !== value) n.textContent = value; };
-    setText("forge-fleet-batch-state", { running: "En cours", cancelling: "Annulation…", completed: "Terminé", partial: "Terminé en partie", failed: "Échec", cancelled: "Annulé" }[batch.state] || batch.state);
+    setText("forge-fleet-batch-state", batch.paused ? "En pause" : ({ running: "En cours", cancelling: "Annulation…", completed: "Terminé", partial: "Terminé en partie", failed: "Échec", cancelled: "Annulé" }[batch.state] || batch.state));
     setText("forge-fleet-batch-totals", c.done + " / " + c.total + " terminées · " + c.failed + " en échec · " + c.pending + " en attente · " + c.running + " en cours" + (c.uncertain ? " · " + c.uncertain + " incertaines" : "") + (c.cancelled ? " · " + c.cancelled + " annulées" : ""));
     // Parity (A): devices left out of the split are always named, never dropped silently.
     let excludedEl = $("forge-fleet-batch-excluded");
@@ -4278,13 +4345,16 @@
       const ms = Math.round(performance.now() - t0);
       if (window.hqPerfMark) window.hqPerfMark("forge", { op: "forge-show", ms }, { force: ms > 400 });
     };
-    refreshStatus()
-      .then(() => refreshVault())
-      .then(() => Promise.all([resume(), loadGallery(true), loadPresetList()]))
+    // Only the job resume needs the status line. The vault, the presets and the devices no longer
+    // wait behind it, and the gallery still comes after the vault it is filtered by.
+    const status = refreshStatus();
+    status.then(() => resume()).catch(() => {});
+    Promise.allSettled([status, refreshVault(), loadPresetList(), loadDevices()])
+      .then(() => loadGallery(true))
+      .then(() => resumeBatch())
       .catch(() => {})
       .finally(markDone);
     queueUsual();
-    refreshStatus().catch(() => {}).then(() => loadDevices()).then(() => resumeBatch()).catch(() => {});
   };
   window.hqForgeHide = function () {
     if (busyTimer) { window.clearTimeout(busyTimer); busyTimer = 0; }

@@ -275,3 +275,213 @@ class MusicaTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+    def test_cancel_is_job_scoped_and_stops_before_storing(self):
+        self.assertFalse(musica.request_cancel("nope")["cancelled"])
+        self.assertTrue(musica.request_cancel("mus-testjob")["cancelled"])
+        self.assertTrue(musica._is_cancelled("mus-testjob"))
+        self.assertFalse(musica._is_cancelled(""))
+        with mock.patch("hq_ai.generate") as generate:
+            out = musica.chat("Salut Musica", job="mus-testjob")
+        generate.assert_not_called()
+        self.assertTrue(out["cancelled"])
+        self.assertEqual(musica.get_thread()["messages"], [])
+
+    def test_cancel_route_answers(self):
+        code, payload = musica.http_post("/api/musica/cancel", {"job": "mus-routejob"})
+        self.assertEqual(code, 200)
+        self.assertTrue(payload["cancelled"])
+
+    def test_beat_grid_roundtrip_and_tap_wins_over_live(self):
+        code, payload = musica.http_get("/api/musica/beats/s-abc123")
+        self.assertEqual((code, payload["grid"]), (200, None))
+        code, payload = musica.http_post("/api/musica/beats", {
+            "key": "s-abc123", "source": "tap", "bpm": 128.04, "offset": 30.25, "confidence": 1})
+        self.assertEqual(code, 200)
+        code, payload = musica.http_post("/api/musica/beats", {
+            "key": "s-abc123", "source": "live", "bpm": 64.0, "offset": 1.0, "confidence": 0.4,
+            "energy": [0.2, 1, 0.5], "energy_step": 1, "drops": [61.5, 30.0]})
+        grid = musica.http_get("/api/musica/beats/s-abc123")[1]["grid"]
+        self.assertEqual((grid["bpm"], grid["offset"], grid["source"]), (128.04, 30.25, "tap"))
+        self.assertEqual(grid["energy"], [0.2, 1.0, 0.5])
+        self.assertEqual(grid["drops"], [30.0, 61.5])
+
+    def test_beat_grid_rejects_bad_input(self):
+        bad = [
+            {"key": "../x", "source": "tap", "bpm": 120, "offset": 0},
+            {"key": "s-a", "source": "guess", "bpm": 120, "offset": 0},
+            {"key": "s-a", "source": "tap", "bpm": 500, "offset": 0},
+            {"key": "s-a", "source": "tap", "bpm": True, "offset": 0},
+            {"key": "s-a", "source": "live", "bpm": 120, "offset": 0, "energy": [2]},
+            {"key": "s-a", "source": "live", "bpm": 120, "offset": 0, "drops": list(range(30))},
+        ]
+        for body in bad:
+            code, payload = musica.http_post("/api/musica/beats", body)
+            self.assertEqual((code, payload["code"]), (400, "validation_error"), body)
+        self.assertEqual(musica.http_get("/api/musica/beats/a b")[0], 400)
+
+    def test_beat_grid_store_is_bounded(self):
+        with mock.patch.object(musica, "MAX_BEAT_GRIDS", 3):
+            for i in range(5):
+                musica.save_beat_grid({"key": f"l-{i}", "source": "live", "bpm": 120, "offset": 0.5})
+        self.assertIsNone(musica.beat_grid("l-0")["grid"])
+        self.assertIsNotNone(musica.beat_grid("l-4")["grid"])
+
+    def test_discover_from_profile_rotates_seeds_and_skips_fatigued(self):
+        import hq_musica_profile as mp
+        mp.save_overrides({"boosted_artists": ["SeedBoost", "SeedSecond"], "boosted_genres": ["darksynth", "ebm"]})
+        mp._save_analysis({
+            "version": 2,
+            "analyzed_utc": "2026-11-15T12:00:00Z",
+            "history_sharing": True,
+            "artist_affinities": [
+                {"name": "TiredBand", "score": 90.0},
+                {"name": "FreshBand", "score": 70.0},
+            ],
+            "genre_profile": {"top_genres": [{"genre": "industrial", "score": 9}], "surging_genres": ["aggrotech"]},
+            "fatigue_profile": {"overplay_fatigue": [{"name": "TiredBand"}]},
+        })
+        seen_calls = []
+
+        def fake_disc(seed, genre, limit=15, known_artists=()):
+            seen_calls.append((seed, genre))
+            idx = len(seen_calls)
+            return [{"uri": f"spotify:track:d{idx}", "name": f"D{idx}", "artists": [seed], "why": "w"}]
+
+        with mock.patch.object(musica, "listening_snapshot", return_value={"top": {}, "recent": []}), \
+             mock.patch("hq_music_radar.discovery_tracks", side_effect=fake_disc):
+            out = musica._run_tool("discover_from_profile", {"limit": 4, "unknown_only": True})
+        self.assertGreaterEqual(len(seen_calls), 2)
+        self.assertTrue(all(seed != "TiredBand" for seed, _ in seen_calls))
+        self.assertEqual(len({s for s, _ in seen_calls}), 2)
+        self.assertEqual(len(out["tracks"]), 2)
+
+
+class SpeechIdentityTests(unittest.TestCase):
+    """Her speech may only describe a song the client actually identified (wrong-song report, 2026-11-18)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        musica.reset_for_tests()
+        musica.bind(root=self.tmp.name)
+        hq_music.bind(root=self.tmp.name)
+
+    def tearDown(self):
+        musica.reset_for_tests()
+        hq_music.reset_for_tests()
+        self.tmp.cleanup()
+
+    def test_dance_prompt_names_the_known_song(self):
+        song, ctx, rule = musica.dance_prompt_context(
+            track="Song A", artist="Band A", album="", intensity=0.9, bpm=140,
+            song_sec=30, duration_sec=200, lyric_hint="hello", late_night=False, hits=0, replays=3,
+        )
+        self.assertIn("Song A", song)
+        self.assertIn("replayed this track 3", ctx)
+        self.assertIn("HEAR THIS EXACT SONG", rule)
+
+    def test_dance_prompt_without_a_song_never_names_one(self):
+        song, ctx, rule = musica.dance_prompt_context(
+            track="", artist="", album="", intensity=0.7, bpm=0,
+            song_sec=0, duration_sec=0, lyric_hint="", late_night=True, hits=0, replays=0,
+        )
+        self.assertNotIn("recently played", (song + ctx + rule).lower())
+        self.assertIn("you do not know", ctx.lower())
+        self.assertIn("never name", ctx.lower())
+        self.assertIn("never name", rule.lower())
+
+    def test_ambient_without_a_song_forbids_naming_one(self):
+        unknown = musica.ambient_now_playing("", "", False).lower()
+        self.assertIn("never name", unknown)
+        self.assertNotIn("recent track", unknown)
+        self.assertIn("Song A", musica.ambient_now_playing("Song A", "Band A", True))
+
+    def test_speech_log_is_bounded_and_routed(self):
+        self.assertEqual(musica.MAX_SPEECH_ITEMS, 200)
+        for i in range(5):
+            code, _ = musica.http_post("/api/musica/speech", {
+                "key": "l-abc", "title": "Song A", "source": "local",
+                "kind": "start", "model": "pack", "text": "line %d" % i,
+            })
+            self.assertEqual(code, 200)
+        code, payload = musica.http_get("/api/musica/speech")
+        self.assertEqual(code, 200)
+        self.assertEqual([row["text"] for row in payload["items"]], ["line %d" % i for i in range(5)])
+        self.assertEqual(payload["items"][-1]["key"], "l-abc")
+        self.assertEqual(payload["items"][-1]["source"], "local")
+
+    def test_empty_speech_is_rejected(self):
+        code, payload = musica.http_post("/api/musica/speech", {"text": "  "})
+        self.assertEqual(code, 400)
+        self.assertEqual(payload["code"], "validation_error")
+
+    def test_play_memory_keeps_the_source(self):
+        musica._record_play_memory("Song A", "Band A", "local")
+        musica._record_play_memory("Song A", "Band A", "local")
+        rows = musica._get_play_memory(5)
+        self.assertEqual(rows[0]["track"], "Song A")
+        self.assertEqual(rows[0]["source"], "local")
+        self.assertEqual(rows[0]["play_count"], 1)
+
+    def test_play_memory_source_is_unknown_when_absent(self):
+        # Old rows and callers that never knew the source must not be reported as Spotify.
+        musica._record_play_memory("Old Local Song", "Someone")
+        rows = musica._get_play_memory(5)
+        self.assertEqual(rows[0]["track"], "Old Local Song")
+        self.assertEqual(rows[0]["source"], "")
+
+
+class SongTitleOverrideTests(unittest.TestCase):
+    """The owner's title lives in .hq-music state, so every device and the prompt itself use it."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        musica.reset_for_tests()
+        musica.bind(root=self.tmp.name)
+        hq_music.bind(root=self.tmp.name)
+
+    def tearDown(self):
+        musica.reset_for_tests()
+        hq_music.reset_for_tests()
+        self.tmp.cleanup()
+
+    def test_override_round_trips_and_the_prompt_uses_it(self):
+        code, payload = musica.http_post("/api/musica/song-titles", {"key": "l-abc", "title": "Le vrai titre", "artist": "Elle"})
+        self.assertEqual(code, 200)
+        self.assertEqual(payload["item"]["title"], "Le vrai titre")
+        code, got = musica.http_get("/api/musica/song-titles/l-abc")
+        self.assertEqual(code, 200)
+        self.assertEqual(got["item"]["artist"], "Elle")
+        song, _ctx, _rule = musica.dance_prompt_context(
+            track="track01", artist="", album="", intensity=0.8, bpm=0, song_sec=0,
+            duration_sec=0, lyric_hint="", late_night=False, hits=0, replays=0, key="l-abc",
+        )
+        self.assertIn("Le vrai titre", song)
+        self.assertNotIn("track01", song)
+
+    def test_clearing_restores_the_detected_title(self):
+        musica.http_post("/api/musica/song-titles", {"key": "s-abc", "title": "Titre"})
+        code, payload = musica.http_post("/api/musica/song-titles", {"key": "s-abc", "title": ""})
+        self.assertEqual(code, 200)
+        self.assertEqual(payload["item"], {})
+        self.assertEqual(musica.song_title_get("s-abc"), {})
+        self.assertEqual(musica.http_get("/api/musica/song-titles")[1]["items"], {})
+
+    def test_bad_key_is_rejected(self):
+        code, payload = musica.http_post("/api/musica/song-titles", {"key": "../x", "title": "T"})
+        self.assertEqual(code, 400)
+        self.assertEqual(payload["code"], "validation_error")
+
+    def test_override_is_per_key(self):
+        musica.http_post("/api/musica/song-titles", {"key": "l-one", "title": "One"})
+        self.assertEqual(musica.song_title_get("l-two"), {})
+
+    def test_conceal_route_reads_the_blind_duel(self):
+        from unittest import mock
+        import hq_music_dj
+        with mock.patch.object(hq_music_dj, "_state", return_value={"duel": {"blind": True, "vote": None}}):
+            code, payload = musica.http_get("/api/musica/conceal")
+        self.assertEqual(code, 200)
+        self.assertTrue(payload["concealed"])
+        with mock.patch.object(hq_music_dj, "_state", return_value={"duel": {"blind": True, "vote": "a"}}):
+            self.assertFalse(musica.http_get("/api/musica/conceal")[1]["concealed"])

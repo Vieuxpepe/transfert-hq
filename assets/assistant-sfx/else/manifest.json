@@ -1,0 +1,23 @@
+{
+  "assistant": "else",
+  "samples": {
+    "open": [
+      {
+        "url": "/assets/assistant-sfx/else/open.b69941ad.ogg",
+        "duration_ms": 960
+      }
+    ],
+    "think": [
+      {
+        "url": "/assets/assistant-sfx/else/think.6de6be3c.ogg",
+        "duration_ms": 310
+      }
+    ],
+    "reply": [
+      {
+        "url": "/assets/assistant-sfx/else/reply.513800f0.ogg",
+        "duration_ms": 630
+      }
+    ]
+  }
+}

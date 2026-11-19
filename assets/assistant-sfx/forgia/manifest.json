@@ -1,0 +1,29 @@
+{
+  "assistant": "forgia",
+  "samples": {
+    "open": [
+      {
+        "url": "/assets/assistant-sfx/forgia/open.630725fb.ogg",
+        "duration_ms": 430
+      }
+    ],
+    "think": [
+      {
+        "url": "/assets/assistant-sfx/forgia/think.89177c2e.ogg",
+        "duration_ms": 460
+      }
+    ],
+    "reply": [
+      {
+        "url": "/assets/assistant-sfx/forgia/reply.daba79c5.ogg",
+        "duration_ms": 260
+      }
+    ],
+    "error": [
+      {
+        "url": "/assets/assistant-sfx/forgia/error.517bc75f.ogg",
+        "duration_ms": 1090
+      }
+    ]
+  }
+}

@@ -2,7 +2,7 @@
 (function (root) {
   "use strict";
   function viewer(canvas) {
-    let gl = null, program = null, buffer = null, pos = null, col = null;
+    let gl = null, program = null, buffer = null, pos = null, col = null, wLoc = -1, clipLoc = null;
     const state = { triangles: [], edges: [], edgeMode: false, selectedEdge: -1, yaw: -0.72, pitch: 0.62, zoom: 1, panX: 0, panY: 0, selectedIndex: -1 };
     let onFace = null, onEdge = null;
     const dot = (a, b) => a.reduce((s, x, i) => s + x * b[i], 0);
@@ -18,11 +18,13 @@
       };
       try {
         program = gl.createProgram();
-        gl.attachShader(program, shader(gl.VERTEX_SHADER, "attribute vec3 p; attribute vec3 c; varying vec3 v; void main(){gl_Position=vec4(p,1.0);v=c;}"));
-        gl.attachShader(program, shader(gl.FRAGMENT_SHADER, "precision mediump float; varying vec3 v; void main(){gl_FragColor=vec4(v,1.0);}"));
+        // w carries the model Z through to the fragment shader: the section plane cuts on it, in millimetres.
+        gl.attachShader(program, shader(gl.VERTEX_SHADER, "attribute vec3 p; attribute vec3 c; attribute float w; varying vec3 v; varying float vw; void main(){gl_Position=vec4(p,1.0);v=c;vw=w;}"));
+        gl.attachShader(program, shader(gl.FRAGMENT_SHADER, "precision mediump float; varying vec3 v; varying float vw; uniform float uClip; void main(){if(vw>uClip) discard; gl_FragColor=vec4(v,1.0);}"));
         gl.linkProgram(program);
         if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(program));
         buffer = gl.createBuffer(); pos = gl.getAttribLocation(program, "p"); col = gl.getAttribLocation(program, "c");
+        wLoc = gl.getAttribLocation(program, "w"); clipLoc = gl.getUniformLocation(program, "uClip");
       } catch (_) { gl = null; }
     }
     const ctx = gl ? null : canvas.getContext("2d");
@@ -75,17 +77,24 @@
       if (gl) {
         gl.viewport(0, 0, w, h); gl.clearColor(0.93, 0.96, 0.98, 1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
         gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.LEQUAL); gl.useProgram(program);
-        const data = new Float32Array(faces.length * 3 * 6);
+        const data = new Float32Array(faces.length * 3 * 7);
         let at = 0;
-        for (const face of faces) for (const p of face.points) { data.set(p, at); at += 3; data.set(face.color, at); at += 3; }
+        for (const face of faces) {
+          const tri = state.triangles[face.index];
+          for (let i = 0; i < 3; i++) { data.set(face.points[i], at); at += 3; data.set(face.color, at); at += 3; data[at++] = tri[i][2]; }
+        }
         gl.bindBuffer(gl.ARRAY_BUFFER, buffer); gl.bufferData(gl.ARRAY_BUFFER, data, gl.STREAM_DRAW);
         gl.enableVertexAttribArray(pos); gl.enableVertexAttribArray(col);
-        gl.vertexAttribPointer(pos, 3, gl.FLOAT, false, 24, 0); gl.vertexAttribPointer(col, 3, gl.FLOAT, false, 24, 12);
+        gl.vertexAttribPointer(pos, 3, gl.FLOAT, false, 28, 0); gl.vertexAttribPointer(col, 3, gl.FLOAT, false, 28, 12);
+        if (wLoc >= 0) { gl.enableVertexAttribArray(wLoc); gl.vertexAttribPointer(wLoc, 1, gl.FLOAT, false, 28, 24); }
+        if (clipLoc) gl.uniform1f(clipLoc, state.clip == null ? 1e9 : state.clip);
         gl.drawArrays(gl.TRIANGLES, 0, faces.length * 3);
       } else if (ctx) {
         ctx.fillStyle = "#edf4f8"; ctx.fillRect(0, 0, w, h);
         faces.sort((a, b) => b.points.reduce((s, p) => s + p[2], 0) - a.points.reduce((s, p) => s + p[2], 0));
         for (const face of faces) {
+          const tri = state.triangles[face.index];
+          if (state.clip != null && (tri[0][2] + tri[1][2] + tri[2][2]) / 3 > state.clip) continue;
           const pts = face.points.map(p => [(p[0] + 1) * w / 2, (1 - p[1]) * h / 2]);
           ctx.beginPath(); ctx.moveTo(...pts[0]); ctx.lineTo(...pts[1]); ctx.lineTo(...pts[2]); ctx.closePath();
           ctx.fillStyle = `rgb(${face.color.map(v => Math.round(v * 255)).join(",")})`; ctx.fill();
@@ -94,14 +103,30 @@
       edgeCanvas.width = w; edgeCanvas.height = h;
       const q = viewParams();
       const stroke = (edge, color, width) => {
-        const pts = edgePoints(edge).map(p => projectPoint(p, q));
+        const world = edgePoints(edge), clip = state.clip;
         edgeCtx.beginPath();
-        pts.forEach((pp, i) => { const X = (pp[0] + 1) * w / 2, Y = (1 - pp[1]) * h / 2; if (i) edgeCtx.lineTo(X, Y); else edgeCtx.moveTo(X, Y); });
+        let started = false;
+        for (const p of world) {
+          if (clip != null && p[2] > clip + 1e-9) { started = false; continue; }
+          const pp = projectPoint(p, q), X = (pp[0] + 1) * w / 2, Y = (1 - pp[1]) * h / 2;
+          if (started) edgeCtx.lineTo(X, Y); else { edgeCtx.moveTo(X, Y); started = true; }
+        }
         edgeCtx.strokeStyle = color; edgeCtx.lineWidth = width; edgeCtx.lineCap = "round"; edgeCtx.lineJoin = "round"; edgeCtx.stroke();
       };
       if (state.edgeMode && state.showAll) state.edges.forEach(edge => stroke(edge, "rgba(15,40,50,.45)", Math.max(1, dpr)));
       if (state.edgeMode) (state.marked || []).forEach(i => { if (state.edges[i]) stroke(state.edges[i], "#f97316", Math.max(4, 4 * dpr)); });
       if (state.edgeMode && state.selectedEdge >= 0 && state.edges[state.selectedEdge]) stroke(state.edges[state.selectedEdge], "#f97316", Math.max(4, 4 * dpr));
+      // a pending operation's shape: translucent, dashed, never part of the model
+      for (const poly of state.ghost || []) {
+        if (!poly || poly.length < 2) continue;
+        edgeCtx.beginPath();
+        poly.forEach((p, i) => { const pp = projectPoint(p, q), X = (pp[0] + 1) * w / 2, Y = (1 - pp[1]) * h / 2; if (i) edgeCtx.lineTo(X, Y); else edgeCtx.moveTo(X, Y); });
+        edgeCtx.closePath();
+        edgeCtx.fillStyle = "rgba(14,116,144,.13)"; edgeCtx.fill();
+        edgeCtx.setLineDash([5 * dpr, 4 * dpr]);
+        edgeCtx.strokeStyle = "rgba(14,116,144,.85)"; edgeCtx.lineWidth = Math.max(1, dpr); edgeCtx.stroke();
+        edgeCtx.setLineDash([]);
+      }
     }
     function faceAt(clientX, clientY) {
       const rect = canvas.getBoundingClientRect();
@@ -116,12 +141,13 @@
         const w2 = 1 - w0 - w1;
         if (Math.min(w0, w1, w2) < -1e-6) continue;
         const z = w0 * a[2] + w1 * b[2] + w2 * c[2];
-        if (!hit || z < hit.z) hit = { index: f.index, z };
+        if (!hit || z < hit.z) hit = { index: f.index, z, w: [w0, w1, w2] };
       }
       if (!hit) return null;
       const tri = state.triangles[hit.index], origin = tri[0];
       const normal = unit(cross(sub(tri[1], origin), sub(tri[2], origin)));
       if (!normal) return null;
+      const point = [0, 1, 2].map(k => hit.w[0] * tri[0][k] + hit.w[1] * tri[1][k] + hit.w[2] * tri[2][k]);
       const ref = Math.abs(normal[2]) > 0.9 ? [0, 1, 0] : [0, 0, 1];
       const u = unit(cross(ref, normal)), v = cross(normal, u);
       const plane = { origin: origin.slice(), u, v, normal };
@@ -130,7 +156,7 @@
         const n = unit(cross(sub(t[1], t[0]), sub(t[2], t[0])));
         return n && dot(n, normal) > 0.99999 && t.every(p => Math.abs(dot(sub(p, origin), normal)) < tol);
       }).map(t => t.map(p => [dot(sub(p, origin), u), dot(sub(p, origin), v)]));
-      return { index: hit.index, depth: hit.z, plane, triangles };
+      return { index: hit.index, depth: hit.z, point: point, plane, triangles };
     }
     function edgeAt(clientX, clientY, pointerType) {
       const rect = canvas.getBoundingClientRect();
@@ -162,6 +188,32 @@
     function setTriangles(triangles) { state.triangles = triangles || []; state.selectedIndex = -1; state.selectedEdge = -1; draw(); }
     function setEdges(edges) { state.edges = edges || []; state.selectedEdge = -1; draw(); }
     function setEdgeMode(on) { state.edgeMode = !!on; state.selectedIndex = -1; state.selectedEdge = -1; draw(); }
+    /** A pending operation's outline: closed loops of world points, drawn translucent under the edges. */
+    function setGhost(polys) { state.ghost = polys || []; draw(); }
+    /** Section plane: hide everything above `z` millimetres (null shows the whole part). */
+    function setClip(z) { state.clip = Number.isFinite(z) ? z : null; draw(); }
+    /** Standard views. Any face can then be squared with a double click (alignTo). */
+    /** Where a world point sits on screen: lets a caller (tests, measuring) aim at a real edge or face. */
+    function project(world) {
+      const rect = canvas.getBoundingClientRect(), q = viewParams(), p = projectPoint(world, q);
+      return { x: rect.left + (p[0] + 1) * rect.width / 2, y: rect.top + (1 - p[1]) * rect.height / 2 };
+    }
+    function setView(name) {
+      const views = { iso: [-0.72, 0.62], face: [0, 0], back: [Math.PI, 0], right: [Math.PI / 2, 0], left: [-Math.PI / 2, 0], top: [0, Math.PI / 2 - 0.001] };
+      const v = views[name] || views.iso;
+      state.yaw = v[0]; state.pitch = v[1]; state.panX = 0; state.panY = 0; draw();
+    }
+    function fit() { state.zoom = 1; state.panX = 0; state.panY = 0; state.frame = null; draw(); }
+    function zoomBy(factor) { const rect = canvas.getBoundingClientRect(); zoomAt(rect.left + rect.width / 2, rect.top + rect.height / 2, factor); draw(); }
+    /** Turn the camera to look squarely at a face (its normal points at the viewer). */
+    function alignTo(normal) {
+      const n = unit(normal || []);
+      if (!n) return false;
+      state.yaw = Math.atan2(n[0], n[1]);
+      state.pitch = Math.max(-1.48, Math.min(1.48, Math.asin(Math.max(-1, Math.min(1, n[2])))));
+      state.panX = 0; state.panY = 0; draw();
+      return true;
+    }
     /** Freeze the framing on the bounds of `triangles` (or release it with null), e.g. while an extrusion grows live. */
     function lockFrame(triangles) {
       state.frame = null;
@@ -203,7 +255,7 @@
     canvas.addEventListener("contextmenu", e => e.preventDefault());
     // A face drag (push / pull): the owner may take a one-finger / left-button drag that starts on a face instead of orbiting.
     // handler: { start(face, event) → true to take it, move(dx, dy, event), end(moved, event), cancel() }.
-    let faceDrag = null;
+    let faceDrag = null, onDblFace = null;
     canvas.addEventListener("pointerdown", e => {
       canvas.setPointerCapture(e.pointerId);
       const pan = e.pointerType === "mouse" && (e.button === 1 || e.button === 2 || (e.button === 0 && e.shiftKey));
@@ -255,11 +307,18 @@
         }
       }
     });
+    canvas.addEventListener("dblclick", e => {
+      if (state.edgeMode) return;
+      const face = faceAt(e.clientX, e.clientY);
+      if (face && onDblFace) onDblFace(face);
+    });
     canvas.addEventListener("wheel", e => { e.preventDefault(); zoomAt(e.clientX, e.clientY, e.deltaY > 0 ? 0.9 : 1.1); draw(); }, { passive: false });
     if (root.ResizeObserver) new ResizeObserver(draw).observe(canvas);
     canvas.hqSolidProject = p => projectPoint(p); // read-only test hook: [x, y, depth] in clip space, smaller depth is nearer
-    return { setTriangles, setEdges, setEdgeMode, setMarked, lockFrame, reset, draw, state, faceAt, edgeAt,
-      onFaceSelect(callback) { onFace = callback; }, onEdgeSelect(callback) { onEdge = callback; }, onFaceDrag(handler) { faceDrag = handler; } };
+    return { setTriangles, setEdges, setEdgeMode, setMarked, lockFrame, reset, draw, state, faceAt, edgeAt, project,
+      setGhost, setClip, setView, fit, zoomBy, alignTo,
+      onFaceSelect(callback) { onFace = callback; }, onEdgeSelect(callback) { onEdge = callback; },
+      onFaceDrag(handler) { faceDrag = handler; }, onFaceDblClick(callback) { onDblFace = callback; } };
   }
   root.HQSolidView = viewer;
 })(window);

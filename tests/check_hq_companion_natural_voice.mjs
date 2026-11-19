@@ -113,11 +113,14 @@ assert.equal(startIdleHumming(win),false,'reduced motion disables the idle anima
 win.matchMedia=()=>({matches:false});
 // Exercise the mouth's actual audio-ownership lifecycle without needing a rendered SVG.
 const mouthSource=readFileSync(new URL('../assets/hq-companion-mouth.js',import.meta.url),'utf8');
+// The mouth module exports the two character helpers its gesture slice initialises
+// through; pass the module's own functions in rather than re-parsing its source.
+const {turnCharacter,nextIdleGap}=require('../assets/hq-companion-mouth.js');
 const fragment=mouthSource.slice(mouthSource.indexOf('    let gesture = null,'),mouthSource.indexOf('    const afterSpeech ='));
-const makeGestures=vm.runInNewContext('(function(win,reactionAudio){'+fragment+';return {beginGesture,clearGesture};})');
+const makeGestures=vm.runInNewContext('(function(win,reactionAudio,turnCharacter,nextIdleGap){'+fragment+';return {beginGesture,clearGesture};})');
 const stopped=[];let admitted=false;
 const gestures=makeGestures({performance:{now:()=>now}},
-  {start:()=>admitted?1000:0,stop:kind=>stopped.push(kind)});
+  {start:()=>admitted?1000:0,stop:kind=>stopped.push(kind)},turnCharacter,nextIdleGap);
 gestures.beginGesture('exhale',now);gestures.clearGesture();
 assert.deepEqual(stopped,[],'an animation whose audio was not admitted cannot stop another interaction');
 admitted=true;gestures.beginGesture('laugh',now);gestures.clearGesture();

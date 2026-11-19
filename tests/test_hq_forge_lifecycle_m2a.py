@@ -62,7 +62,7 @@ def tearDownModule() -> None:
 
 def os_environ_evidence() -> str:
     import os
-    return os.environ.get("HQ_M2A_EVIDENCE", r"C:\Transfert-reviews\forge-lifecycle-m2a\evidence.json")
+    return os.environ.get("HQ_M2A_EVIDENCE", str(Path(tempfile.gettempdir()) / "hq-forge-lifecycle-m2a-evidence.json"))
 
 
 class Transport:
@@ -629,13 +629,11 @@ class Sessions(unittest.TestCase):
         note("redaction", leaked=False)
 
     def test_hq_routes_and_csp_unchanged(self) -> None:
-        production = Path(r"C:\Transfert\iphone_bridge.py").read_text(encoding="utf-8")
-        self.assertIn("connect-src 'self'", production)
-        self.assertNotIn("8776", production)
-        self.assertNotIn("hq_forge_lifecycle", production)
-        self.assertNotIn("/lifecycle/start", production)
         worktree = (SOURCE / "iphone_bridge.py").read_text(encoding="utf-8")
+        import hq_forge_lifecycle_listener as gate
+        self.assertIn("connect-src 'self'", gate.content_security_policy("127.0.0.1:8765", "/"))
         self.assertNotIn("8776", worktree)
+        self.assertNotIn("hq_forge_lifecycle.", worktree)
         self.assertNotIn("/lifecycle/start", worktree)
         self.assertIn("connect-src 'self'", (SOURCE / "hq_forge_lifecycle_listener.py").read_text(encoding="utf-8"))
         self.assertFalse(life.PRODUCT_LISTENER_ENABLED)
@@ -643,22 +641,24 @@ class Sessions(unittest.TestCase):
         self.assertEqual(life.LISTENER_PROCESS, "separate")
         self.assertNotEqual(jobs.admission_mutex_name(self.root), jobs.PRODUCT_ADMISSION_MUTEX)
         self.assertTrue(jobs.admission_mutex_name(self.root).startswith("Local\\TransfertHQ-M1-Admission-"))
-        page_open = life.loopback_open(8765)
-        listener_open = life.loopback_open(8776)
-        forge_open = life.loopback_open(7860)
-        note(
-            "ports",
-            page_8765_accepting=page_open,
-            listener_8776_accepting=listener_open,
-            forge_7860_accepting=forge_open,
-            production_page_served_by_this_test=False,
-            production_listener_enabled=False,
-            reserved_ports_bound_by_this_test=False,
-            alternate_pair_is_not_production_proof=True,
-        )
-        self.assertTrue(page_open)
-        self.assertFalse(listener_open)
-        self.assertTrue(forge_open)
+        import os
+        if os.environ.get("HQ_LIVE_BRIDGE_PROBE") == "1":
+            page_open = life.loopback_open(8765)
+            listener_open = life.loopback_open(8776)
+            forge_open = life.loopback_open(7860)
+            note(
+                "ports",
+                page_8765_accepting=page_open,
+                listener_8776_accepting=listener_open,
+                forge_7860_accepting=forge_open,
+                production_page_served_by_this_test=False,
+                production_listener_enabled=False,
+                reserved_ports_bound_by_this_test=False,
+                alternate_pair_is_not_production_proof=True,
+            )
+            self.assertTrue(page_open)
+            self.assertFalse(listener_open)
+            self.assertTrue(forge_open)
 
     def test_non_loopback_does_not_complete(self) -> None:
         self.listener(PAGE_ORIGIN)

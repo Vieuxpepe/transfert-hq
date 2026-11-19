@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import hq_language
+
 import hashlib
 import json
 import re
@@ -44,6 +46,9 @@ _guard = threading.Lock()
 # Held until the outer SQLite transaction commits or rolls back. Not multiprocess-safe.
 _commit_owners_guard = threading.Lock()
 _commit_owners: dict[str, tuple[int, int]] = {}
+# Serializes the final write of a chat turn so a reply cannot overwrite a message
+# that landed while the model was thinking (check + write under one lock).
+_session_write_lock = threading.Lock()
 
 
 class InventoriaError(Exception):
@@ -261,6 +266,108 @@ def _simulate_proposal(p: dict, inv: dict) -> list[dict]:
     return issues
 
 
+def _alias_for(hint: Any) -> str | None:
+    if not isinstance(hint, str) or not hint.strip():
+        return None
+    base = root()
+    if base is None:
+        return None
+    try:
+        import hq_inventoria_habits as habits
+        return habits.alias_item(base, hint)
+    except Exception:
+        return None
+
+
+def _prefs() -> dict:
+    """Auto-apply preferences; anything unreadable means OFF (every change goes through review)."""
+    base = root()
+    if base is None:
+        return {"auto_apply": False, "auto_delta_max": 0}
+    try:
+        import hq_inventoria_habits as habits
+        if habits._load(base).get("_unreadable"):
+            return {"auto_apply": False, "auto_delta_max": 0}
+        return habits.get_prefs(base)
+    except Exception:
+        return {"auto_apply": False, "auto_delta_max": 0}
+
+
+def _trusted_indexes(proposals: list[dict], inv: dict, cap: int) -> list[int]:
+    """Which proposals may apply at once: quantity adjusts of an existing item, resolved with high confidence,
+    within the size cap, one per item, on an item no other change in this message touches, and valid together.
+    Creates, updates, moves, deletes and anything ambiguous always stay drafts for review."""
+    touched: set[str] = set()
+    for p in proposals:
+        if p.get("op") != "item.adjust":
+            pl = p.get("payload") or {}
+            for x in [pl.get("id"), *(pl.get("ids") or [])]:
+                if isinstance(x, str):
+                    touched.add(x)
+    picked: list[int] = []
+    resolved: list[dict] = []
+    seen: set[str] = set()
+    items = {i["id"]: i for i in inv.get("items") or []}
+    for i, p in enumerate(proposals):
+        if p.get("op") != "item.adjust":
+            continue
+        rp, issues = _resolve_proposal(p, inv)
+        pl = rp.get("payload") or {}
+        iid, delta = pl.get("id"), pl.get("delta")
+        if issues or (rp.get("resolved") or {}).get("confidence") != "high" or not isinstance(iid, str):
+            continue
+        if iid in touched or iid in seen:
+            continue
+        if isinstance(delta, bool) or not isinstance(delta, int) or delta == 0 or abs(delta) > _unit_cap(cap, items.get(iid)):
+            continue
+        seen.add(iid)
+        picked.append(i)
+        resolved.append(rp)
+    if picked and _simulate_batch_sequential(resolved, inv):
+        return []
+    return picked
+
+
+def _unit_cap(cap: int, item: dict | None) -> int:
+    """The auto-apply cap counts pieces; an item kept in g/ml gets the same cap in 100 g / 100 ml steps
+    (50 -> 5 000 g), and one kept in kg/L never less than the plain cap."""
+    try:
+        import hq_inventoria_links as links
+        dim = links.unit_dim((item or {}).get("unit"))
+    except Exception:
+        dim = None
+    if dim and dim[0] in ("g", "ml"):
+        return max(cap, int(cap * 100 / dim[1]))
+    return cap
+
+
+def _fill_create_defaults(p: dict, inv: dict) -> dict:
+    """An item.create without a shelf/unit gets the one this name had before (learned), when that shelf still exists."""
+    if p.get("op") != "item.create":
+        return p
+    payload = dict(p.get("payload") or {})
+    if payload.get("place") and payload.get("unit"):
+        return p
+    base = root()
+    if base is None:
+        return p
+    try:
+        import hq_inventoria_habits as habits
+        learned = habits.name_defaults(base, payload.get("name"))
+    except Exception:
+        return p
+    places = {pl["id"]: pl for pl in inv.get("places") or []}
+    out = dict(p)
+    if not payload.get("place") and learned.get("place") in places:
+        payload["place"] = learned["place"]
+        label = str(out.get("label_fr") or "")
+        out["label_fr"] = label.replace(" (sans emplacement)", f" dans {places[learned['place']].get('name')}")
+    if not payload.get("unit") and learned.get("unit"):
+        payload["unit"] = learned["unit"]
+    out["payload"] = payload
+    return out
+
+
 def _resolve_proposal(proposal: dict, inv: dict) -> tuple[dict, list[dict]]:
     """Fill resolved refs from inventory snapshot. Caller-supplied confidence is ignored."""
     out = dict(proposal)
@@ -275,12 +382,16 @@ def _resolve_proposal(proposal: dict, inv: dict) -> tuple[dict, list[dict]]:
     by_code = {p["code"].upper(): p["id"] for p in places if isinstance(p.get("code"), str)}
 
     explicit_iid = refs.get("item_id")
+    alias_iid = _alias_for(refs.get("name_hint")) if not isinstance(explicit_iid, str) else None
     if isinstance(explicit_iid, str):
         if explicit_iid not in by_item:
             local_issues.append({"op": op, "code": "not_found", "item_id": explicit_iid})
         else:
             resolved["item_id"] = explicit_iid
             resolved["confidence"] = "high"
+    elif alias_iid and alias_iid in by_item:
+        resolved["item_id"] = alias_iid          # a nickname the Master taught ("PQ" = papier toilette)
+        resolved["confidence"] = "high"
     elif refs.get("name_hint"):
         hint = str(refs["name_hint"]).strip()
         scored = [(it, _name_score(hint, it["name"])) for it in items]
@@ -697,6 +808,29 @@ def split_commit_batches(proposals: list[dict]) -> list[list[dict]]:
     return [base + [creates[0]]] + [[c] for c in creates[1:]]
 
 
+def _card_operation(operations: list[dict], rows: list[dict], inv: dict) -> str | None:
+    """The one drafted operation that touches a review card's rows (by item id, or by item
+    name resolved through the inventory), else None. Never guesses by position."""
+    ids = {str(r["item_id"]) for r in rows if isinstance(r, dict) and r.get("item_id")}
+    names = {str(r["name"]).strip().casefold() for r in rows if isinstance(r, dict) and isinstance(r.get("name"), str)}
+    if not ids and not names:
+        return None
+    item_names = {i["id"]: str(i.get("name") or "").strip().casefold() for i in inv.get("items") or []}
+    hits: list[str] = []
+    for op in operations:
+        for p in op.get("proposals") or []:
+            payload = p.get("payload") or {}
+            refs = p.get("refs") or {}
+            op_ids = {x for x in [payload.get("id"), refs.get("item_id"), *(payload.get("ids") or [])] if isinstance(x, str)}
+            op_names = {item_names[x] for x in op_ids if x in item_names}
+            if isinstance(payload.get("name"), str):
+                op_names.add(payload["name"].strip().casefold())
+            if (op_ids & ids) or (op_names & names):
+                hits.append(op["id"])
+                break
+    return hits[0] if len(hits) == 1 else None
+
+
 def post_session_message(
     conn: sqlite3.Connection,
     household_id: str,
@@ -704,7 +838,10 @@ def post_session_message(
     data: dict,
     *,
     split: bool = False,
+    auto: bool = False,
 ) -> dict:
+    """Store a turn and its drafts. ``auto`` (set by the routes, and for model replies) lets trusted quantity
+    adjusts go into their own batch, listed in the internal ``_auto`` key for http_post to apply after the save."""
     row = conn.execute(
         "SELECT * FROM inventoria_sessions WHERE id = ? AND household_id = ?",
         (session_id, household_id),
@@ -714,6 +851,8 @@ def post_session_message(
     if row["status"] != "open":
         raise InventoriaError("session fermée", status=409, code="conflict")
     messages = json.loads(row["messages_json"] or "[]")
+    base_rev = int(row["rev"] or 0)      # revision this turn is based on
+    base_messages = list(messages)
     now = _now()
     proposals: list[dict] = []
     image: dict | None = None
@@ -755,6 +894,7 @@ def post_session_message(
             _ctx.image = image
             _ctx.intent = data.get("intent") if data.get("intent") in ("stock", "grocery", "count") else None
             _ctx.conn, _ctx.household_id = conn, household_id
+            _ctx.job = data.get("job") if isinstance(data.get("job"), str) else ""
             try:
                 draft = adapter(text, session_id=session_id)
             except InventoriaError:
@@ -771,6 +911,14 @@ def post_session_message(
                 _ctx.image = None
                 _ctx.intent = None
                 _ctx.conn = None
+                _ctx.job = None
+            if isinstance(draft, dict) and draft.get("cancelled"):
+                # The Master pressed Cancel: the turn stops at its next round or tool
+                # call, so no message and no stock draft is stored. Notes, watches or a
+                # store preference she saved before stopping are kept; say how many.
+                kept = draft.get("kept_changes")
+                kept = kept if isinstance(kept, int) and not isinstance(kept, bool) and kept > 0 else 0
+                return {"ok": True, "cancelled": True, "kept_changes": kept, "messages": base_messages}
             raw_out = json.dumps(draft, ensure_ascii=False, default=str)
             if len(raw_out) > ADAPTER_OUTPUT_MAX:
                 raise InventoriaError("réponse modèle trop volumineuse", code="validation_error")
@@ -798,6 +946,7 @@ def post_session_message(
                 for p in raw_props:
                     proposals.append(schemas.validate_inventoria_proposal(p))
                 split_ok = True
+                auto = True          # her drafted adjusts may apply at once when the Master allows it
         else:
             messages.append({
                 "role": "assistant",
@@ -807,50 +956,105 @@ def post_session_message(
     else:
         raise InventoriaError("text ou proposals requis", code="validation_error")
 
-    if image is not None:
-        try:
-            import hq_inventoria_photos as photos
-            photos.record(_root(), photos.fingerprint(image), session_id, now)
-        except Exception:
-            pass
     # Reviews she is waiting on (photo rows, grocery lines) are kept with her message so they survive a reload.
+    card_meta: dict | None = None
+    inv_now: dict | None = None
     if (detections and detections["rows"]) or grocery_lines:
         last = messages[-1] if messages and isinstance(messages[-1], dict) and messages[-1].get("role") == "assistant" else None
+        inv_now = inventory.snapshot()
         if detections and detections["rows"]:
-            inv_now = inventory.snapshot()
             detections["places"] = [{"id": p["id"], "name": p.get("name")} for p in inv_now.get("places", [])][:80]
         if last is not None:
-            meta = last.setdefault("meta", {})
+            card_meta = last.setdefault("meta", {})
             if detections and detections["rows"]:
-                meta["detections"] = detections
+                card_meta["detections"] = detections
             if grocery_lines:
-                meta["grocery"] = grocery_lines
+                card_meta["grocery"] = grocery_lines
+    # This turn's own messages, taken before any trim: a merge below must append them,
+    # and slicing after the trim would lose them on a long conversation.
+    added = messages[len(base_messages):]
     if len(messages) > MESSAGES_MAX and "text" in data and callable(_cb.get("llm_adapter")):
         messages = messages[-(MESSAGES_MAX - 10):]  # chat transcript: keep the newest, never block a conversation
     if len(messages) > MESSAGES_MAX:
         raise InventoriaError(f"messages max {MESSAGES_MAX}", code="validation_error")
 
-    operations: list[dict] = []
-    for batch in (split_commit_batches(proposals) if (proposals and split_ok) else ([proposals] if proposals else [])):
-        op_id = _new_id("op")
-        conn.execute(
-            "INSERT INTO inventoria_operations("
-            "id, household_id, session_id, status, proposals_json, rev, created_at, updated_at"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (op_id, household_id, session_id, "draft", _safe_json(batch), 1, now, now),
-        )
-        _audit(conn, household_id=household_id, operation_id=op_id, action="propose",
-               prev_status=None, next_status="draft", detail={"count": len(batch)})
-        operations.append(_op_row_to_api(conn.execute(
-            "SELECT * FROM inventoria_operations WHERE id = ?", (op_id,),
-        ).fetchone()))
-    operation = operations[0] if operations else None
+    with _session_write_lock:
+        fresh = conn.execute(
+            "SELECT rev, messages_json FROM inventoria_sessions WHERE id = ? AND household_id = ?",
+            (session_id, household_id),
+        ).fetchone()
+        if fresh is None:
+            raise InventoriaError("session introuvable", status=404, code="not_found")
+        expect_rev = base_rev
+        if int(fresh["rev"] or 0) != base_rev:
+            # A message landed while the model was thinking: keep that turn and
+            # append ours after it, and save against the revision just read.
+            try:
+                existing = json.loads(fresh["messages_json"] or "[]")
+            except ValueError:
+                existing = []
+            messages = ([m for m in existing if isinstance(m, dict)] + added)[-MESSAGES_MAX:]
+            expect_rev = int(fresh["rev"] or 0)
 
-    conn.execute(
-        "UPDATE inventoria_sessions SET messages_json = ?, updated_at = ?, rev = rev + 1 WHERE id = ?",
-        (_safe_json(messages), now, session_id),
-    )
+        batches = split_commit_batches(proposals) if (proposals and split_ok) else ([proposals] if proposals else [])
+        trusted_first = False
+        if auto and proposals:
+            prefs = _prefs()
+            if prefs.get("auto_apply"):
+                idx = _trusted_indexes(proposals, inventory.snapshot(), int(prefs.get("auto_delta_max") or 0))
+                if idx:
+                    chosen = set(idx)
+                    rest = [p for i, p in enumerate(proposals) if i not in chosen]
+                    batches = [[proposals[i] for i in idx]] + (
+                        (split_commit_batches(rest) if split_ok else [rest]) if rest else [])
+                    trusted_first = True
+        operations: list[dict] = []
+        for batch in batches:
+            op_id = _new_id("op")
+            conn.execute(
+                "INSERT INTO inventoria_operations("
+                "id, household_id, session_id, status, proposals_json, rev, created_at, updated_at"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (op_id, household_id, session_id, "draft", _safe_json(batch), 1, now, now),
+            )
+            _audit(conn, household_id=household_id, operation_id=op_id, action="propose",
+                   prev_status=None, next_status="draft", detail={"count": len(batch)})
+            operations.append(_op_row_to_api(conn.execute(
+                "SELECT * FROM inventoria_operations WHERE id = ?", (op_id,),
+            ).fetchone()))
+        operation = operations[0] if operations else None
+
+        # Which drafted operation each review card belongs to, decided here from item ids and
+        # names (never from label wording), so the card's Ignorer cancels exactly that one.
+        cards: dict[str, str | None] = {}
+        if detections and detections["rows"]:
+            cards["detections"] = _card_operation(operations, detections["rows"], inv_now or {})
+        if grocery_lines:
+            cards["grocery"] = _card_operation(operations, grocery_lines, inv_now or {})
+        if card_meta is not None:
+            for kind, op_ref in cards.items():
+                if op_ref:
+                    card_meta[kind + "_op"] = op_ref
+
+        written = conn.execute(
+            "UPDATE inventoria_sessions SET messages_json = ?, updated_at = ?, rev = ? WHERE id = ? AND rev = ?",
+            (_safe_json(messages), now, expect_rev + 1, session_id, expect_rev),
+        )
+        if written.rowcount != 1:
+            raise InventoriaError("conversation modifiée — réessaie", status=409, code="conflict", retryable=True)
+    if image is not None:
+        # Only a turn that was actually saved counts as "already analysed"; a failed save
+        # must not make the retry answer "you already sent this picture".
+        try:
+            import hq_inventoria_photos as photos
+            photos.record(_root(), photos.fingerprint(image), session_id, now)
+        except Exception:
+            pass
     out: dict[str, Any] = {"ok": True, "messages": messages}
+    if trusted_first and operations:
+        out["_auto"] = [operations[0]["id"]]     # internal: http_post applies it after this transaction commits
+    if cards:
+        out["cards"] = cards
     if detections and detections["rows"]:
         out["detections"] = detections      # editable review card in the chip; drafts are built only after the Master confirms
     if grocery_lines:
@@ -877,7 +1081,7 @@ def validate_operation(
     if row["status"] not in ("draft", "validated"):
         raise InventoriaError("statut incompatible validate", status=409, code="conflict")
     inv = inventory.snapshot()
-    proposals = json.loads(row["proposals_json"] or "[]")
+    proposals = [_fill_create_defaults(p, inv) for p in json.loads(row["proposals_json"] or "[]")]
     resolved: list[dict] = []
     issues: list[dict] = []
     for p in proposals:
@@ -1566,11 +1770,22 @@ def http_get(path: str, qs: dict | None = None) -> tuple[int, dict]:
             return 200, status()
         except InventoriaError as exc:
             return _err(exc)
+    m_item = ITEM_RE.match(path)
+    if m_item or path == "/api/inventoria/spending":     # file-backed: no database needed
+        try:
+            return 200, (item_sheet(m_item.group(1)) if m_item else spending_get(qs))
+        except (InventoriaError, inventory.InventoryError) as exc:
+            return _err(exc)
     try:
         st = _open_store(readonly=True)
         try:
             conn = st.conn
             household_id = finances.ensure_default_household(conn, create=False)
+            if path == "/api/inventoria/history":
+                lim = ((qs or {}).get("limit") or ["40"])[0]
+                return 200, history(conn, household_id, int(lim) if str(lim).isdigit() else 40)
+            if path == "/api/inventoria/recipes":
+                return 200, recipes_get(conn, household_id)
             m_sess = SESSION_RE.match(path)
             if m_sess:
                 sid = m_sess.group(1)
@@ -1639,6 +1854,10 @@ def current_db() -> tuple | None:
     return (conn, _ctx.household_id) if conn is not None else None
 
 
+def current_job() -> str:
+    return str(getattr(_ctx, "job", "") or "")
+
+
 def current_history() -> list[dict]:
     """Earlier messages of the session whose message is being answered (empty outside an adapter call)."""
     return list(getattr(_ctx, "history", None) or [])
@@ -1654,7 +1873,7 @@ def speak(data: dict) -> tuple[int, dict]:
     if not isinstance(text, str) or not text.strip():
         raise InventoriaError("Texte vocal requis", code="validation_error")
     text = re.sub(r"<[^>]+>|[`*_#]", "", text)[:MAX_SPEAK_CHARS]
-    res = hq_voice.synthesize(text, language="en" if data.get("language") == "en" else "fr",
+    res = hq_voice.synthesize(text, language=hq_language.pick(data.get("language")),
                               style="neutral", timeout_sec=30, character="inventoria")
     url = res.get("audio_url") if res and res.get("ok") else None
     if not isinstance(url, str) or not re.fullmatch(
@@ -1700,6 +1919,7 @@ def status() -> dict:
         pass
     import hq_inventory
     import hq_inventoria_watch as watch
+    _sync_filament()                                      # finished prints subtract their filament (opt-in links)
     inv = hq_inventory.snapshot()
     try:
         import hq_inventoria_history
@@ -1707,10 +1927,55 @@ def status() -> dict:
     except Exception:
         pass
     import hq_inventoria_notify as notify
-    return {"ok": True, "greeting": ai.greeting(inv), "alerts": ai.alerts(inv)[:12], "notify": notify.get_settings(_root()),
+    out = {"ok": True, "greeting": ai.greeting(inv), "alerts": ai.alerts(inv)[:12], "notify": notify.get_settings(_root()),
             "shopping": {"all": ai.shopping_list(inv, include_soon=True), "urgent": ai.shopping_list(inv, include_soon=False)},
             "watches": watch.list_watches(_root(), inv.get("items", [])), "memory": mem.list_notes(_root()),
-            "voice": voice, "max_notes": mem.MAX_NOTES, "language": ai.language()}
+            "voice": voice, "max_notes": mem.MAX_NOTES, "language": ai.language(),
+            "prefs": _prefs(), "aliases": _alias_rows(), **_link_status(inv)}
+    out.update(_feel_status(inv, out))
+    return out
+
+
+def _feel_status(inv: dict, st: dict) -> dict:
+    """The calm line, the quiet streak, the voice lines and the ask budget. Data only, never fatal."""
+    try:
+        import hq_inventoria_feel as feel
+        import hq_inventoria_links as links
+        root_, lang = _root(), st.get("language")
+        feel.observe(root_, st.get("alerts") or [])
+        return {"calm": feel.calm(inv, st.get("alerts") or [], st.get("use_soon") or [], links.last_count_days(root_), lang),
+                "streak": feel.streak_line(root_, lang), "tone": feel.voice(lang), "asks": feel.asks_get(root_)}
+    except Exception:
+        return {"calm": {"calm": False, "line": None}, "streak": None, "tone": {}, "asks": None}
+
+
+def _link_status(inv: dict) -> dict:
+    """Use-soon dates, this week's spot-check, record accuracy, filament links: data only, never fatal."""
+    try:
+        import hq_inventoria_links as links
+        import hq_inventoria_habits as habits_mod
+        root_ = _root()
+        conn_hh = None
+        st = None
+        try:
+            st = _open_store(readonly=True)
+            conn_hh = (st.conn, finances.ensure_default_household(st.conn, create=False))
+        except Exception:
+            conn_hh = None
+        try:
+            soon = links.use_soon(root_, inv, conn=conn_hh[0] if conn_hh else None, household_id=conn_hh[1] if conn_hh else None)
+        finally:
+            if st is not None:
+                st.close()
+        names = {i["id"]: i.get("name") for i in inv.get("items") or []}
+        import hq_inventoria_feel as feel_mod
+        spot = None if feel_mod.spot_hidden(root_) else links.spot_check(root_, inv)       # snoozed asks stay out of the panel too
+        return {"use_soon": soon[:12], "spot_check": spot, "accuracy": links.accuracy(root_),
+                "filament": [{"material": m, "item_id": i, "item_name": names.get(i)} for m, i in sorted(links.filament_links(root_).items())],
+                "barcodes": [{**b, "item_name": names.get(b["item_id"])} for b in habits_mod.all_barcodes(root_) if b["item_id"] in names],
+                "events": links.recent_events(root_)}
+    except Exception:
+        return {"use_soon": [], "spot_check": None, "accuracy": None, "filament": [], "events": [], "barcodes": []}
 
 
 def notify_post(data: dict) -> tuple[int, dict]:
@@ -1776,6 +2041,329 @@ def memory_post(data: dict) -> tuple[int, dict]:
     raise InventoriaError("action inconnue (add|forget)", code="validation_error")
 
 
+def _remember_request(client_id: str | None, out: dict) -> dict:
+    """Store a small summary of what a one-tap request did, keyed by the client's id (see hq_inventoria_dedupe)."""
+    if client_id:
+        try:
+            import hq_inventoria_dedupe as dedupe
+            dedupe.remember(_root(), client_id, {
+                "applied": [{"operation_id": a.get("operation_id"), "changes": a.get("changes") or []} for a in out.get("applied") or []],
+                "operation_ids": [o.get("id") for o in (out.get("operations") or ([out["operation"]] if out.get("operation") else []))]})
+        except Exception:
+            pass
+    return out
+
+
+def _commit_route(st: Any, conn: sqlite3.Connection, household_id: str, op_id: str, data: dict) -> tuple[int, dict]:
+    """Commit one operation (claim + transaction), then journal it for undo and learn usual amounts from it."""
+    if not _claim_commit(op_id):
+        return 409, _commit_in_progress(op_id)
+    try:
+        with st.transaction():
+            import hq_inventoria_undo as undo_mod
+            prow = conn.execute("SELECT proposals_json FROM inventoria_operations WHERE id = ?", (op_id,)).fetchone()
+            pre_inv = inventory.snapshot()
+            out = commit_operation(conn, household_id, op_id, data)
+            commit_mod._invoke_test_hook("F7")
+            if not out.get("ok"):
+                return int(out.get("http_status", 409)), out
+            try:  # journal for "undo this batch"; a repeated (idempotent) commit must not overwrite it
+                if prow is not None and undo_mod.get(_root(), op_id) is None:
+                    props = json.loads(prow["proposals_json"] or "[]")
+                    undo_mod.record(_root(), op_id, props, pre_inv, inventory.snapshot())
+                    import hq_inventoria_habits as habits
+                    habits.record_commit(_root(), props, pre_inv)
+            except Exception:
+                pass
+            return 200, out
+    finally:
+        _release_commit(op_id)
+
+
+def _auto_apply(st: Any, conn: sqlite3.Connection, household_id: str, op_id: str) -> dict | None:
+    """validate -> confirmed preview -> commit for one trusted operation. None when any step refuses
+    (the operation is then left for the Master to review in the chip, exactly like a normal draft)."""
+    try:
+        with st.transaction():
+            v = validate_operation(conn, household_id, op_id, {})
+        if not v["validation"]["ok"]:
+            return None
+        if not _claim_commit(op_id):
+            return None
+        try:
+            with st.transaction():
+                p = preview_operation(conn, household_id, op_id, {"confirm": True})
+        finally:
+            _release_commit(op_id)
+        code, out = _commit_route(st, conn, household_id, op_id, {"idempotency_key": "auto-" + op_id})
+        if code != 200 or not out.get("ok"):
+            return None
+        return {"operation_id": op_id, "changes": p["preview"].get("changes") or []}
+    except (InventoriaError, schemas.SchemaError, hstore.HouseholdStoreError, inventory.InventoryError, sqlite3.Error):
+        return None
+
+
+def _finish_auto(st: Any, conn: sqlite3.Connection, household_id: str, out: dict, text: Any = None) -> dict:
+    """Apply the operations a turn marked trusted; report them as ``applied`` (for the Undo toast) and drop
+    them from the drafts and card bindings the chip would otherwise show."""
+    todo = out.pop("_auto", None) or []
+    applied = [a for a in (_auto_apply(st, conn, household_id, op_id) for op_id in todo) if a]
+    if not applied:
+        return out
+    done = {a["operation_id"] for a in applied}
+    ops = [o for o in (out.get("operations") or ([out["operation"]] if out.get("operation") else [])) if o.get("id") not in done]
+    out.pop("operations", None)
+    out.pop("operation", None)
+    if ops:
+        out["operation"] = ops[0]
+        if len(ops) > 1:
+            out["operations"] = ops
+    if isinstance(out.get("cards"), dict):
+        out["cards"] = {k: (v if v not in done else None) for k, v in out["cards"].items()}
+    try:
+        import hq_inventoria_feel as feel
+        feel.mark_usual(_root(), applied, text)           # "Usual amount" only when no number was said and the amount is the usual one
+    except Exception:
+        pass
+    out["applied"] = applied
+    return out
+
+
+def _quick_proposal(item_id: Any, delta: Any) -> dict:
+    """One item.adjust built server-side (barcode scan, notification, one-tap buttons): no model call."""
+    it = next((i for i in inventory.snapshot()["items"] if i["id"] == item_id), None) if isinstance(item_id, str) else None
+    if it is None:
+        raise InventoriaError("article introuvable", status=404, code="not_found")
+    if isinstance(delta, bool) or not isinstance(delta, int) or delta == 0 or abs(delta) > inventory.QTY_MAX:
+        raise InventoriaError("delta invalide", code="validation_error")
+    return schemas.validate_inventoria_proposal({
+        "op": "item.adjust", "refs": {"item_id": it["id"]}, "resolved": {"confidence": "high"},
+        "payload": {"id": it["id"], "delta": delta}, "label_fr": f"Ajuster {it.get('name')} de {delta:+d}"})
+
+
+def _session_arg(data: dict) -> str:
+    sid = data.get("session_id")
+    if not isinstance(sid, str) or not re.fullmatch(r"ivo-[0-9a-f]{16}", sid):
+        raise InventoriaError("session_id requis", code="validation_error")
+    return sid
+
+
+def prefs_post(data: dict) -> tuple[int, dict]:
+    import hq_inventoria_habits as habits
+    try:
+        cfg = habits.set_prefs(_root(), auto_apply=data.get("auto_apply"), auto_delta_max=data.get("auto_delta_max"))
+    except habits.HabitError as exc:
+        raise InventoriaError(str(exc), code="validation_error") from exc
+    out: dict[str, Any] = {"ok": True, "prefs": cfg}
+    asks = data.get("asks")
+    if isinstance(asks, dict):                       # quiet hours, daily cap, snooze for the pushed asks and the weekly spot-check
+        import hq_inventoria_feel as feel
+        try:
+            out["asks"] = feel.asks_set(_root(), max_per_day=asks.get("max_per_day"), quiet_start=asks.get("quiet_start"),
+                                        quiet_end=asks.get("quiet_end"), snooze_days=asks.get("snooze_days"),
+                                        spot_snooze_days=asks.get("spot_snooze_days"))
+        except ValueError as exc:
+            raise InventoriaError(str(exc), code="validation_error") from exc
+    return 200, out
+
+
+def alias_post(data: dict) -> tuple[int, dict]:
+    import hq_inventoria_habits as habits
+    action = data.get("action")
+    try:
+        if action == "set":
+            it = next((i for i in inventory.snapshot()["items"] if i["id"] == data.get("item_id")), None)
+            if it is None:
+                raise InventoriaError("article introuvable", status=404, code="not_found")
+            habits.set_alias(_root(), data.get("alias"), it["id"], item_name=str(it.get("name") or ""))
+        elif action == "remove":
+            if not habits.remove_alias(_root(), data.get("alias")):
+                return 404, {"ok": False, "error": "surnom introuvable", "code": "not_found"}
+        else:
+            raise InventoriaError("action inconnue (set|remove)", code="validation_error")
+    except habits.HabitError as exc:
+        raise InventoriaError(str(exc), code="validation_error") from exc
+    return 200, {"ok": True, "aliases": _alias_rows()}
+
+
+def _alias_rows() -> list[dict]:
+    import hq_inventoria_habits as habits
+    names = {i["id"]: i.get("name") for i in inventory.snapshot()["items"]}
+    return sorted(({"alias": r.get("alias"), "item_id": r["item_id"], "item_name": names.get(r["item_id"])}
+                   for r in habits.aliases(_root()).values() if r["item_id"] in names),
+                  key=lambda r: str(r["alias"]).casefold())
+
+
+def barcode_post(data: dict) -> tuple[int, dict]:
+    """lookup | link | unlink a product barcode. Touches no stock: a scan's +/- goes through /quick."""
+    import hq_inventoria_habits as habits
+    action = data.get("action")
+    try:
+        code = habits.check_code(data.get("code"))
+    except habits.HabitError as exc:
+        raise InventoriaError(str(exc), code="validation_error") from exc
+    inv = inventory.snapshot()
+    by_id = {i["id"]: i for i in inv["items"]}
+    if action == "lookup":
+        iid = habits.barcode_item(_root(), code)
+        it = by_id.get(iid) if iid else None
+        if it is None:
+            return 200, {"ok": True, "code": code, "item": None}
+        return 200, {"ok": True, "code": code, "item": {"id": it["id"], "name": it.get("name"), "qty": it.get("qty"),
+                                                         "unit": it.get("unit") or ""}, "usual": habits.usual(_root(), it["id"])}
+    if action == "link":
+        it = by_id.get(data.get("item_id")) if isinstance(data.get("item_id"), str) else None
+        if it is None:
+            raise InventoriaError("article introuvable", status=404, code="not_found")
+        try:
+            habits.link_barcode(_root(), code, it["id"])
+        except habits.HabitError as exc:
+            raise InventoriaError(str(exc), code="validation_error") from exc
+        return 200, {"ok": True, "code": code, "item": {"id": it["id"], "name": it.get("name"), "qty": it.get("qty"),
+                                                         "unit": it.get("unit") or ""}, "usual": habits.usual(_root(), it["id"])}
+    if action == "unlink":
+        return 200, {"ok": True, "removed": habits.unlink_barcode(_root(), code)}
+    raise InventoriaError("action inconnue (lookup|link|unlink)", code="validation_error")
+
+
+ITEM_RE = re.compile(r"^/api/inventoria/item/(itm-[0-9a-f]{8,32})\Z")
+
+
+def item_sheet(item_id: str) -> dict:
+    """Everything the item sheet shows: basics, minimum, expiry, barcodes, nicknames, usual amounts, prices, alert, filament link."""
+    import hq_inventoria_habits as habits
+    import hq_inventoria_links as links
+    import hq_inventoria_watch as watch
+    inv = inventory.snapshot()
+    it = next((i for i in inv["items"] if i["id"] == item_id), None)
+    if it is None:
+        raise InventoriaError("article introuvable", status=404, code="not_found")
+    base = _root()
+    expiry = links.get_expiry(base, item_id)
+    photo = next((x for x in it.get("photos") or [] if isinstance(x, str)), None)
+    place = next((pl for pl in inv.get("places") or [] if pl.get("id") == it.get("place")), None)
+    return {"ok": True, "item": {
+        "id": it["id"], "name": it.get("name"), "qty": it.get("qty"), "unit": it.get("unit") or "", "min": it.get("min"),
+        "rev": it.get("rev"), "place_id": it.get("place"), "where": links.place_path(inv, it.get("place")) or None,
+        "photo": photo or (place.get("photos") or [None])[0] if place else photo, "note": it.get("note") or ""},
+        "expiry": expiry, "expiry_days": links.days_left(expiry) if expiry else None,
+        "barcodes": habits.barcodes_for(base, item_id), "aliases": habits.aliases_for(base, item_id),
+        "usual": habits.usual(base, item_id), "price": links.price_info(base, item_id),
+        "warn_at": watch.thresholds(base).get(item_id), "filament": links.filament_material(base, item_id),
+        "unit_dim": (links.unit_dim(it.get("unit")) or (None,))[0], "checked_days": links.item_checked_days(base, item_id)}
+
+
+def min_post(data: dict) -> tuple[int, dict]:
+    """Low-stock threshold for one item (None clears it). Not a stock change: no draft, no undo journal."""
+    it = next((i for i in inventory.snapshot()["items"] if i["id"] == data.get("item_id")), None)
+    if it is None:
+        raise InventoriaError("article introuvable", status=404, code="not_found")
+    value = data.get("min")
+    if value in ("", None):
+        value = None
+    elif isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= inventory.QTY_MAX:
+        raise InventoriaError(f"seuil : entier de 0 à {inventory.QTY_MAX}", code="validation_error")
+    inventory.apply({"action": "item.update", "id": it["id"], "rev": it["rev"], "min": value})
+    return 200, item_sheet(it["id"])
+
+
+def history(conn: sqlite3.Connection, household_id: str, limit: int = 40) -> dict:
+    """Committed batches, newest first: what changed, whether the chip applied it on its own, and whether it can still be undone."""
+    import hq_inventoria_undo as undo_mod
+    limit = max(1, min(int(limit), 100))
+    out = []
+    for r in conn.execute(
+            "SELECT id, proposals_json, commit_idempotency_key, updated_at FROM inventoria_operations "
+            "WHERE household_id = ? AND status = 'committed' ORDER BY updated_at DESC, rowid DESC LIMIT ?", (household_id, limit)).fetchall():
+        try:
+            props = json.loads(r["proposals_json"] or "[]")
+        except ValueError:
+            props = []
+        labels = [str(p.get("label_fr") or p.get("op") or "") for p in props if isinstance(p, dict)]
+        entry = undo_mod.get(_root(), r["id"])
+        is_undo = bool(labels) and labels[0].startswith("Annuler")
+        out.append({"id": r["id"], "at": r["updated_at"], "labels": labels[:6], "count": len(labels),
+                    "auto": str(r["commit_idempotency_key"] or "").startswith("auto-"), "is_undo": is_undo,
+                    "undone": bool(entry and entry.get("undone_by")),
+                    "undoable": bool(entry) and not entry.get("undone_by") and not is_undo})
+    return {"ok": True, "items": out}
+
+
+def spending_get(qs: dict | None) -> dict:
+    import hq_inventoria_links as links
+    month = ((qs or {}).get("month") or [""])[0] or None
+    return {"ok": True, **_links_call(lambda: links.spending(_root(), inventory.snapshot(), month)), "months": links.price_months(_root())}
+
+
+def recipes_get(conn: sqlite3.Connection, household_id: str) -> dict:
+    import hq_inventoria_links as links
+    rows = [{"id": r["id"], "title": r.get("title"), "servings": r.get("servings"), "ingredients": len(r.get("ingredients") or [])}
+            for r in links._recipes(conn, household_id)]
+    return {"ok": True, "items": sorted(rows, key=lambda r: str(r["title"]).casefold())[:200]}
+
+
+def cook_check_post(conn: sqlite3.Connection, household_id: str, data: dict) -> dict:
+    import hq_inventoria_links as links
+    import hq_meals
+    rid = data.get("recipe_id")
+    if not isinstance(rid, str):
+        raise InventoriaError("recipe_id requis", code="validation_error")
+    try:
+        recipe = hq_meals.get_recipe(conn, household_id, rid)
+    except Exception as exc:
+        raise InventoriaError("recette introuvable", status=404, code="not_found") from exc
+    return {"ok": True, **links.cook_check_recipe(inventory.snapshot(), recipe, data.get("servings"), _root())}
+
+
+def _links_call(fn: Callable[[], Any]) -> Any:
+    import hq_inventoria_links as links
+    try:
+        return fn()
+    except links.LinkError as exc:
+        raise InventoriaError(str(exc), code="validation_error") from exc
+
+
+def where_post(data: dict) -> tuple[int, dict]:
+    """'Where is X?' without a model call: shelf path, quantity and a photo id (item photo, else the place's)."""
+    import hq_inventoria_links as links
+    return 200, {"ok": True, **_links_call(lambda: links.where_is(inventory.snapshot(), data.get("q"), _root()))}
+
+
+def parts_post(data: dict) -> tuple[int, dict]:
+    import hq_inventoria_links as links
+    return 200, {"ok": True, **_links_call(lambda: links.check_parts(inventory.snapshot(), data.get("parts"), _root()))}
+
+
+def expiry_post(data: dict) -> tuple[int, dict]:
+    import hq_inventoria_links as links
+    it = next((i for i in inventory.snapshot()["items"] if i["id"] == data.get("item_id")), None)
+    if it is None:
+        raise InventoriaError("article introuvable", status=404, code="not_found")
+    return 200, {"ok": True, **_links_call(lambda: links.set_expiry(_root(), it["id"], data.get("date")))}
+
+
+def filament_post(data: dict) -> tuple[int, dict]:
+    import hq_inventoria_links as links
+    item_id = data.get("item_id") or None
+    if item_id is not None:
+        it = next((i for i in inventory.snapshot()["items"] if i["id"] == item_id), None)
+        if it is None:
+            raise InventoriaError("article introuvable", status=404, code="not_found")
+        dim = links.unit_dim(it.get("unit"))
+        if dim is None or dim[0] != "g":
+            raise InventoriaError("le filament doit être compté en g ou en kg", code="validation_error")
+    return 200, {"ok": True, "filament": _links_call(lambda: links.link_filament(_root(), data.get("material"), item_id))}
+
+
+def _sync_filament() -> list[dict]:
+    """Subtract finished prints from linked filament items (opt-in per material); never raises."""
+    try:
+        import hq_inventoria_links as links
+        return links.sync_filament(_root(), inventory.snapshot(), inventory.apply)
+    except Exception:
+        return []
+
+
 def http_post(path: str, data: Any) -> tuple[int, dict]:
     try:
         if not isinstance(data, dict):
@@ -1791,11 +2379,34 @@ def http_post(path: str, data: Any) -> tuple[int, dict]:
             return watch_post(data)
         if path == "/api/inventoria/notify":  # offline-alert settings; touches no household data
             return notify_post(data)
+        if path == "/api/inventoria/cancel":  # stop a chat turn from the chip's Cancel button; no store needed
+            import hq_inventoria_ai as ai_cancel
+            return 200, {"ok": True, **ai_cancel.request_cancel(data.get("job"))}
+        if path == "/api/inventoria/prefs":  # auto-apply switch and size cap; touches no household data
+            return prefs_post(data)
+        if path == "/api/inventoria/alias":  # nicknames for items; never changes stock
+            return alias_post(data)
+        if path == "/api/inventoria/barcode":  # barcode <-> item links; never changes stock
+            return barcode_post(data)
+        if path == "/api/inventoria/where":  # where is X: read-only, no model call
+            return where_post(data)
+        if path == "/api/inventoria/parts":  # can I build / cook it: read-only parts check
+            return parts_post(data)
+        if path == "/api/inventoria/expiry":  # use-soon date for one item; never changes stock
+            return expiry_post(data)
+        if path == "/api/inventoria/filament":  # material -> filament item link for finished 3D prints (opt-in)
+            return filament_post(data)
+        if path == "/api/inventoria/min":  # low-stock threshold of one item; not a stock change
+            return min_post(data)
 
         st = _open_store(readonly=False)
         try:
             conn = st.conn
             household_id = finances.ensure_default_household(conn, create=True)
+            if conn.in_transaction:
+                # First run inserted the household row: commit it now, so a chat turn does not
+                # hold the write lock (and block every household writer) while the model thinks.
+                conn.commit()
             inventory.bind(root=_root(), asset_exists=_cb.get("asset_exists"))
 
             if path == "/api/inventoria/sessions":
@@ -1805,31 +2416,79 @@ def http_post(path: str, data: Any) -> tuple[int, dict]:
             m_sess = SESSION_RE.match(path)
             if m_sess and m_sess.group(1) and path.endswith("/message"):
                 with st.transaction():
-                    return 200, post_session_message(conn, household_id, m_sess.group(1), data)
+                    out = post_session_message(conn, household_id, m_sess.group(1), data)
+                return 200, _finish_auto(st, conn, household_id, out, data.get("text"))
 
-            if path == "/api/inventoria/purchased":  # ticked-off shopping items -> one reviewable draft (no model call)
+            if path == "/api/inventoria/cook-check":  # can I cook this recipe from the stock: read-only
+                return 200, cook_check_post(conn, household_id, data)
+
+            import hq_inventoria_dedupe as dedupe
+            client_id = dedupe.check_id(data.get("client_id")) if path in ("/api/inventoria/quick", "/api/inventoria/purchased",
+                                                                            "/api/inventoria/cooked") else None
+            if client_id:                       # a retry of a request the server already applied: answer, never apply twice
+                prior = dedupe.seen(_root(), client_id)
+                if prior is not None:
+                    return 200, {"ok": True, "duplicate": True, **prior}
+
+            if path == "/api/inventoria/purchased":  # ticked-off shopping items -> applied at once when trusted, else a draft
                 import hq_inventoria_ai as ai
-                sid = data.get("session_id")
-                if not isinstance(sid, str) or not re.fullmatch(r"ivo-[0-9a-f]{16}", sid):
-                    raise InventoriaError("session_id requis", code="validation_error")
+                sid = _session_arg(data)
                 try:
                     props = ai.purchased_proposals(data.get("items"), inventory.snapshot())
                 except (ValueError, schemas.SchemaError) as exc:
                     raise InventoriaError(str(exc)[:200], code="validation_error") from exc
                 with st.transaction():
-                    return 200, post_session_message(conn, household_id, sid, {"proposals": props})
+                    out = post_session_message(conn, household_id, sid, {"proposals": props}, auto=True)
+                return 200, _remember_request(client_id, _finish_auto(st, conn, household_id, out))
 
-            if path == "/api/inventoria/detections":  # reviewed photo rows -> one reviewable draft (no model call)
+            if path == "/api/inventoria/detections":  # reviewed photo rows -> trusted adjusts applied, the rest a draft
                 import hq_inventoria_ai as ai
-                sid = data.get("session_id")
-                if not isinstance(sid, str) or not re.fullmatch(r"ivo-[0-9a-f]{16}", sid):
-                    raise InventoriaError("session_id requis", code="validation_error")
+                sid = _session_arg(data)
+                snap = inventory.snapshot()
                 try:
-                    props = ai.detection_proposals(data.get("rows"), data.get("mode"), inventory.snapshot())
+                    props = ai.detection_proposals(data.get("rows"), data.get("mode"), snap)
                 except (ValueError, schemas.SchemaError) as exc:
                     raise InventoriaError(str(exc)[:200], code="validation_error") from exc
+                if data.get("mode") == "count":   # a shelf count is a spot-check: log how far the records were off
+                    try:
+                        import hq_inventoria_links as links
+                        links.record_count(_root(), snap, data.get("rows"))
+                    except Exception:
+                        pass
                 with st.transaction():
-                    return 200, post_session_message(conn, household_id, sid, {"proposals": props}, split=True)
+                    out = post_session_message(conn, household_id, sid, {"proposals": props}, split=True, auto=True)
+                return 200, _finish_auto(st, conn, household_id, out)
+
+            if path == "/api/inventoria/cooked":  # a meal was cooked: its ingredients leave the stock (trusted adjusts + Undo)
+                import hq_inventoria_links as links
+                sid = _session_arg(data)
+                recipe = None
+                if isinstance(data.get("recipe_id"), str):
+                    import hq_meals
+                    try:
+                        recipe = hq_meals.get_recipe(conn, household_id, data["recipe_id"])
+                    except Exception:
+                        recipe = None
+                elif isinstance(data.get("recipe"), str):
+                    recipe = links.find_recipe(conn, household_id, data["recipe"])
+                if not recipe:
+                    raise InventoriaError("recette introuvable", status=404, code="not_found")
+                props, skipped = links.cooked_proposals(inventory.snapshot(), recipe, data.get("servings"), _root())
+                if not props:
+                    return 200, {"ok": True, "skipped": skipped, "applied": [], "note": "rien à retirer du stock"}
+                props = [schemas.validate_inventoria_proposal(p) for p in props]
+                with st.transaction():
+                    out = post_session_message(conn, household_id, sid, {"proposals": props}, auto=True)
+                out = _finish_auto(st, conn, household_id, out)
+                out["skipped"] = skipped
+                return 200, _remember_request(client_id, out)
+
+            if path == "/api/inventoria/quick":  # one +/- on one item (barcode scan, one-tap button): no model call
+                sid = _session_arg(data)
+                prop = _quick_proposal(data.get("item_id"), data.get("delta"))
+                with st.transaction():
+                    out = post_session_message(conn, household_id, sid, {"proposals": [prop]}, auto=True)
+                return 200, _remember_request(client_id, _finish_auto(st, conn, household_id, out))
 
             if path == "/api/inventoria/to-grocery":  # shopping list or confirmed photo lines -> the open grocery list
                 import hq_grocery
@@ -1872,28 +2531,21 @@ def http_post(path: str, data: Any) -> tuple[int, dict]:
                 finally:
                     _release_commit(op_id)
             if action == "commit":
-                if not _claim_commit(op_id):
-                    return 409, _commit_in_progress(op_id)
-                try:
-                    with st.transaction():
-                        import hq_inventoria_undo as undo_mod
-                        prow = conn.execute("SELECT proposals_json FROM inventoria_operations WHERE id = ?", (op_id,)).fetchone()
-                        pre_inv = inventory.snapshot()
-                        out = commit_operation(conn, household_id, op_id, data)
-                        commit_mod._invoke_test_hook("F7")
-                        if not out.get("ok"):
-                            return int(out.get("http_status", 409)), out
-                        try:  # journal for "undo this batch"; a repeated (idempotent) commit must not overwrite it
-                            if prow is not None and undo_mod.get(_root(), op_id) is None:
-                                undo_mod.record(_root(), op_id, json.loads(prow["proposals_json"] or "[]"), pre_inv, inventory.snapshot())
-                        except Exception:
-                            pass
-                        return 200, out
-                finally:
-                    _release_commit(op_id)
+                return _commit_route(st, conn, household_id, op_id, data)
             if action == "undo":
+                if set(data) - {"apply"}:
+                    _reject_unknown_fields(data, frozenset({"apply"}))
                 with st.transaction():
-                    return 200, undo_operation(conn, household_id, op_id)
+                    out = undo_operation(conn, household_id, op_id)
+                # {"apply": true} = the toast's one-tap Undo: the inverse is applied at once, but only when it is
+                # made of quantity adjusts alone; anything else stays a draft to review.
+                op = out.get("operation") or {}
+                if data.get("apply") is True and op.get("proposals") and all(
+                        p.get("op") == "item.adjust" for p in op["proposals"]):
+                    res = _auto_apply(st, conn, household_id, op["id"])
+                    if res:
+                        out["applied"] = [res]
+                return 200, out
             if action == "cancel":
                 if not _claim_commit(op_id):
                     return 409, _commit_in_progress(op_id)

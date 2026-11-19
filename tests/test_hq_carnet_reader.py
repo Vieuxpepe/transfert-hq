@@ -13,6 +13,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from tests.hq_symlink_test_helper import skip_without_symlinks
 from pathlib import Path
 from unittest import mock
 
@@ -183,6 +184,7 @@ class CapturedVsCurrentTests(RBase2):
         cur = one({"source_id": ed["id"]})["current"]
         self.assertEqual((cur["state"], cur["file"]), ("available", {"state": "missing", "route": None}))
 
+    @skip_without_symlinks
     def test_unknown_file_state_is_not_missing(self):
         ed, ref = self.ed_with_file()
         outside = Path(tempfile.mkdtemp())
@@ -305,6 +307,7 @@ class FrozenTests(RBase2):
         self.put(ref, PDF_A)
         self.assertEqual(one({"source_id": ed2["id"], "context": self.ctx(sid2)})["integrity"]["state"], "not_applicable")
 
+    @skip_without_symlinks
     def test_redirected_parent_is_unknown_integrity_not_missing(self):
         ed, ref = self.ed_with_file()
         sid = self.frozen_snapshot(ed)
@@ -479,6 +482,7 @@ class VerifiedPdfTests(FrozenTests):
             status, _n, got = hq_carnet.http_reader_pdf({"snapshot": [sid], "source": [ed["id"]]})
         self.assertEqual((status, got["code"]), (413, "sealed_file_too_large"), "its own code: not 'unreadable', not 'differs'")
 
+    @skip_without_symlinks
     def test_redirected_parent_is_refused(self):
         ed, ref = self.ed_with_file()
         sid = self.frozen_snapshot(ed)

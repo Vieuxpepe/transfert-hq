@@ -601,6 +601,8 @@ def api_request(
             code = "spotify_unavailable_endpoint"
         if exc.code == 403 and "premium" in message.lower():
             code = "spotify_premium_required"
+        elif exc.code == 403 and "restriction violated" in message.lower():
+            code = "spotify_restriction_violated"
         elif code == "spotify_unavailable_endpoint" and "no active device" not in message.lower():
             message = "Cette fonction Spotify est indisponible pour ce compte ou cette application."
         retry_after = None
@@ -743,6 +745,19 @@ def local_spotify_probe() -> dict[str, Any]:
         except OSError:
             continue
 
+    soloist_available = False
+    soloist_running = False
+    soloist_pids: list[int] = []
+    soloist_device = None
+    try:
+        import hq_soloist
+        soloist_available = hq_soloist.available()
+        soloist_pids = hq_soloist.running_pids()
+        soloist_running = bool(soloist_pids)
+        soloist_device = hq_soloist.device_name()
+    except Exception:  # noqa: BLE001
+        pass
+
     return {
         "ok": True,
         "platform": os.name,
@@ -751,17 +766,19 @@ def local_spotify_probe() -> dict[str, Any]:
         "spotify_desktop_running": running,
         "spotify_pids": pids[:8],
         "spotify_install_path": install_path,
-        "can_wake": bool(install_path) or os.name == "nt",
+        "soloist_available": soloist_available,
+        "soloist_running": soloist_running,
+        "soloist_pids": soloist_pids[:4],
+        "soloist_device_name": soloist_device,
+        "can_wake": soloist_available or bool(install_path) or os.name == "nt",
         "note": (
-            "Le pont peut détecter Spotify Desktop sur ce PC et le réveiller, "
-            "mais pas router vers un périphérique Windows audio nu (casque/enceinte WASAPI). "
-            "Connect exige l'app Spotify (ou un receiver Connect)."
+            "Le pont peut utiliser Spotify Soloist (~20 Mo RAM) ou Spotify Desktop comme lecteur Connect sur ce PC."
         ),
     }
 
 
 def wake_local_spotify(*, wait_s: float = 2.5) -> dict[str, Any]:
-    """Launch Spotify Desktop if needed so it can register as a Connect device."""
+    """Launch headless Spotify Soloist when available (else Spotify Desktop) as a local Connect device."""
     try:  # opt-in only: Spotify currently refuses audio keys to librespot for many accounts (librespot#1649)
         import hq_librespot
         if os.environ.get("HQ_PREFER_LIBRESPOT") == "1" and hq_librespot.exe_path() is not None:
@@ -770,6 +787,19 @@ def wake_local_spotify(*, wait_s: float = 2.5) -> dict[str, Any]:
             return {"ok": True, "launched": not was_up, "already_running": was_up, "headless": True,
                     "message": "Lecteur Spotify sans fenêtre (librespot) actif — il apparaît dans Connect sous « %s »."
                                % hq_librespot.device_name()}
+    except Exception:
+        pass
+    try:
+        import hq_soloist
+        if os.environ.get("HQ_PREFER_DESKTOP") != "1" and hq_soloist.available():
+            was_up = bool(hq_soloist.running_pids())
+            if hq_soloist.start():
+                return {
+                    "ok": True, "launched": not was_up, "already_running": was_up, "headless": True, "soloist": True,
+                    "device_name": hq_soloist.device_name(),
+                    "message": "Lecteur Spotify Soloist actif (~20 Mo RAM) — il apparaît dans Connect sous « %s »."
+                               % hq_soloist.device_name(),
+                }
     except Exception:
         pass
     probe = local_spotify_probe()
@@ -845,6 +875,13 @@ def _device_looks_local(device: dict[str, Any], hostnames: list[str] | None = No
     dtype = str(device.get("type") or "").casefold()
     name_cf = name.casefold()
     hosts = [h.casefold() for h in (hostnames or _hostname_tokens())]
+    try:
+        import hq_soloist
+        soloist_cf = hq_soloist.device_name().casefold()
+        if soloist_cf and name_cf == soloist_cf:
+            return True
+    except Exception:  # noqa: BLE001
+        pass
     if dtype in {"computer", "pc"}:
         if not hosts:
             return True
@@ -1002,6 +1039,44 @@ def get_queue() -> dict[str, Any]:
     return {"ok": True, "currently_playing": currently, "queue": queue[:50], "note": "Spotify n'autorise pas la réorganisation libre de la file via l'API publique."}
 
 
+def _soloist_target(device_id: Any) -> str | None:
+    """Return Soloist's device_id when the command targets Soloist (explicitly or as active device)."""
+    try:
+        import hq_soloist as sl
+        if sl.ws_endpoint() is None and not sl.running_pids():
+            return None
+        sdid = sl.device_id()
+        if isinstance(device_id, str) and device_id:
+            return device_id if (sdid and device_id == sdid) else None
+        st = sl.ctl_status()
+        if st.get("logged_in") and st.get("is_active"):
+            return sdid or "soloist"
+        now = sl.now()
+        if isinstance(now, dict) and now.get("is_active"):
+            return sdid or "soloist"
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+def _try_soloist_control(action: str, params: dict[str, Any], device_id: Any) -> dict[str, Any] | None:
+    target = _soloist_target(device_id)
+    if not target:
+        return None
+    try:
+        import hq_soloist as sl
+        if sl.control(action, params):
+            out: dict[str, Any] = {"ok": True, "action": action, "soloist": True, "local": True}
+            if isinstance(device_id, str) and device_id:
+                out["device_id"] = device_id
+            elif target != "soloist":
+                out["device_id"] = target
+            return out
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
 def player_action(action: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
     params = params if isinstance(params, dict) else {}
     action = str(action or "").strip().lower()
@@ -1065,6 +1140,10 @@ def player_action(action: str, params: dict[str, Any] | None = None) -> dict[str
         api_request("PUT", "/me/player", body={"device_ids": [device_id], "play": bool(params.get("play", False))})
         return {"ok": True, "action": action, "device_id": device_id}
 
+    local_hit = _try_soloist_control(action, params, device_id)
+    if local_hit is not None:
+        return local_hit
+
     try:
         if action == "play" and auto_device:
             # Always land on a concrete Connect target before play (preferred or first usable).
@@ -1075,6 +1154,20 @@ def player_action(action: str, params: dict[str, Any] | None = None) -> dict[str
             device_id = activated.get("id")
         _run(device_id if isinstance(device_id, str) else None)
     except SpotifyError as exc:
+        if getattr(exc, "code", None) == "spotify_restriction_violated":
+            fallback = _try_soloist_control(action, params, device_id)
+            if fallback is not None:
+                return fallback
+            if action in ("play", "pause") and not params.get("uris") and not params.get("context_uri"):
+                try:
+                    cur = get_player()
+                    if cur.get("item") is not None and bool(cur.get("playing")) == (action == "play"):
+                        resynced: dict[str, Any] = {"ok": True, "action": action, "noop": True}
+                        if isinstance(device_id, str) and device_id:
+                            resynced["device_id"] = device_id
+                        return resynced
+                except SpotifyError:
+                    pass
         if action in {"play", "pause", "next", "previous", "queue", "queue_add", "seek", "volume", "shuffle", "repeat"} and auto_device and _is_no_active_device(exc):
             activated = ensure_playback_device(
                 str(device_id) if isinstance(device_id, str) and device_id else None,
@@ -1420,17 +1513,25 @@ def catalog_item(item: dict[str, Any], kind: str, *, album: dict[str, Any] | Non
     release = (album or item.get("album") or {}) if kind == "track" else item
     images = release.get("images") or []
     date = release.get("release_date") or ""
+    artist_objs = [a for a in item.get("artists") or [] if isinstance(a, dict) and a.get("name")]
     row = {
         "id": item.get("id"),
         "uri": item.get("uri"),
         "name": item.get("name"),
-        "artists": [a["name"] for a in item.get("artists") or [] if isinstance(a, dict) and a.get("name")],
+        "artists": [a["name"] for a in artist_objs],
         "image": proxied_image_url(images[0].get("url") if images and isinstance(images[0], dict) else None),
         "type": kind,
     }
+    artist_ids = [a["id"] for a in artist_objs if isinstance(a.get("id"), str) and a.get("id")]
+    if artist_ids:
+        row["artist_ids"] = artist_ids
+    if isinstance(item.get("popularity"), int):
+        row["popularity"] = item["popularity"]
     if kind == "track":
         row["album"] = release.get("name")
         row["duration_ms"] = item.get("duration_ms")
+        if isinstance(item.get("explicit"), bool):
+            row["explicit"] = item["explicit"]
     if kind in {"track", "album"} and date:
         row.update(year=date[:4], release_date=date)
     if kind == "album":
@@ -1438,6 +1539,12 @@ def catalog_item(item: dict[str, Any], kind: str, *, album: dict[str, Any] | Non
             row["album_type"] = item["album_type"]
         if isinstance(item.get("total_tracks"), int):
             row["total_tracks"] = item["total_tracks"]
+    if kind == "artist":
+        if isinstance(item.get("genres"), list):
+            row["genres"] = [g for g in item["genres"] if isinstance(g, str) and g.strip()]
+        followers = item.get("followers")
+        if isinstance(followers, dict) and isinstance(followers.get("total"), int):
+            row["followers"] = followers["total"]
     return row
 
 
@@ -1520,8 +1627,8 @@ def top_artists(time_range: str = "short", *, limit: int = 8, retry_429: bool = 
     return _top("artist", time_range, limit, retry_429=retry_429)
 
 
-def top_tracks(time_range: str = "short", *, limit: int = 10) -> dict[str, Any]:
-    return _top("track", time_range, limit)
+def top_tracks(time_range: str = "short", *, limit: int = 10, retry_429: bool = True) -> dict[str, Any]:
+    return _top("track", time_range, limit, retry_429=retry_429)
 
 
 def recently_played(limit: int = 20, *, retry_429: bool = True) -> dict[str, Any]:
@@ -1538,26 +1645,49 @@ def _saved(kind: str, limit: int, offset: int, *, retry_429: bool = True) -> dic
     field = kind + "s"
     data = api_request("GET", f"/me/{field}", query={"limit": max(1, min(50, limit)), "offset": max(0, offset)},
                        retry_429=retry_429)
-    rows = [catalog_item(row[kind], kind) for row in data.get("items") or []
-            if isinstance(row, dict) and isinstance(row.get(kind), dict)]
+    rows = []
+    for row in data.get("items") or []:
+        if isinstance(row, dict) and isinstance(row.get(kind), dict):
+            item = catalog_item(row[kind], kind)
+            if isinstance(row.get("added_at"), str):
+                item["added_at"] = row["added_at"]
+            rows.append(item)
     return {"ok": True, field: rows, "total": data.get("total"), "next": bool(data.get("next"))}
 
 
-def saved_tracks(limit: int = 20, offset: int = 0) -> dict[str, Any]:
-    return _saved("track", limit, offset)
+def saved_tracks(limit: int = 20, offset: int = 0, *, retry_429: bool = True) -> dict[str, Any]:
+    return _saved("track", limit, offset, retry_429=retry_429)
 
 
 def saved_albums(limit: int = 20, offset: int = 0, *, retry_429: bool = True) -> dict[str, Any]:
     return _saved("album", limit, offset, retry_429=retry_429)
 
 
-def followed_artists(limit: int = 20, after: str | None = None) -> dict[str, Any]:
+def followed_artists(limit: int = 20, after: str | None = None, *, retry_429: bool = True) -> dict[str, Any]:
     """Optional helper for clients that already have the user-follow-read scope."""
     data = api_request("GET", "/me/following",
-                       query={"type": "artist", "limit": max(1, min(50, limit)), "after": after})
+                       query={"type": "artist", "limit": max(1, min(50, limit)), "after": after},
+                       retry_429=retry_429)
     block = data.get("artists") or {}
     return {"ok": True, "artists": catalog_rows(block, "artist"),
             "after": (block.get("cursors") or {}).get("after") if block.get("next") else None}
+
+
+def get_artist(artist_id: str, *, retry_429: bool = True) -> dict[str, Any]:
+    data = api_request("GET", f"/artists/{_catalog_id(artist_id)}", retry_429=retry_429)
+    return {"ok": True, "artist": catalog_item(data, "artist")}
+
+
+def get_artists(artist_ids: list[str], *, retry_429: bool = True) -> list[dict[str, Any]]:
+    clean = [_catalog_id(aid) for aid in artist_ids if isinstance(aid, str) and aid.strip()]
+    out: list[dict[str, Any]] = []
+    for i in range(0, len(clean), 50):
+        batch = clean[i:i + 50]
+        data = api_request("GET", "/artists", query={"ids": ",".join(batch)}, retry_429=retry_429)
+        for item in data.get("artists") or []:
+            if isinstance(item, dict) and item.get("id"):
+                out.append(catalog_item(item, "artist"))
+    return out
 
 
 def library_contains(uris: list[str], *, retry_429: bool = True) -> list[bool]:

@@ -279,6 +279,24 @@ class AskTests(DjBase):
         self.assertTrue(out["pending"])
         self.assertTrue(dj._asks[out["id"]]["pending"])
 
+    def test_facts_now_includes_taste_dossier(self):
+        import hq_musica_profile as mp
+        mp._save_analysis({
+            "version": 2,
+            "analyzed_utc": "2026-11-15T12:00:00Z",
+            "history_sharing": True,
+            "artist_affinities": [{"name": "Artist 2", "score": 80.0, "tier": "core_pillar"}],
+            "genre_profile": {"top_genres": [{"genre": "darksynth", "score": 9.0}], "macro_families": [], "surging_genres": []},
+            "track_signatures": {"top_tracks": []},
+            "circadian_profile": {"dayparts": {}},
+            "acoustic_fingerprint": {},
+            "lyrical_profile": {},
+            "fatigue_profile": {},
+        })
+        facts = talk.facts_now(dj._state())
+        self.assertIn("profil musical du Maître", facts)
+        self.assertIn("Artist 2", facts["profil musical du Maître"])
+
     def test_with_the_model_down_a_plain_answer_still_comes_from_the_facts(self):
         with mock.patch("hq_ai.generate", side_effect=RuntimeError("down")):
             out = dj.ask({"text": "pourquoi ce titre"})

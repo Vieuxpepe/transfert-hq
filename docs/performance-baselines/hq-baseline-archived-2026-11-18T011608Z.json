@@ -1,0 +1,189 @@
+{
+  "schema": "transfert-hq-perf-baseline/v1",
+  "capturedAtUtc": "2026-11-18T011608Z",
+  "gitRev": "a3a8301",
+  "baseUrl": "http://127.0.0.1:8765",
+  "environment": {
+    "python": "3.10.9",
+    "platform": "Windows-10-10.0.26200-SP0",
+    "playwright": "chromium",
+    "headless": true,
+    "viewport": {
+      "width": 1280,
+      "height": 900
+    },
+    "note": "Headless Chromium often throttles rAF; compare runs with the same mode only."
+  },
+  "scenarios": {
+    "accueil_companion_collapsed": {
+      "label": "accueil-companion-collapsed",
+      "sampleMs": 4000,
+      "idleMs": 15000,
+      "frames": 237,
+      "fps": 12.5,
+      "p95GapMs": 16.8,
+      "maxGapMs": 33.4,
+      "longTasks": 0,
+      "longTaskMs": 0,
+      "runningAnimations": 7,
+      "motion": {
+        "mode": "auto",
+        "tier": "lite",
+        "view": "accueil",
+        "hidden": false,
+        "autoLite": true,
+        "autoLiteReason": "frame-gap",
+        "autoLiteHoldMs": 16531,
+        "emaLive2d": 0,
+        "emaDangle": 0,
+        "emaFrameGap": 16.7,
+        "frameBadScore": 0,
+        "companionLooking": false,
+        "dangleSeen": false,
+        "homeSeen": true
+      },
+      "companionMinimal": true,
+      "companionExpanded": false,
+      "heapAtStart": {
+        "usedJSHeapSize": 13400000,
+        "totalJSHeapSize": 18200000,
+        "jsHeapSizeLimit": 3760000000
+      },
+      "heapAfterSample": {
+        "usedJSHeapSize": 13400000,
+        "totalJSHeapSize": 18200000
+      },
+      "idleApiRequests": 0,
+      "view": "accueil",
+      "hidden": false
+    },
+    "accueil_companion_expanded": {
+      "label": "accueil-companion-expanded",
+      "sampleMs": 4000,
+      "idleMs": 15000,
+      "frames": 236,
+      "fps": 12.4,
+      "p95GapMs": 16.8,
+      "maxGapMs": 33.4,
+      "longTasks": 0,
+      "longTaskMs": 0,
+      "runningAnimations": 7,
+      "motion": {
+        "mode": "auto",
+        "tier": "lite",
+        "view": "accueil",
+        "hidden": false,
+        "autoLite": true,
+        "autoLiteReason": "live2d",
+        "autoLiteHoldMs": 10142,
+        "emaLive2d": 1.4,
+        "emaDangle": 0,
+        "emaFrameGap": 16.7,
+        "frameBadScore": 0,
+        "companionLooking": false,
+        "dangleSeen": false,
+        "homeSeen": true
+      },
+      "companionMinimal": false,
+      "companionExpanded": false,
+      "heapAtStart": {
+        "usedJSHeapSize": 15200000,
+        "totalJSHeapSize": 19300000,
+        "jsHeapSizeLimit": 3760000000
+      },
+      "heapAfterSample": {
+        "usedJSHeapSize": 15200000,
+        "totalJSHeapSize": 19300000
+      },
+      "idleApiRequests": 0,
+      "view": "accueil",
+      "hidden": false
+    },
+    "atelier3d_model": {
+      "label": "atelier3d-model-cycle",
+      "navigation": {
+        "navMs": 864,
+        "hasPrint3d": true
+      },
+      "modelPick": {
+        "ok": false,
+        "reason": "no-stl-glb-in-library"
+      },
+      "syntheticViewer": {
+        "ok": true,
+        "synthetic": true,
+        "parseMs": 1,
+        "openMs": 19,
+        "longTasksDuringOpen": 0,
+        "triangles": 12,
+        "webgl": true,
+        "heapAfterOpen": 15200000
+      },
+      "rotationSample": {
+        "label": "atelier-synthetic-rotation",
+        "sampleMs": 4000,
+        "idleMs": 0,
+        "frames": 241,
+        "fps": 60.2,
+        "p95GapMs": 16.7,
+        "maxGapMs": 16.8,
+        "longTasks": 0,
+        "longTaskMs": 0,
+        "runningAnimations": 1,
+        "motion": {
+          "mode": "auto",
+          "tier": "lite",
+          "view": "atelier3d",
+          "hidden": false,
+          "autoLite": true,
+          "autoLiteReason": "frame-gap",
+          "autoLiteHoldMs": 25991,
+          "emaLive2d": 0,
+          "emaDangle": 0,
+          "emaFrameGap": 16.7,
+          "frameBadScore": 0,
+          "companionLooking": false,
+          "dangleSeen": false,
+          "homeSeen": false
+        },
+        "companionMinimal": false,
+        "companionExpanded": false,
+        "heapAtStart": {
+          "usedJSHeapSize": 15200000,
+          "totalJSHeapSize": 20500000,
+          "jsHeapSizeLimit": 3760000000
+        },
+        "heapAfterSample": {
+          "usedJSHeapSize": 15200000,
+          "totalJSHeapSize": 20500000
+        },
+        "idleApiRequests": 0,
+        "view": "atelier3d",
+        "hidden": false
+      },
+      "closeCycles": [
+        {
+          "cycleAfterClose": 1,
+          "heap": {
+            "usedJSHeapSize": 15200000
+          }
+        },
+        {
+          "cycleAfterClose": 2,
+          "heap": {
+            "usedJSHeapSize": 15200000
+          }
+        },
+        {
+          "cycleAfterClose": 3,
+          "heap": {
+            "usedJSHeapSize": 15200000
+          }
+        }
+      ]
+    }
+  },
+  "notes": [
+    "Print3D library empty \u2014 using synthetic STL viewer (same HQModel path as model sheet)."
+  ]
+}
