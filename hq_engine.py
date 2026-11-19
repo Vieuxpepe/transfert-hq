@@ -1229,6 +1229,14 @@ def logins_check() -> dict:
 ACE_DIR = PROJECT_ROOT / "ACE-Step-1.5"
 WORKER_SCRIPT = PROJECT_ROOT / "hq_music_studio_worker.py"
 STUDIO_DIR = PROJECT_ROOT / ".hq-music" / "studio"
+_state_root: Path = PROJECT_ROOT
+_config_getter: Any = None
+
+
+def _studio_dir() -> Path:
+    if STUDIO_DIR != PROJECT_ROOT / ".hq-music" / "studio":
+        return STUDIO_DIR
+    return _state_root / ".hq-music" / "studio"
 
 
 def _worker_settings() -> dict:
@@ -1269,7 +1277,7 @@ def _worker_settings() -> dict:
 
 def _latest_job() -> Optional[Path]:
     try:
-        jobs = [p for p in STUDIO_DIR.iterdir() if p.is_dir() and not p.is_symlink() and (p / "job.json").is_file()]
+        jobs = [p for p in _studio_dir().iterdir() if p.is_dir() and not p.is_symlink() and (p / "job.json").is_file()]
         return max(jobs, key=lambda p: (p / "job.json").stat().st_mtime) if jobs else None
     except OSError:
         return None
@@ -1282,9 +1290,23 @@ def _latest_worker_log() -> Optional[Path]:
 
 def music_check() -> dict:
     """Is the ACE-Step worker (spawned per job in its own venv) running right now, and with which settings."""
+    import hq_music_studio
     facts = _worker_settings()
-    if not (ACE_DIR / ".venv" / "Scripts" / "python.exe").is_file():
-        return {"state": "error", "facts": facts, "note": "Environnement ACE-Step introuvable (ACE-Step-1.5/.venv)."}
+    if ACE_DIR != PROJECT_ROOT / "ACE-Step-1.5":
+        ace_dir = ACE_DIR if (ACE_DIR / ".venv" / "Scripts" / "python.exe").is_file() else None
+        ace_src = "override" if ace_dir else "missing"
+        ace_err = "" if ace_dir else "Environnement ACE-Step introuvable (ACE-Step-1.5/.venv)."
+    else:
+        cfg = _config_getter() if callable(_config_getter) else None
+        ace_dir, ace_src, ace_err = hq_music_studio.resolve_ace_root(
+            state_root=_state_root,
+            code_root=PROJECT_ROOT,
+            config=cfg,
+        )
+    if ace_dir is None:
+        facts["Source ACE-Step"] = ace_src
+        return {"state": "error", "facts": facts, "note": ace_err or "Environnement ACE-Step introuvable (ACE-Step-1.5/.venv)."}
+    facts["Source ACE-Step"] = ace_src
     pid = _find_by_hint("hq_music_studio_worker")
     job = _latest_job()
     if job is not None:
@@ -1303,10 +1325,13 @@ def music_check() -> dict:
 
 # ---- default registry --------------------------------------------------------------------------------------------
 
-def bind(root: Any, notify: Any = None) -> None:
+def bind(root: Any, notify: Any = None, config_getter: Any = None) -> None:
     """Called once by the bridge: pairing of other computers, Pistonia's state (all under <root>/.hq-engine) and, optionally, HQ's
     notifier (Discord / web push) that Pistonia uses for alerts only when the Master switched notifications on."""
-    global _policy_path
+    global _policy_path, _state_root, _config_getter
+    _state_root = Path(root)
+    if config_getter is not None:
+        _config_getter = config_getter
     import hq_engine_fleet
     import hq_pistonia
     import hq_pistonia_store

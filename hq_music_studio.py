@@ -12,9 +12,107 @@ import uuid
 
 _lock = threading.Lock()
 _active = None
+_code_root: Path | None = None
+_config_getter = None
 _ID = re.compile(r"^[0-9a-f]{32}$")
 MAX_VARIANTS = 3
 TASKS = ('text2music', 'repaint', 'cover', 'extend')
+
+
+def configure(*, code_root=None, config_getter=None) -> None:
+    """Bind optional release code root and config reader for split-layout ACE-Step resolution."""
+    global _code_root, _config_getter
+    _code_root = Path(code_root) if code_root is not None else None
+    _config_getter = config_getter
+
+
+def _is_link_or_reparse(path: Path) -> bool:
+    try:
+        if path.is_symlink():
+            return True
+        if hasattr(os.path, 'isjunction') and os.path.isjunction(path):
+            return True
+        st = os.lstat(path)
+        return bool(getattr(st, 'st_file_attributes', 0) & 0x400)
+    except OSError:
+        return False
+
+
+def _validate_dir_path(raw: str, label: str) -> tuple[Path | None, str]:
+    text = str(raw or '').strip()
+    if not text:
+        return None, f'{label} vide'
+    if '\x00' in text:
+        return None, f'{label} invalide'
+    # Reject explicit parent-traversal segments before resolution.
+    norm_parts = text.replace('\\', '/').split('/')
+    if '..' in norm_parts:
+        return None, f'{label} refuse la traversée de répertoire (..)'
+    candidate = Path(text).expanduser()
+    if not candidate.is_absolute():
+        return None, f'{label} doit être un chemin absolu'
+    if _is_link_or_reparse(candidate):
+        return None, f'{label} ne peut pas être un lien symbolique ou une jonction'
+    for parent in candidate.parents:
+        if _is_link_or_reparse(parent):
+            return None, f'{label} traverse un lien symbolique ou une jonction'
+    if not candidate.is_dir():
+        return None, f'{label} introuvable ({candidate.name})'
+    return candidate.resolve(), ''
+
+
+def _ace_python(ace_dir: Path) -> Path:
+    return ace_dir / '.venv' / 'Scripts' / 'python.exe'
+
+
+def resolve_ace_root(*, state_root=None, code_root=None, config=None, env=None) -> tuple[Path | None, str, str]:
+    """Resolve the ACE-Step model/venv root safely for both legacy and split layouts.
+
+    Precedence:
+      1. ``HQ_ACESTEP_ROOT`` environment variable (strict; fails closed if invalid)
+      2. ``config['ace_step_root']`` (strict; fails closed if invalid)
+      3. Backward-compatible auto-discovery: ``<state_root>/ACE-Step-1.5`` then ``<code_root>/ACE-Step-1.5``
+    Returns ``(ace_dir | None, source, error_message)``.
+    """
+    environ = env if env is not None else os.environ
+    cfg = config if isinstance(config, dict) else (_config_getter() if callable(_config_getter) else {})
+    c_root = code_root if code_root is not None else _code_root
+
+    env_val = str(environ.get('HQ_ACESTEP_ROOT', '') or '').strip()
+    if env_val:
+        resolved, err = _validate_dir_path(env_val, 'HQ_ACESTEP_ROOT')
+        if resolved is None:
+            return None, 'env_invalid', f'Environnement ACE-Step invalide ({err})'
+        py = _ace_python(resolved)
+        if _is_link_or_reparse(py) or not py.is_file():
+            return None, 'env_missing_venv', 'Environnement ACE-Step incomplet (.venv/Scripts/python.exe introuvable dans HQ_ACESTEP_ROOT)'
+        return resolved, 'env', ''
+
+    cfg_val = str((cfg or {}).get('ace_step_root') or '').strip()
+    if cfg_val:
+        resolved, err = _validate_dir_path(cfg_val, 'ace_step_root')
+        if resolved is None:
+            return None, 'config_invalid', f'Environnement ACE-Step invalide ({err})'
+        py = _ace_python(resolved)
+        if _is_link_or_reparse(py) or not py.is_file():
+            return None, 'config_missing_venv', 'Environnement ACE-Step incomplet (.venv/Scripts/python.exe introuvable dans ace_step_root)'
+        return resolved, 'config', ''
+
+    candidates: list[tuple[str, Path]] = []
+    if state_root is not None:
+        candidates.append(('state_root', Path(state_root) / 'ACE-Step-1.5'))
+    if c_root is not None:
+        cand = Path(c_root) / 'ACE-Step-1.5'
+        if not candidates or cand.resolve(strict=False) != candidates[0][1].resolve(strict=False):
+            candidates.append(('code_root', cand))
+    for source, cand in candidates:
+        if _is_link_or_reparse(cand) or not cand.is_dir():
+            continue
+        py = _ace_python(cand)
+        if not _is_link_or_reparse(py) and py.is_file():
+            return cand.resolve(), source, ''
+
+    return None, 'missing', 'Environnement ACE-Step introuvable (ACE-Step-1.5/.venv ; configurer ace_step_root ou HQ_ACESTEP_ROOT)'
 
 class StudioError(ValueError):
     def __init__(self, message, status=400):
@@ -253,10 +351,10 @@ def start(root, body, *, gift=None, jingle=None):
     title = body.get('title')
     if title is not None and (not isinstance(title, str) or len(title) > 100):
         raise StudioError('Titre invalide')
-    ace = Path(root) / 'ACE-Step-1.5'
-    python = ace / '.venv' / 'Scripts' / 'python.exe'
-    if not python.is_file():
-        raise StudioError('Environnement ACE-Step introuvable', 503)
+    ace, _src, ace_err = resolve_ace_root(state_root=root, code_root=_code_root)
+    if ace is None:
+        raise StudioError(ace_err or 'Environnement ACE-Step introuvable', 503)
+    python = _ace_python(ace)
     with _lock:
         if _active is not None and _active.poll() is None:
             raise StudioError('Une génération est déjà en cours', 409)

@@ -107,6 +107,96 @@ CHAT_SUMMARY_WINDOW_S = 20.0  # the in-request summary model call must fit in th
 THREAD_UNREADABLE_MSG = "Historique illisible - copie conservée, réessaie après restauration"
 STORE = ".hq-ai"
 USAGE = "usage.json"
+
+
+def _is_link_or_reparse(path: Path) -> bool:
+    try:
+        if path.is_symlink():
+            return True
+        if hasattr(os.path, "isjunction") and os.path.isjunction(path):
+            return True
+        st = os.lstat(path)
+        return bool(getattr(st, "st_file_attributes", 0) & 0x400)
+    except OSError:
+        return False
+
+
+def resolve_lora_root(*, state_root: Any = None, config: dict | None = None, env: dict | None = None) -> tuple[Path | None, str, str]:
+    """Resolve the immutable AI LoRA checkpoint directory independently from mutable ``<StateRoot>/.hq-ai``.
+
+    Precedence:
+      1. ``HQ_LORA_ROOT`` environment variable (strict absolute non-link directory; fails closed if invalid)
+      2. ``config['lora_models_root']`` (strict absolute non-link directory; fails closed if invalid)
+      3. Backward-compatible fallback: ``<state_root>/.hq-ai`` when present and not a link/junction
+    """
+    environ = env if env is not None else os.environ
+    cfg = config if isinstance(config, dict) else (_cb.get("config")() if callable(_cb.get("config")) else {})
+    s_root = Path(state_root) if state_root is not None else (Path(_cb["root"]) if _cb.get("root") else None)
+
+    def _validate(raw: str, label: str) -> tuple[Path | None, str]:
+        text = str(raw or "").strip()
+        if "\x00" in text or ".." in text.replace("\\", "/").split("/"):
+            return None, f"{label} refuse la traversée de répertoire"
+        cand = Path(text).expanduser()
+        if not cand.is_absolute():
+            return None, f"{label} doit être un chemin absolu"
+        if _is_link_or_reparse(cand) or any(_is_link_or_reparse(p) for p in cand.parents):
+            return None, f"{label} ne peut pas être ou traverser un lien symbolique / une jonction"
+        if not cand.is_dir():
+            return None, f"{label} introuvable"
+        return cand.resolve(), ""
+
+    env_val = str(environ.get("HQ_LORA_ROOT", "") or "").strip()
+    if env_val:
+        resolved, err = _validate(env_val, "HQ_LORA_ROOT")
+        return (resolved, "env", "") if resolved is not None else (None, "env_invalid", err)
+
+    cfg_val = str((cfg or {}).get("lora_models_root") or "").strip()
+    if cfg_val:
+        resolved, err = _validate(cfg_val, "lora_models_root")
+        return (resolved, "config", "") if resolved is not None else (None, "config_invalid", err)
+
+    if s_root is not None:
+        legacy = s_root / STORE
+        if not _is_link_or_reparse(legacy) and legacy.is_dir():
+            return legacy.resolve(), "state_root_legacy", ""
+    return None, "missing", "Répertoire des checkpoints LoRA introuvable (configurer lora_models_root ou HQ_LORA_ROOT)"
+
+
+def lora_storage_status(*, state_root: Any = None, config: dict | None = None, env: dict | None = None) -> dict:
+    """Read-only inventory of resolved LoRA checkpoint root vs mutable ``.hq-ai`` state root (never moves/deletes files)."""
+    s_root = Path(state_root) if state_root is not None else (Path(_cb["root"]) if _cb.get("root") else None)
+    mutable_dir = (s_root / STORE) if s_root is not None else None
+    lora_dir, source, err = resolve_lora_root(state_root=s_root, config=config, env=env)
+    checkpoints: list[str] = []
+    if lora_dir is not None:
+        try:
+            for entry in sorted(lora_dir.iterdir(), key=lambda p: p.name.lower()):
+                if _is_link_or_reparse(entry):
+                    continue
+                if entry.is_file() and entry.suffix.lower() == ".safetensors":
+                    checkpoints.append(entry.name)
+                elif entry.is_dir() and entry.name.lower().endswith("_lora_output"):
+                    for f in sorted(entry.iterdir(), key=lambda p: p.name.lower()):
+                        if not _is_link_or_reparse(f) and f.is_file() and f.suffix.lower() == ".safetensors":
+                            checkpoints.append(f"{entry.name}/{f.name}")
+        except OSError:
+            pass
+    separated = bool(
+        lora_dir is not None
+        and mutable_dir is not None
+        and lora_dir.resolve(strict=False) != mutable_dir.resolve(strict=False)
+    )
+    return {
+        "ok": lora_dir is not None,
+        "source": source,
+        "error": err,
+        "separated": separated,
+        "mutable_state_dir": str(mutable_dir) if mutable_dir is not None else None,
+        "lora_root_configured": source in ("env", "config"),
+        "checkpoints_count": len(checkpoints),
+        "checkpoints_sample": checkpoints[:12],
+    }
 Q_MAX = 2000
 AMBIENT_DAILY = 240
 TRANSFERANIA_DAILY = 1000
