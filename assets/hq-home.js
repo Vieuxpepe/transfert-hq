@@ -1,6 +1,6 @@
 /* Accueil: greeting and date over the hour's light, the next-event countdown, the action row, the
    page-wide drop zone, the short activity feed and the folded offline devices. Everything here only
-   arranges what other modules already load; it fetches nothing of its own. */
+   arranges what other modules already load; its only own fetch is the pool of generated greeting lines. */
 (function () {
   "use strict";
   const $ = (id) => document.getElementById(id);
@@ -107,13 +107,50 @@
     }
   }
 
-  function greeting(date) {
-    const phase = phaseOf(date.getHours());
-    if (returning && phase !== "late" && phase !== "night") {
-      return RETURNS[dayIndex(date) % RETURNS.length];
+  /* A second pool of lines, written ahead of time by the small LLM on the voice-worker PC (GET /api/home-greetings).
+     The copy kept in this browser is what the next load reads, so the page never waits for the network. A line is
+     accepted only if it is a short plain string (it is set with textContent, never as markup). */
+  const GREET_BANK_KEY = "hq_greet_bank";
+  const GREET_PICK_KEY = "hq_greet_pick";
+  const GREET_MAX = 28; // the longest built-in line: the header never wraps
+  function generatedLines(bucket) {
+    try {
+      const bank = JSON.parse(localStorage.getItem(GREET_BANK_KEY) || "null");
+      const list = bank && Array.isArray(bank[bucket]) ? bank[bucket] : [];
+      return list.filter((x) => typeof x === "string" && x.length >= 3 && x.length <= GREET_MAX);
+    } catch (_) {
+      return [];
     }
-    const lines = GREETINGS[phase];
-    return lines[dayIndex(date) % lines.length];
+  }
+
+  /* The pool is the built-in lines plus the generated ones; the day picks one. Once picked, the line is kept for that
+     day and moment, so it never rewrites itself when the bank changes or on a poll. */
+  function greeting(date, persist) {
+    const phase = phaseOf(date.getHours());
+    const back = returning && phase !== "late" && phase !== "night";
+    const bucket = back ? "return" : phase;
+    const key = date.toDateString() + "|" + bucket;
+    try {
+      const kept = JSON.parse(localStorage.getItem(GREET_PICK_KEY) || "null");
+      if (kept && kept.key === key && typeof kept.text === "string") return kept.text;
+    } catch (_) { /* storage blocked: the pick is recomputed, still stable for the day */ }
+    const pool = (back ? RETURNS : GREETINGS[phase]).concat(generatedLines(bucket));
+    const text = pool[dayIndex(date) % pool.length];
+    if (persist) {
+      try { localStorage.setItem(GREET_PICK_KEY, JSON.stringify({ key, text })); } catch (_) { /* ignore */ }
+    }
+    return text;
+  }
+
+  async function loadGreetings() {
+    if (typeof window.api !== "function") return;
+    try {
+      const data = await window.api("/api/home-greetings", { timeoutMs: 8000 });
+      const lines = data && data.lines && typeof data.lines === "object" ? data.lines : null;
+      if (lines) localStorage.setItem(GREET_BANK_KEY, JSON.stringify(lines)); // read by the next load
+    } catch (_) {
+      /* upload role, offline, or the feature is off: the built-in lines stay */
+    }
   }
   returning = noteVisit(now()); // read once, so the line never rewrites on a poll
   window.hqGreetingAt = greeting; // test/debug hook: the line HQ would show at this date
@@ -136,7 +173,7 @@
       const text = new Intl.DateTimeFormat("fr-CA", { weekday: "long", day: "numeric", month: "long" }).format(d);
       date.textContent = text.charAt(0).toUpperCase() + text.slice(1);
     }
-    if (greet) { const want = greeting(d); if ((greet.dataset.fxText || greet.textContent) !== want) greet.textContent = want; }
+    if (greet) { const want = greeting(d, true); if ((greet.dataset.fxText || greet.textContent) !== want) greet.textContent = want; }
     const hero = $("hq-banner");
     if (hero) hero.style.setProperty("--home-amb", ambient(d));
   }
@@ -692,6 +729,7 @@
     document.addEventListener("hq:view", placeViewTools);
     document.addEventListener("hq:session-role", placeEditEntry);
     loadLayout();
+    loadGreetings();
     let lastView = document.body.dataset.view;
     if (lastView === "accueil") enter();
     new MutationObserver(() => {

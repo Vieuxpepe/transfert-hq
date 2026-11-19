@@ -35,19 +35,20 @@ POOL_LABELS = {
     "top": "ton top Spotify", "classics": "tes classiques", "liked": "tes titres aimés jamais écoutés",
     "deep_cuts": "les pépites de tes albums", "artist_dig": "les fonds de catalogue", "followed": "les dernières sorties de tes artistes",
     "playlists": "tes playlists", "loved": "tes coups de cœur HQ", "last_year": "il y a un an",
-    "habits": "tes habitudes", "search": "la recherche sur mesure", "web": "les trouvailles du web",
+    "habits": "tes habitudes", "pinned": "tes titres de référence", "similar": "dans la même veine",
+    "search": "la recherche sur mesure", "web": "les trouvailles du web",
 }
 SHORT_LABELS = {
     "premiere": "Première", "radar": "Radar", "anniversary": "Anniversaire", "repeat": "Du moment",
     "forgotten": "Oublié", "discovery": "Découverte", "top": "Top", "classics": "Classique", "liked": "Aimé",
     "deep_cuts": "Pépite d'album", "artist_dig": "Fond de catalogue", "followed": "Dernière sortie",
     "playlists": "Playlist", "loved": "Coup de cœur", "last_year": "Il y a un an", "habits": "Habitude",
-    "search": "Recherche", "web": "Web",
+    "pinned": "Référence", "similar": "Similaire", "search": "Recherche", "web": "Web",
 }
 BASE_WEIGHTS = {
     "repeat": 1.0, "top": 0.9, "anniversary": 1.2, "forgotten": 1.1, "discovery": 1.1, "radar": 1.0,
     "classics": 1.0, "liked": 1.0, "deep_cuts": 1.0, "artist_dig": 1.0, "followed": 0.8, "playlists": 1.0,
-    "loved": 0.8, "last_year": 0.9, "habits": 1.0, "search": 1.6, "web": 1.8,
+    "loved": 0.8, "last_year": 0.9, "habits": 1.0, "pinned": 1.2, "similar": 2.0, "search": 1.6, "web": 1.8,
 }
 FOCUS_BOOSTS = {
     "nostalgie": {"forgotten": 3, "classics": 3, "anniversary": 2.5, "last_year": 2.5, "liked": 1.5,
@@ -539,10 +540,282 @@ def request_pools(steer: str, taste_hint: str) -> dict[str, list[dict[str, Any]]
     return {k: v for k, v in out.items() if v}
 
 
+SONIC_CACHE_FILE = "track_sonic_cache.json"
+_TEMPO_BANDS = ("slow", "mid", "fast", "driving")
+_GENRE_SONIC_HINTS = (
+    (r"ambient|drone|sleep|lullaby|piano|acoustic|ballad|lo-fi|lofi|chill|classical", "slow", 2),
+    (r"doom|shoegaze|trip-hop|downtempo|folk|jazz|soul|r&b", "mid", 2),
+    (r"synthwave|darksynth|retrowave|synthpop|indie|alt|rock|pop|funk|house|wave|post-punk", "mid", 3),
+    (r"prog|metal|heavy|punk|hardcore|electro|dance|hip-hop|rap|trap|industrial", "fast", 4),
+    (r"thrash|death|black metal|speed|drum and bass|dnb|techno|hardstyle|power metal", "driving", 5),
+)
+
+
+def _tempo_band_from_bpm(bpm: float | None) -> str | None:
+    if bpm is None:
+        return None
+    if bpm < 92:
+        return "slow"
+    if bpm < 118:
+        return "mid"
+    if bpm < 145:
+        return "fast"
+    return "driving"
+
+
+def _energy_from_bpm(bpm: float | None, energy_norm: float | None) -> int | None:
+    if isinstance(energy_norm, (int, float)):
+        return max(1, min(5, round(1.0 + float(energy_norm) * 4.0)))
+    if bpm is not None:
+        if bpm < 85:
+            return 2
+        if bpm < 112:
+            return 3
+        if bpm < 138:
+            return 4
+        return 5
+    return None
+
+
+def _infer_sonic_profile(item: dict[str, Any]) -> dict[str, Any]:
+    """Deterministic zero-network sonic hints from BPM, beat energy, genres, and year."""
+    out: dict[str, Any] = {}
+    bpm = item.get("bpm") if isinstance(item.get("bpm"), (int, float)) else None
+    energy_norm = item.get("energy") if isinstance(item.get("energy"), (int, float)) else None
+    band = _tempo_band_from_bpm(float(bpm)) if bpm is not None else None
+    energy = _energy_from_bpm(float(bpm) if bpm is not None else None, energy_norm)
+    genres_text = " ".join(str(g).casefold() for g in (item.get("genres") or []))
+    text = f"{genres_text} {str(item.get('why') or '').casefold()}".strip()
+    tags: list[str] = []
+    if text:
+        for pattern, p_band, p_energy in _GENRE_SONIC_HINTS:
+            if re.search(pattern, text):
+                band = band or p_band
+                energy = energy or p_energy
+                tags.append(pattern.split("|", 1)[0])
+    m = re.search(r"\b(19\d\d|20[0-2]\d)\b", str(item.get("why") or "") + " " + str(item.get("album") or ""))
+    if m:
+        yr = int(m.group(1))
+        out["era"] = f"{(yr // 10) * 10}s"
+    if band:
+        out["tempo_band"] = band
+    if energy:
+        out["energy_1_5"] = max(1, min(5, int(energy)))
+    if tags:
+        out["mood_tags"] = tags[:3]
+    return out
+
+
+def _load_sonic_cache() -> dict[str, dict[str, Any]]:
+    try:
+        raw = music._load(SONIC_CACHE_FILE, {})
+    except Exception:  # noqa: BLE001 — uninitialized in standalone unit tests
+        return {}
+    return raw.get("tracks") if isinstance(raw, dict) and isinstance(raw.get("tracks"), dict) else {}
+
+
+def _save_sonic_cache(tracks: dict[str, dict[str, Any]]) -> None:
+    if len(tracks) > 2500:
+        ordered = sorted(tracks.items(), key=lambda kv: float((kv[1] or {}).get("at") or 0))
+        tracks = dict(ordered[-2500:])
+    music._write(SONIC_CACHE_FILE, {"tracks": tracks, "updated": time.time()})
+
+
+def warm_sonic_cache(rows: list[dict[str, Any]], *, max_batch: int = 18) -> int:
+    """Batch-classify tracks missing persistent sonic tags into ``track_sonic_cache.json``."""
+    import hq_ai
+
+    cache = _load_sonic_cache()
+    missing = [r for r in rows if isinstance(r, dict) and r.get("uri") and r["uri"] not in cache][:max_batch]
+    if not missing:
+        return 0
+    payload = [{"uri": r["uri"], "title": r.get("name"), "artists": r.get("artists") or [],
+                "genres": (r.get("genres") or [])[:3], "album": r.get("album") or ""} for r in missing]
+    system = (
+        "Classify each music track's sonic feel from artist/title/genres only. "
+        'Reply ONLY JSON: {"tracks":{"spotify:track:...":{"tempo_band":"slow|mid|fast|driving",'
+        '"energy_1_5":3,"mood_tags":["nocturnal","melodic"],"era":"2010s"}}}. No invented facts.'
+    )
+    try:
+        raw, _ = hq_ai.generate(
+            hq_ai.ASK_CHAIN, system,
+            [{"role": "user", "parts": [{"text": json.dumps(payload, ensure_ascii=False)}]}],
+            json_out=True, temperature=0.2, max_tokens=900, background=True, deadline=time.monotonic() + 20,
+        )
+        data = json.loads(raw.strip().removeprefix("```json").removesuffix("```").strip())
+    except Exception:  # noqa: BLE001
+        return 0
+    parsed = data.get("tracks") if isinstance(data, dict) and isinstance(data.get("tracks"), dict) else {}
+    added = 0
+    now_ts = time.time()
+    for r in missing:
+        info = parsed.get(r["uri"])
+        if not isinstance(info, dict):
+            continue
+        band = info.get("tempo_band") if info.get("tempo_band") in _TEMPO_BANDS else None
+        e_raw = info.get("energy_1_5")
+        e_val = max(1, min(5, int(e_raw))) if isinstance(e_raw, (int, float)) else None
+        tags = [str(t)[:24] for t in (info.get("mood_tags") or []) if isinstance(t, str) and t.strip()][:3]
+        era = str(info.get("era") or "")[:12] or None
+        if band or e_val or tags or era:
+            cache[r["uri"]] = {"tempo_band": band, "energy_1_5": e_val, "mood_tags": tags, "era": era, "at": now_ts}
+            added += 1
+    if added:
+        _save_sonic_cache(cache)
+    return added
+
+
+def _sonic_lookup() -> tuple[dict[str, list[str]], dict[str, dict[str, float]], dict[str, dict[str, Any]]]:
+    """Load local artist genre maps, cached beat grids, and track sonic cache (zero network)."""
+    artist_genres: dict[str, list[str]] = {}
+    beat_map: dict[str, dict[str, float]] = {}
+    sonic_map = _load_sonic_cache()
+    try:
+        import hq_musica_profile as mp
+        analysis = mp._load_analysis()
+        if isinstance(analysis, dict):
+            for entry in analysis.get("artist_affinities") or []:
+                if isinstance(entry, dict) and entry.get("name") and entry.get("genres"):
+                    artist_genres[entry["name"].strip().casefold()] = [str(g) for g in entry["genres"][:4] if g]
+        raw = mp._load_raw()
+        sp = raw.get("spotify") if isinstance(raw, dict) and isinstance(raw.get("spotify"), dict) else {}
+        for entry in (sp.get("artist_cache") or {}).values():
+            if isinstance(entry, dict) and entry.get("name") and entry.get("genres"):
+                artist_genres.setdefault(entry["name"].strip().casefold(), [str(g) for g in entry["genres"][:4] if g])
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        grids = music._load("musica_beats.json", {"grids": {}}).get("grids") or {}
+        if isinstance(grids, dict):
+            for key, grid in grids.items():
+                if not isinstance(grid, dict):
+                    continue
+                bpm = grid.get("bpm")
+                energy_curve = grid.get("energy")
+                info: dict[str, float] = {}
+                if isinstance(bpm, (int, float)) and 40 <= float(bpm) <= 240:
+                    info["bpm"] = round(float(bpm), 1)
+                if isinstance(energy_curve, list) and energy_curve:
+                    vals = [float(v) for v in energy_curve if isinstance(v, (int, float))]
+                    if vals:
+                        info["energy"] = round(sum(vals) / len(vals), 3)
+                if info:
+                    beat_map[str(key)] = info
+    except Exception:  # noqa: BLE001
+        pass
+    return artist_genres, beat_map, sonic_map
+
+
+def enrich_pools(pools: dict[str, list[dict[str, Any]]]) -> dict[str, list[dict[str, Any]]]:
+    """Attach local artist genres, cached BPM/energy, and persistent/inferred sonic metadata."""
+    if not pools:
+        return pools
+    artist_genres, beat_map, sonic_map = _sonic_lookup()
+    try:
+        import hq_musica_profile as mp
+        infer_genres = mp._infer_context_genres
+    except Exception:  # noqa: BLE001
+        infer_genres = None
+    out: dict[str, list[dict[str, Any]]] = {}
+    for pool_name, rows in pools.items():
+        enriched_rows: list[dict[str, Any]] = []
+        for r in rows or []:
+            item = dict(r)
+            if not item.get("genres"):
+                genres: list[str] = []
+                for artist in item.get("artists") or []:
+                    for g in artist_genres.get(str(artist).strip().casefold()) or []:
+                        if g not in genres:
+                            genres.append(g)
+                if not genres and infer_genres is not None:
+                    lead_key = str((item.get("artists") or [""])[0] or "").strip().casefold()
+                    ctx_texts = {str(item.get("album") or ""), str(item.get("why") or "")} - {""}
+                    genres = infer_genres(lead_key, [{"name": str(item.get("name") or "")}], ctx_texts)
+                if genres:
+                    item["genres"] = genres[:4]
+            uri = str(item.get("uri") or "")
+            track_id = uri.rsplit(":", 1)[-1] if ":" in uri else uri
+            beat = beat_map.get(uri) or beat_map.get(track_id) or {}
+            if item.get("bpm") is None and "bpm" in beat:
+                item["bpm"] = beat["bpm"]
+            if item.get("energy") is None and "energy" in beat:
+                item["energy"] = beat["energy"]
+            cached = sonic_map.get(uri) or sonic_map.get(track_id) or {}
+            for key in ("tempo_band", "energy_1_5", "mood_tags", "era"):
+                if item.get(key) is None and cached.get(key) is not None:
+                    item[key] = cached[key]
+            inferred = _infer_sonic_profile(item)
+            for key, val in inferred.items():
+                if item.get(key) is None:
+                    item[key] = val
+            enriched_rows.append(item)
+        out[pool_name] = enriched_rows
+    return out
+
+
+def similar_pool(seed: dict[str, Any], *, limit: int = 12) -> list[dict[str, Any]]:
+    """Build a 'more like this track' pool around a currently playing seed track."""
+    if not isinstance(seed, dict) or not seed.get("name"):
+        return []
+    import hq_spotify as spotify
+
+    seed_uri = str(seed.get("uri") or "")
+    artists = [str(a) for a in (seed.get("artists") or []) if a]
+    lead = artists[0] if artists else ""
+    genres = [str(g) for g in (seed.get("genres") or []) if g][:2]
+    queries: list[str] = []
+    if lead:
+        queries.append(lead)
+    if genres:
+        queries.append(f"{' '.join(genres)} {lead}".strip())
+    elif seed.get("album"):
+        queries.append(f"{seed['album']} {lead}".strip())
+    queries = list(dict.fromkeys(q for q in queries if q))[:3]
+    out: list[dict[str, Any]] = []
+    seen: set[str] = {seed_uri} if seed_uri else set()
+    why = f"dans la même veine que « {seed['name']} »"
+    for q in queries:
+        try:
+            tracks = spotify.search(q, types="track", limit=8, retry_429=False).get("tracks") or []
+        except spotify.SpotifyError:
+            tracks = []
+        for t in tracks:
+            r = row(t, why, "similar")
+            if r and r["uri"] not in seen:
+                seen.add(r["uri"])
+                out.append(r)
+                if len(out) >= limit:
+                    return out
+    return out
+
+
+def pinned_pool(pinned_tracks: list[str], *, limit: int = 3) -> list[dict[str, Any]]:
+    """Resolve Master's Profil-tab pinned reference tracks on Spotify into verified candidate rows."""
+    if not pinned_tracks:
+        return []
+    import hq_spotify as spotify
+
+    out: list[dict[str, Any]] = []
+    sample = list(pinned_tracks)
+    random.shuffle(sample)
+    for spec in sample[:limit]:
+        text = " ".join(str(spec or "").split())
+        if len(text) < 2:
+            continue
+        query = text.replace(" - ", " ").replace(" — ", " ")
+        try:
+            found = spotify.search(query, types="track", limit=2, retry_429=False).get("tracks") or []
+        except spotify.SpotifyError:
+            continue
+        if found and (r := row(found[0], f"ton titre de référence : {text[:80]}", "pinned")):
+            out.append(r)
+    return out
+
+
 # ---- collect -----------------------------------------------------------------------------------------------------
 
 def collect(*, history: bool, premiere: list[dict[str, Any]] | None = None, steer: str = "",
-            taste_hint: str = "") -> dict[str, list[dict[str, Any]]]:
+            taste_hint: str = "", seed_track: dict[str, Any] | None = None) -> dict[str, list[dict[str, Any]]]:
     """Every source in parallel with one deadline; a source that is late or fails is simply left out."""
     import hq_spotify as spotify
 
@@ -550,13 +823,24 @@ def collect(*, history: bool, premiere: list[dict[str, Any]] | None = None, stee
     stamp = time.time()
     index = _journal_index() if history else {"tracks": {}, "artists": {}}
     jobs: dict[str, Callable[[], dict[str, list[dict[str, Any]]]]] = {}
+    pinned_refs: list[str] = []
     if history:
+        try:
+            import hq_musica_profile as mp
+            pinned_refs = list(mp.get_overrides().get("pinned_tracks") or [])
+        except Exception:  # noqa: BLE001
+            pinned_refs = []
         jobs["journal"] = lambda: journal_pools(now, index)
         jobs["top"] = lambda: {"top": [r for t in spotify.top_tracks("short", limit=20).get("tracks") or []
                                        if (r := row(t, "dans ton top du moment", "top"))]}
         jobs["loved"] = lambda: {"loved": loved_pool()}
+        if pinned_refs:
+            jobs["pinned"] = lambda refs=pinned_refs: {"pinned": pinned_pool(refs)}
         for name in RAW_SOURCES:
             jobs[name] = (lambda n=name: {n: _resolve(n, _cached(n, stamp), index, now)})
+
+    if seed_track:
+        jobs["similar"] = lambda seed=seed_track: {"similar": similar_pool(seed)}
 
     def radar() -> dict[str, list[dict[str, Any]]]:
         from hq_music_radar import get_radar
@@ -590,34 +874,128 @@ def collect(*, history: bool, premiere: list[dict[str, Any]] | None = None, stee
             pools.update(future.result())
         except Exception:  # noqa: BLE001 — one dead source only narrows the choice
             continue
-    return {k: v for k, v in pools.items() if v}
+    return enrich_pools({k: v for k, v in pools.items() if v})
 
 
 # ---- mix ---------------------------------------------------------------------------------------------------------
 
-def weights(names: list[str], *, focus: str | None, pool_stats: dict[str, Any]) -> dict[str, float]:
-    """Base weight × steering boost × a Thompson sample of the source's finish/skip record (explore, favour what lands)."""
+_COMFORT_POOLS = {"classics", "liked", "playlists", "repeat", "loved", "anniversary", "last_year", "habits", "pinned"}
+_NOVELTY_POOLS = {"discovery", "deep_cuts", "artist_dig", "radar", "followed"}
+
+
+def weights(names: list[str], *, focus: str | None, pool_stats: dict[str, Any],
+            target_familiarity: float | None = None) -> dict[str, float]:
+    """Base weight × steering boost × novelty balance × a Thompson sample of finish/skip record."""
     boosts = FOCUS_BOOSTS.get(focus or "", {})
+    delta = (0.55 - float(target_familiarity)) if isinstance(target_familiarity, (int, float)) else 0.0
+    nov_mult = max(0.60, min(1.60, 1.0 + 1.2 * delta))
+    comf_mult = max(0.60, min(1.60, 1.0 - 1.0 * delta))
     out = {}
     for name in names:
         stats = pool_stats.get(name) or {}
         sample = random.betavariate(1 + int(stats.get("done") or 0), 1 + int(stats.get("skipped") or 0))
-        out[name] = BASE_WEIGHTS.get(name, 1.0) * boosts.get(name, 1.0) * (0.5 + sample)
+        fam_mult = nov_mult if name in _NOVELTY_POOLS else (comf_mult if name in _COMFORT_POOLS else 1.0)
+        out[name] = BASE_WEIGHTS.get(name, 1.0) * boosts.get(name, 1.0) * fam_mult * (0.5 + sample)
     return out
 
 
+def _arc_sequence(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Reorder non-premiere candidates gently so consecutive tracks avoid jarring energy whiplash."""
+    if len(rows) <= 3:
+        return rows
+    head = [r for r in rows if r.get("pool") == "premiere"]
+    tail = [r for r in rows if r.get("pool") != "premiere"]
+    if len(tail) <= 2:
+        return head + tail
+
+    def _e(r: dict[str, Any]) -> float:
+        e15 = r.get("energy_1_5")
+        if isinstance(e15, (int, float)):
+            return float(e15)
+        e_norm = r.get("energy")
+        if isinstance(e_norm, (int, float)):
+            return 1.0 + float(e_norm) * 4.0
+        return 3.0
+
+    ordered = [tail.pop(0)]
+    while tail:
+        prev_e = _e(ordered[-1])
+        prev_artist = (ordered[-1].get("artists") or [""])[0].casefold()
+        # Look ahead only among the next few high-priority slots so weight balance stays intact
+        window = tail[:5]
+        best_idx = min(
+            range(len(window)),
+            key=lambda idx: (
+                abs(_e(window[idx]) - prev_e) * 1.0
+                + (1.8 if ((window[idx].get("artists") or [""])[0].casefold() == prev_artist and prev_artist) else 0.0)
+                + idx * 0.35
+            ),
+        )
+        ordered.append(tail.pop(best_idx))
+    return head + ordered
+
+
 def mix(pools: dict[str, list[dict[str, Any]]], *, affinity: dict[str, float], weight: dict[str, float],
-        skip_uris: set[str], banned: set[str], aired: dict[str, float], cap: int, per_artist: int = 2) -> list[dict[str, Any]]:
+        skip_uris: set[str], banned: set[str], aired: dict[str, float], cap: int, per_artist: int = 2,
+        tired_artists: set[str] | None = None, tired_tracks: set[tuple[str, str]] | None = None,
+        boosted_genres: list[str] | set[str] | None = None,
+        target_bpm_range: dict[str, int | None] | None = None,
+        mood_energy: int | None = None) -> list[dict[str, Any]]:
     """Premières first, then a smooth weighted round-robin across sources (quotas follow the weights)."""
+    pools = enrich_pools(pools)
     rest_until = time.time() - COOLDOWN_DAYS * 86400
+    tired_a = tired_artists or set()
+    tired_t = tired_tracks or set()
+    bg_tokens = [str(g).strip().casefold() for g in (boosted_genres or []) if isinstance(g, str) and g.strip()]
+    bpm_lo = (target_bpm_range or {}).get("min")
+    bpm_hi = (target_bpm_range or {}).get("max")
+    target_energy_bpm = (70.0 + (int(mood_energy) - 1) * 25.0) if isinstance(mood_energy, int) and 1 <= mood_energy <= 5 else None
+    target_energy_lvl = (0.15 + (int(mood_energy) - 1) * 0.2) if isinstance(mood_energy, int) and 1 <= mood_energy <= 5 else None
+    target_e15 = float(mood_energy) if isinstance(mood_energy, int) and 1 <= mood_energy <= 5 else None
+
+    def is_tired(r: dict[str, Any]) -> bool:
+        if tired_a and any(a.casefold() in tired_a for a in r["artists"]):
+            return True
+        if tired_t:
+            lead = (r["artists"] or [""])[0]
+            return (str(r.get("name") or "").strip().casefold(), str(lead or "").strip().casefold()) in tired_t
+        return False
 
     def usable(r: dict[str, Any], *, rested: bool) -> bool:
         if r["uri"] in skip_uris or any(a.casefold() in banned for a in r["artists"]):
             return False
-        return not rested or r["pool"] == "repeat" or float(aired.get(r["uri"]) or 0) < rest_until
+        if not rested:
+            return True
+        if is_tired(r):
+            return False
+        return r["pool"] == "repeat" or float(aired.get(r["uri"]) or 0) < rest_until
 
     def best(r: dict[str, Any]) -> float:
-        return max((affinity.get(a.casefold(), 0.0) for a in r["artists"]), default=0.0)
+        score = max((affinity.get(a.casefold(), 0.0) for a in r["artists"]), default=0.0)
+        if is_tired(r):
+            score -= 2.0
+        row_genres = [str(g).casefold() for g in (r.get("genres") or [])]
+        if bg_tokens and row_genres:
+            if any(bg in rg or rg in bg for bg in bg_tokens for rg in row_genres):
+                score += 2.5
+        bpm = r.get("bpm")
+        if isinstance(bpm, (int, float)):
+            bpm_f = float(bpm)
+            if bpm_lo is not None or bpm_hi is not None:
+                lo_f = float(bpm_lo) if bpm_lo is not None else 40.0
+                hi_f = float(bpm_hi) if bpm_hi is not None else 240.0
+                if lo_f <= bpm_f <= hi_f:
+                    score += 2.0
+                else:
+                    dist = (lo_f - bpm_f) if bpm_f < lo_f else (bpm_f - hi_f)
+                    score -= min(2.5, 0.1 * dist)
+            if target_energy_bpm is not None:
+                score += max(-1.5, 1.5 - abs(bpm_f - target_energy_bpm) / 30.0)
+        elif target_energy_lvl is not None and isinstance(r.get("energy"), (int, float)):
+            score += max(-1.5, 1.5 - abs(float(r["energy"]) - target_energy_lvl) * 3.0)
+        elif target_e15 is not None and isinstance(r.get("energy_1_5"), (int, float)):
+            score += max(-1.4, 1.4 - abs(float(r["energy_1_5"]) - target_e15) * 0.7)
+        return score
 
     def build(rested: bool) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
@@ -636,7 +1014,7 @@ def mix(pools: dict[str, list[dict[str, Any]]], *, affinity: dict[str, float], w
         for r in pools.get("premiere") or []:
             if usable(r, rested=rested):
                 take(r)
-        queues = {k: sorted((r for r in v if usable(r, rested=rested)), key=lambda r: -min(4.0, best(r)))
+        queues = {k: sorted((r for r in v if usable(r, rested=rested)), key=lambda r: -min(8.0, best(r)))
                   for k, v in pools.items() if k != "premiere"}
         credit = {k: 0.0 for k in queues}
         while len(out) < cap:
@@ -649,7 +1027,7 @@ def mix(pools: dict[str, list[dict[str, Any]]], *, affinity: dict[str, float], w
             pick = max(live, key=lambda k: credit[k])
             credit[pick] -= total
             take(queues[pick].pop(0))
-        return out
+        return _arc_sequence(out)
 
     picked = build(rested=True)
     return picked if len(picked) >= 12 else build(rested=False)  # too few after the rest rule: let rested tracks back

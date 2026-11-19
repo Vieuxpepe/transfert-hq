@@ -32,6 +32,7 @@ function asciiSTL(tris) {
   assert.equal(m.format, "STL binaire"); assert.equal(m.triangles, 12); assert.equal(m.colors, null);
   nearV(m.bounds.min, [0, 0, 0]); nearV(m.bounds.max, [10, 20, 30]); nearV(m.bounds.center, [5, 10, 15]);
   near(m.bounds.radius, Math.hypot(10, 20, 30) / 2);
+  near(m.volume_mm3, 6000, 1e-4);
   // Normals computed from the geometry (the fixture stores zero normals): bottom face points down, top up.
   nearV(Array.from(m.normals.slice(0, 3)), [0, 0, -1]); nearV(Array.from(m.normals.slice(18, 21)), [0, 0, 1]);
   for (let i = 0; i < m.normals.length; i += 3) near(Math.hypot(m.normals[i], m.normals[i + 1], m.normals[i + 2]), 1);
@@ -189,7 +190,7 @@ for (const [mutate, re] of [
   const bad = new Uint16Array([0, 1, 9, 0, 2, 3]);
   throwsFr(() => M.parse("x.glb", glb(baseJSON, [quadPos, quadNor, bad, idx8, idx32])), /indice de sommet hors limites/);
 }
-throwsFr(() => M.parse("x.obj", binarySTL(CUBE)), /STL ou GLB seulement/);
+throwsFr(() => M.parse("x.pdf", binarySTL(CUBE)), /non pris en charge/);
 
 // ---- view math ----
 {
@@ -246,4 +247,52 @@ throwsFr(() => M.parse("x.obj", binarySTL(CUBE)), /STL ou GLB seulement/);
   const big = { triangles: M.LIMITS.maxTriangles2D + 1 };
   assert.throws(() => v.setModel(big), e => e instanceof M.ModelError && /n'a pas WebGL/.test(e.message));
 }
+// ---- viewer disposal: closing the sheet must release the GL context, buffers and observer ----
+{
+  const noop = () => {};
+  const calls = { buffers: 0, deleted: [], extensions: [], lost: 0, disconnected: 0, cancelled: 0 };
+  const gl = new Proxy({}, {
+    get(t, k) {
+      if (k === "createBuffer") return () => { calls.buffers += 1; return { id: calls.buffers }; };
+      if (k === "deleteBuffer") return b => { calls.deleted.push(b); };
+      if (k === "getShaderParameter" || k === "getProgramParameter") return () => true;
+      if (k === "getAttribLocation") return () => 0;
+      if (k === "getExtension") return name => { calls.extensions.push(name); return { loseContext() { calls.lost += 1; } }; };
+      return t[k] !== undefined ? t[k] : noop;   // every other gl call (and its constants) is a noop
+    },
+  });
+  globalThis.ResizeObserver = class { constructor(cb) { this.cb = cb; } observe() {} disconnect() { calls.disconnected += 1; } };
+  globalThis.requestAnimationFrame = () => 7;
+  globalThis.cancelAnimationFrame = () => { calls.cancelled += 1; };
+  const handlers = {};
+  const canvas = {
+    width: 0, height: 0,
+    getContext: k => (k === "webgl" ? gl : null),
+    addEventListener: (k, f) => { handlers[k] = f; },
+    getBoundingClientRect: () => ({ left: 0, top: 0, width: 400, height: 300 }),
+    setPointerCapture: noop,
+  };
+  const v = M.viewer(canvas);
+  assert.equal(v.webgl, true, "the stub canvas gives a GL viewer");
+  v.setModel(M.parse("c.stl", binarySTL(CUBE)));
+  assert.equal(calls.buffers, 2, "one buffer per attribute (an STL has no colours)");
+  v.setModel(M.parse("c.stl", binarySTL(CUBE)));
+  assert.equal(calls.deleted.length, 2, "a second model frees the first buffers");
+  // A gesture queues a frame; closing the sheet while it is pending must cancel it.
+  const ev = { pointerId: 1, clientX: 10, clientY: 10, button: 0, pointerType: "touch", preventDefault: noop };
+  handlers.pointerdown(ev);
+  handlers.pointermove(Object.assign({}, ev, { clientX: 20 }));
+  v.dispose();
+  assert.equal(calls.deleted.length, 4, "dispose frees the live buffers");
+  assert.equal(calls.cancelled, 1, "a queued frame is cancelled");
+  assert.equal(calls.disconnected, 1, "the ResizeObserver is disconnected");
+  assert.deepEqual(calls.extensions, ["WEBGL_lose_context"]);
+  assert.equal(calls.lost, 1, "the WebGL context is released");
+  assert.equal(v.webgl, false);
+  v.dispose();
+  assert.equal(calls.lost, 1, "dispose is idempotent");
+  v.setModel(M.parse("c.stl", binarySTL(CUBE)));
+  assert.equal(calls.buffers, 4, "a disposed viewer never allocates again");
+}
+
 console.log("hq model (STL/GLB) checks ok");

@@ -13,6 +13,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import threading
 import time
@@ -64,13 +65,30 @@ def installed() -> bool:
     return CB_PYTHON.is_file() and CB_DAEMON_SCRIPT.is_file()
 
 
+def _port_open(timeout: float = 0.15) -> bool:
+    try:
+        with socket.create_connection((CB_HOST, int(CB_PORT)), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
 def _health(timeout: float = 1.5) -> dict[str, Any]:
+    if not _port_open():
+        return {}
     try:
         with urllib.request.urlopen(f"{CB_URL}/health", timeout=timeout) as r:
             data = json.loads(r.read() or b"{}")
             return data if isinstance(data, dict) else {}
     except Exception:
         return {}
+
+
+def release_vram_if_idle() -> bool:
+    """Stop the local GPU daemon when no synthesis is in flight so Forge gets the full 8 GB VRAM."""
+    if _synth_lock.locked() or not _port_open():
+        return False
+    return stop_daemon(wait_sec=2.0)
 
 
 def daemon_ready() -> bool:

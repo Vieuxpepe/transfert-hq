@@ -42,6 +42,16 @@ class PersonhoodTests(unittest.TestCase):
         self.assertTrue(snap["ok"])
         self.assertEqual(snap["ledger"]["count"], 0)
 
+    def test_bond_ignores_instrument_sources(self):
+        hq_personhood.observe_chat("culinia", "Bonjour.", source="hqverifydevice01", now=NOW)
+        hq_personhood.observe_chat("culinia", "Encore.", source="realphone012345", now=NOW + 60)
+        row = hq_personhood.bond("culinia", now=NOW + 60)
+        self.assertEqual(row["turns"], 1)
+        self.assertEqual(row["days"], 1)
+        hq_personhood.observe_chat("culinia", "Troisième.", source="hqliveprobe0001", now=NOW + 120)
+        row = hq_personhood.bond("culinia", now=NOW + 120)
+        self.assertEqual(row["turns"], 1)
+
     def test_unreadable_state_is_preserved(self):
         path = self.self_file("culinia")
         path.write_text("{not json", encoding="utf-8")

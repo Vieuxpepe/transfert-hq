@@ -19,6 +19,8 @@
   var button = document.createElement("button");
   button.type = "button";
   button.id = ID;
+  function sfx(kind) { try { if (window.HqAssistantSfx) window.HqAssistantSfx.play("culinia", kind); } catch (_) {} }
+  try { if (window.HqAssistantSfx) window.HqAssistantSfx.register("culinia", function () { return button; }); } catch (_) {}
   button.className = "hq-culinia-chip";
   button.setAttribute("aria-label", "Culinia — ouvrir la cheffe des repas");
   button.title = "Culinia — Cheffe Repas · glisser pour déplacer";
@@ -64,6 +66,7 @@
         '</div>' +
       '</div>' +
       '<div class="hq-culinia-drawer-controls">' +
+        '<button type="button" class="hq-culinia-icon-btn" id="hq-culinia-stop" title="Arrêter la réponse en cours" hidden>Arrêter</button>' +
         '<button type="button" class="hq-culinia-icon-btn" id="hq-culinia-clear" title="Effacer la conversation">Effacer</button>' +
         '<button type="button" class="hq-culinia-icon-btn" id="hq-culinia-close" aria-label="Fermer">✕</button>' +
       '</div>' +
@@ -87,8 +90,20 @@
   var inputEl = document.getElementById("hq-culinia-input");
   var sendEl = document.getElementById("hq-culinia-send");
   var formEl = document.getElementById("hq-culinia-form");
+  var stopEl = document.getElementById("hq-culinia-stop");
 
-  var state = { open: false, busy: false, messages: [], pos: { x: 0, y: 0 } };
+  var state = { open: false, busy: false, messages: [], pos: { x: 0, y: 0 }, job: "" };
+
+  // The turn is stoppable server-side: the cancel route makes it drop at its next
+  // round or tool call and store nothing (a stopped answer never comes back later).
+  function newJob() {
+    try {
+      if (window.crypto && typeof crypto.randomUUID === "function") {
+        return "cl-" + crypto.randomUUID().replace(/-/g, "").slice(0, 20);
+      }
+    } catch (_) {}
+    return "cl-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  }
 
   function clamp(v, min, max) {
     var n = Number(v);
@@ -294,6 +309,7 @@
 
   function openDrawer() {
     state.open = true;
+    sfx("open");
     drawer.hidden = false;
     renderMessages();
     refreshStatus();
@@ -309,6 +325,18 @@
   });
   document.getElementById("hq-culinia-close").addEventListener("click", closeDrawer);
 
+  if (stopEl) stopEl.addEventListener("click", async function () {
+    if (!state.busy || !state.job) return;
+    stopEl.disabled = true;
+    try {
+      await api("/api/culinia/cancel", { method: "POST", headers: csrfHeaders(), body: JSON.stringify({ job: state.job }) });
+      if (typeof window.toast === "function") window.toast("Arrêt demandé", "ok");
+    } catch (e) {
+      if (typeof window.toast === "function") window.toast(e.message, "err");
+      stopEl.disabled = false;
+    }
+  });
+
   document.getElementById("hq-culinia-clear").addEventListener("click", async function () {
     try {
       await api("/api/culinia/clear", { method: "POST", headers: csrfHeaders(), body: "{}" });
@@ -323,7 +351,10 @@
     var msg = (text || "").trim();
     if (!msg || state.busy) return;
     state.busy = true;
+    state.job = newJob();
+    sfx("think");
     sendEl.disabled = true;
+    if (stopEl) { stopEl.hidden = false; stopEl.disabled = false; }
     inputEl.value = "";
 
     state.messages.push({ role: "user", text: msg });
@@ -334,7 +365,7 @@
       var res = await api("/api/culinia/chat", {
         method: "POST",
         headers: csrfHeaders(),
-        body: JSON.stringify({ message: msg }),
+        body: JSON.stringify({ message: msg, job: state.job }),
       });
       if (res.cancelled) {
         // The conversation was cleared while this reply was generated: the
@@ -352,12 +383,16 @@
       })) {
         window.dispatchEvent(new CustomEvent("hq:meals-changed"));
       }
+      sfx("reply");
     } catch (e) {
+      sfx("error");
       state.messages[state.messages.length - 1] = { role: "assistant", text: "Erreur Culinia : " + e.message };
       renderMessages();
     } finally {
       state.busy = false;
+      state.job = "";
       sendEl.disabled = false;
+      if (stopEl) stopEl.hidden = true;
       inputEl.focus();
     }
   }
@@ -393,13 +428,14 @@
       var vw = document.documentElement.clientWidth || window.innerWidth || 390;
       var dr = dockEl.getBoundingClientRect();
       var w = b.offsetWidth;
-      if (dr.left - 12 - w >= 8) return;
+      var lane = window.HQSpeechLane && window.HQSpeechLane();
+      var laneLeft = lane ? lane.contentRight : 8;
+      if (dr.left - 12 - w >= laneLeft) return;
       if (dr.right + 10 + w <= vw - 8) {
         b.style.right = "auto";
         b.style.left = "calc(100% + 10px)";
         return;
       }
-      b.style.maxWidth = Math.max(180, vw - 24) + "px";
       b.style.left = "auto";
       b.style.right = "0";
       b.style.top = "auto";

@@ -1,0 +1,142 @@
+{
+  "schema": "transfert-hq-atelier-mesh-benchmark/v1",
+  "capturedAtUtc": "2026-11-18T025838Z",
+  "results": {
+    "small_10k": {
+      "parseMs": 6,
+      "viewerInitMs": 18,
+      "firstFrameMs": 66,
+      "longTasksDuringOpen": 1,
+      "rotationFps": 59.5,
+      "trianglesReported": 10000,
+      "heapPeak": 15200000,
+      "heapAfterDispose": 15200000
+    },
+    "medium_100k": {
+      "parseMs": 63,
+      "viewerInitMs": 40,
+      "firstFrameMs": 113,
+      "longTasksDuringOpen": 3,
+      "rotationFps": 59.5,
+      "trianglesReported": 100000,
+      "heapPeak": 15200000,
+      "heapAfterDispose": 15200000
+    },
+    "large_300k": {
+      "parseMs": 116,
+      "viewerInitMs": 54,
+      "firstFrameMs": 166,
+      "longTasksDuringOpen": 3,
+      "rotationFps": 60,
+      "trianglesReported": 300000,
+      "heapPeak": 15200000,
+      "heapAfterDispose": 15200000
+    }
+  },
+  "memoryStability": {
+    "heapBefore": 15200000,
+    "heapAfter": 15200000,
+    "perCycle": [
+      {
+        "parseMs": 43,
+        "viewerInitMs": 45,
+        "firstFrameMs": 85,
+        "longTasksDuringOpen": 2,
+        "rotationFps": 59,
+        "trianglesReported": 100000,
+        "heapPeak": 15200000,
+        "heapAfterDispose": 15200000
+      },
+      {
+        "parseMs": 28,
+        "viewerInitMs": 29,
+        "firstFrameMs": 102,
+        "longTasksDuringOpen": 3,
+        "rotationFps": 60,
+        "trianglesReported": 100000,
+        "heapPeak": 15200000,
+        "heapAfterDispose": 15200000
+      },
+      {
+        "parseMs": 124,
+        "viewerInitMs": 34,
+        "firstFrameMs": 103,
+        "longTasksDuringOpen": 3,
+        "rotationFps": 60,
+        "trianglesReported": 100000,
+        "heapPeak": 15200000,
+        "heapAfterDispose": 15200000
+      },
+      {
+        "parseMs": 64,
+        "viewerInitMs": 30,
+        "firstFrameMs": 101,
+        "longTasksDuringOpen": 3,
+        "rotationFps": 60,
+        "trianglesReported": 100000,
+        "heapPeak": 15200000,
+        "heapAfterDispose": 15200000
+      },
+      {
+        "parseMs": 95,
+        "viewerInitMs": 55,
+        "firstFrameMs": 109,
+        "longTasksDuringOpen": 3,
+        "rotationFps": 59.5,
+        "trianglesReported": 100000,
+        "heapPeak": 15200000,
+        "heapAfterDispose": 15200000
+      },
+      {
+        "parseMs": 69,
+        "viewerInitMs": 44,
+        "firstFrameMs": 115,
+        "longTasksDuringOpen": 3,
+        "rotationFps": 60,
+        "trianglesReported": 100000,
+        "heapPeak": 15200000,
+        "heapAfterDispose": 15200000
+      },
+      {
+        "parseMs": 58,
+        "viewerInitMs": 51,
+        "firstFrameMs": 136,
+        "longTasksDuringOpen": 3,
+        "rotationFps": 59.5,
+        "trianglesReported": 100000,
+        "heapPeak": 15200000,
+        "heapAfterDispose": 15200000
+      },
+      {
+        "parseMs": 55,
+        "viewerInitMs": 39,
+        "firstFrameMs": 116,
+        "longTasksDuringOpen": 3,
+        "rotationFps": 59.5,
+        "trianglesReported": 100000,
+        "heapPeak": 15200000,
+        "heapAfterDispose": 15200000
+      },
+      {
+        "parseMs": 71,
+        "viewerInitMs": 55,
+        "firstFrameMs": 139,
+        "longTasksDuringOpen": 3,
+        "rotationFps": 60,
+        "trianglesReported": 100000,
+        "heapPeak": 15200000,
+        "heapAfterDispose": 15200000
+      },
+      {
+        "parseMs": 76,
+        "viewerInitMs": 50,
+        "firstFrameMs": 159,
+        "longTasksDuringOpen": 3,
+        "rotationFps": 59.5,
+        "trianglesReported": 100000,
+        "heapPeak": 15200000,
+        "heapAfterDispose": 15200000
+      }
+    ]
+  }
+}

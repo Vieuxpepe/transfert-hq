@@ -393,8 +393,8 @@ def test_launcher_propagates_exit_code() -> None:
         (live / "bridge_sessions.json").write_bytes(sessions)
         (other / "bridge_sessions.json").write_bytes(sessions)
         missing = subprocess.run(
-            ["powershell", "-NoProfile", "-File", str(SOURCE / "start_release.ps1"), "-ValidateOnly"],
-            capture_output=True, encoding="utf-8", errors="replace", timeout=20,
+            ["powershell", "-NoProfile", "-NonInteractive", "-File", str(SOURCE / "start_release.ps1"), "-ValidateOnly"],
+            capture_output=True, encoding="utf-8", errors="replace", stdin=subprocess.DEVNULL, timeout=20,
         )
         if missing.returncode == 0:
             raise SystemExit(missing.stdout + missing.stderr)

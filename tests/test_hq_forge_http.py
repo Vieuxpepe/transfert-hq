@@ -8,6 +8,7 @@ import shutil
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -24,6 +25,7 @@ import hq_diagnostics as D  # noqa: E402
 import hq_forge as F  # noqa: E402
 import hq_forge_jobs as J  # noqa: E402
 import iphone_bridge as B  # noqa: E402
+from unittest import mock
 
 ADMIN_PIN, UPLOAD_PIN = "424242", "111111"
 
@@ -111,6 +113,12 @@ class ForgeHttp(unittest.TestCase):
         F.reset_for_tests()
         J.reset_for_tests()
         F.set_transport_for_tests(lambda method, url, timeout: (_ for _ in ()).throw(ConnectionRefusedError()))
+        # This class shares one root across its tests: leave each one a clean normal gallery.
+        import hq_forge_gallery as gallery
+        base = gallery.gallery_dir(self.root)
+        for child in list(base.iterdir()) if base.is_dir() else []:
+            if child.is_dir() and gallery.IMG_RE.fullmatch(child.name):
+                shutil.rmtree(child, ignore_errors=True)
 
     def tearDown(self) -> None:
         F.set_transport_for_tests(None)
@@ -318,6 +326,160 @@ class ForgeHttp(unittest.TestCase):
         self.assertEqual(self.admin.req(path, "POST", body, {"Origin": "http://evil.example"}, origin=False)[0], 403)
         self.assertEqual(self.admin.req(path, "POST", body)[0], 404)
         self.assertEqual(self.admin.req("/api/forge/gallery/../triage", "POST", body)[0] in (400, 404), True)
+
+    def test_gallery_backup_is_admin_only_and_restores_into_the_same_quota(self):
+        import hq_forge_gallery as gallery
+        gallery.reset_for_tests()
+        buffer = io.BytesIO()
+        Image.new("RGB", (64, 64), (3, 4, 5)).save(buffer, format="PNG")
+        settings = {"prompt": "sauvegarde", "negative_prompt": "", "checkpoint": "example.safetensors",
+                    "sampler_name": "Euler", "scheduler": "automatic", "width": 512, "height": 512, "steps": 4,
+                    "cfg_scale": 5.0, "seed": 1, "n_iter": 1, "batch_size": 1}
+        saved = gallery.store(self.root, buffer.getvalue(), settings)
+        self.assertEqual(self.anon.req("/api/forge/gallery/export")[0], 401)
+        self.assertEqual(self.upload.req("/api/forge/gallery/export")[0], 403)
+        self.assertEqual(self.anon.req("/api/forge/gallery/export/plan")[0], 401)
+        status, _plan_headers, plan_body = self.admin.req("/api/forge/gallery/export/plan")
+        self.assertEqual(status, 200)
+        plan = json.loads(plan_body.decode("utf-8"))
+        self.assertEqual(plan["images"], 1)
+        self.assertGreater(plan["bytes"], 0)
+        self.assertTrue(plan["allowed"])
+        status, headers, blob = self.admin.req("/api/forge/gallery/export")
+        self.assertEqual(status, 200)
+        self.assertIn("application/zip", headers.get("Content-Type", ""))
+        self.assertEqual(int(headers.get("Content-Length")), len(blob))
+        self.assertTrue(blob.startswith(b"PK"))
+        # The archive is streamed from a temporary file, then removed: no 2 GiB copy stays behind.
+        exports = Path(self.root) / ".hq-forge" / "exports"
+        deadline = time.time() + 5
+        while list(exports.glob("export-*.zip")) and time.time() < deadline:
+            time.sleep(0.05)
+        self.assertEqual(list(exports.glob("export-*.zip")), [])
+        self.assertEqual(self.anon.req("/api/forge/gallery/import", "POST", blob, {"Content-Type": "application/zip"})[0], 401)
+        self.assertEqual(self.admin.req("/api/forge/gallery/import", "POST", b"nope", {"Content-Type": "application/zip"})[0], 400)
+        gallery.delete(self.root, saved["id"])
+        status, _headers, body = self.admin.req("/api/forge/gallery/import", "POST", blob, {"Content-Type": "application/zip"})
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body.decode("utf-8"))["imported"], 1)
+        self.assertEqual(len(gallery.page(self.root)["images"]), 1)
+
+    def test_gallery_restore_refuses_atomically_and_verify_does_not_import(self):
+        import hq_forge_gallery as gallery
+        gallery.reset_for_tests()
+        self.addCleanup(gallery.reset_for_tests)
+        base = gallery.gallery_dir(self.root)
+        for child in list(base.iterdir()) if base.is_dir() else []:
+            if child.is_dir() and gallery.IMG_RE.fullmatch(child.name):
+                shutil.rmtree(child, ignore_errors=True)
+        settings = {"prompt": "sauvegarde", "negative_prompt": "", "checkpoint": "example.safetensors",
+                    "sampler_name": "Euler", "scheduler": "automatic", "width": 512, "height": 512, "steps": 4,
+                    "cfg_scale": 5.0, "seed": 1, "n_iter": 1, "batch_size": 1}
+        def png(color):
+            buffer = io.BytesIO()
+            Image.new("RGB", (64, 64), color).save(buffer, format="PNG")
+            return buffer.getvalue()
+        first = gallery.store(self.root, png((3, 4, 5)), settings)
+        second = gallery.store(self.root, png((5, 6, 7)), settings)
+        status, _headers, blob = self.admin.req("/api/forge/gallery/export")
+        self.assertEqual(status, 200)
+        gallery.delete(self.root, first["id"])
+        gallery.delete(self.root, second["id"])
+        self.assertEqual(self.anon.req("/api/forge/gallery/restore/verify", "POST", blob, {"Content-Type": "application/zip"})[0], 401)
+        status, _headers, body = self.admin.req("/api/forge/gallery/restore/verify", "POST", blob, {"Content-Type": "application/zip"})
+        self.assertEqual(status, 200)
+        verified = json.loads(body.decode("utf-8"))
+        self.assertEqual((verified["verified"], verified["imported"]), (2, 0))
+        self.assertEqual(gallery.page(self.root)["images"], [], "verify never writes")
+        gallery.set_quota_for_tests(image_cap=1)
+        status, _headers, body = self.admin.req("/api/forge/gallery/import", "POST", blob, {"Content-Type": "application/zip"})
+        self.assertEqual(status, 409)
+        refused = json.loads(body.decode("utf-8"))
+        self.assertEqual(refused["code"], "quota")
+        self.assertEqual(refused["plan"]["images"], 2)
+        self.assertEqual(gallery.page(self.root)["images"], [], "a refused restore leaves nothing behind")
+
+    def test_gallery_subset_export_and_last_backup_marker(self):
+        import zipfile
+        import hq_forge_gallery as gallery
+        gallery.reset_for_tests()
+        self.addCleanup(gallery.reset_for_tests)
+        base = gallery.gallery_dir(self.root)
+        for child in list(base.iterdir()) if base.is_dir() else []:
+            if child.is_dir() and gallery.IMG_RE.fullmatch(child.name):
+                shutil.rmtree(child, ignore_errors=True)
+        settings = {"prompt": "sauvegarde", "negative_prompt": "", "checkpoint": "example.safetensors",
+                    "sampler_name": "Euler", "scheduler": "automatic", "width": 512, "height": 512, "steps": 4,
+                    "cfg_scale": 5.0, "seed": 1, "n_iter": 1, "batch_size": 1}
+        def png(color):
+            buffer = io.BytesIO()
+            Image.new("RGB", (64, 64), color).save(buffer, format="PNG")
+            return buffer.getvalue()
+        first = gallery.store(self.root, png((3, 4, 5)), settings)
+        second = gallery.store(self.root, png((5, 6, 7)), settings)
+        status, _headers, _blob = self.admin.req("/api/forge/gallery/export")
+        self.assertEqual(status, 200)
+        usage = gallery.usage(self.root)["backup"]
+        deadline = time.monotonic() + 2.0
+        while not usage.get("at") and time.monotonic() < deadline:
+            time.sleep(0.02)
+            usage = gallery.usage(self.root)["backup"]
+        self.assertTrue(usage["at"])
+        self.assertEqual(usage["images"], 2)
+        status, _headers, blob = self.admin.req("/api/forge/gallery/export?ids=" + first["id"])
+        self.assertEqual(status, 200)
+        with zipfile.ZipFile(io.BytesIO(blob)) as bundle:
+            names = bundle.namelist()
+        self.assertTrue(any(name.startswith(first["id"] + "/") for name in names))
+        self.assertFalse(any(name.startswith(second["id"] + "/") for name in names))
+        self.assertEqual(self.admin.req("/api/forge/gallery/export?ids=../nope")[0], 400)
+
+    def test_gallery_export_skips_backup_marker_when_stream_aborts(self):
+        import hq_forge_gallery as gallery
+        gallery.reset_for_tests()
+        self.addCleanup(gallery.reset_for_tests)
+        buffer = io.BytesIO()
+        Image.new("RGB", (64, 64), (3, 4, 5)).save(buffer, format="PNG")
+        settings = {"prompt": "sauvegarde", "negative_prompt": "", "checkpoint": "example.safetensors",
+                    "sampler_name": "Euler", "scheduler": "automatic", "width": 512, "height": 512, "steps": 4,
+                    "cfg_scale": 5.0, "seed": 1, "n_iter": 1, "batch_size": 1}
+        gallery.store(self.root, buffer.getvalue(), settings)
+        before = gallery.usage(self.root)["backup"]["at"]
+        def aborted_send(handler_self, path, as_download=False, content_type=None):
+            handler_self.send_response(200)
+            handler_self.send_header("Content-Type", "application/zip")
+            handler_self.send_header("Content-Length", "0")
+            handler_self.end_headers()
+            return False
+
+        with mock.patch.object(B.Handler, "_send_file", aborted_send):
+            status, _h, _b = self.admin.req("/api/forge/gallery/export")
+            self.assertEqual(status, 200)
+        self.assertEqual(gallery.usage(self.root)["backup"]["at"], before)
+
+    def test_empty_trash_route_requires_admin_and_deletes_only_rejected(self):
+        import hq_forge_gallery as gallery
+        gallery.reset_for_tests()
+        self.addCleanup(gallery.reset_for_tests)
+        settings = {"prompt": "sauvegarde", "negative_prompt": "", "checkpoint": "example.safetensors",
+                    "sampler_name": "Euler", "scheduler": "automatic", "width": 512, "height": 512, "steps": 4,
+                    "cfg_scale": 5.0, "seed": 1, "n_iter": 1, "batch_size": 1}
+        buffer = io.BytesIO()
+        Image.new("RGB", (64, 64), (3, 4, 5)).save(buffer, format="PNG")
+        kept = gallery.store(self.root, buffer.getvalue(), settings)
+        rejected = gallery.store(self.root, buffer.getvalue(), settings)
+        gallery.set_triage(self.root, rejected["id"], "reject")
+        path = "/api/forge/gallery/trash/empty"
+        body = b"{}"
+        self.assertEqual(self.anon.req(path, "POST", body, {"Content-Type": "application/json"})[0], 401)
+        self.assertEqual(self.upload.req(path, "POST", body, {"Content-Type": "application/json"})[0], 403)
+        self.assertEqual(self.admin.req(path, "POST", body, {"Content-Type": "application/json"}, origin=False)[0], 403)
+        status, _headers, out = self.admin.req(path, "POST", body, {"Content-Type": "application/json"})
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(out.decode("utf-8"))["deleted"], 1)
+        with self.assertRaises(gallery.GalleryError):
+            gallery.get(self.root, rejected["id"])
+        self.assertTrue(gallery.get(self.root, kept["id"])["id"])
 
     def test_vault_triage_route_is_admin_only_csrf_gated_locked_and_404_for_unknown(self):
         import hq_forge_vault as vault

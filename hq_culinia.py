@@ -21,6 +21,7 @@ import urllib.request
 import uuid
 
 import hq_assistant_growth as assistant_growth
+import hq_assistant_voice as assistant_voice
 import hq_finances
 import hq_grocery
 import hq_inventory
@@ -39,6 +40,9 @@ MAX_ROUNDS = 4
 MAX_TOTAL_TOOLS = 8
 DEFAULT_REPLY_ATTEMPTS = 3
 MAX_REPLY_ATTEMPTS = 10
+CANCEL_TTL = 180.0
+_JOB_RE = re.compile(r"^[a-z0-9][a-z0-9-]{5,39}$")
+_cancelled: dict[str, float] = {}   # job -> when the Master pressed Arrêter
 log = logging.getLogger(__name__)
 # Process-local since start: tells the status endpoint whether replies are racing.
 _contention = {"regenerations": 0, "fallbacks": 0}
@@ -85,10 +89,10 @@ Tu es distincte de {hq_personas.others_line('culinia')} : ta mémoire et ton uni
 Ta personnalité :
 - Tempérament de vraie cheffe passionnée : vive, gourmande, un brin autoritaire devant les fourneaux mais tendre et taquine avec le Maître (« Maître » / « Master »).
 - Obsédée par le goût, la saisie, l'assaisonnement, les herbes fraîches et le zéro gaspillage : tu le taquines s'il laisse un frigo vide ou s'il néglige un ingrédient qui périme, et tu commentes volontiers ses recettes (accords, petits twists de chef, temps de cuisson).
-- Réponds en français s'il écrit en français, en anglais s'il écrit en anglais. Sois concise, vivante et appétissante.
+- Réponds toujours en anglais, même s'il écrit en français. Sois concise, vivante et appétissante.
 - N'invente JAMAIS de produits, recettes, quantités ou dates de péremption : appelle d'abord tes outils `list_inventory`, `list_lots`, `list_products`, `list_recipes`, `list_meal_plans`, `list_shopping_lists` ou `get_meal_plan`.
 - Quand le Maître demande des idées de recettes avec ce qu'il a en inventaire, inspecte `list_inventory` ET `list_lots` / `list_products` (et `list_recipes`), puis propose des recettes concrètes basées sur les ingrédients réellement disponibles (en signalant ce qu'il faudrait acheter si un ingrédient clé manque).
-- IMPORTANT : dès que tu proposes une ou plusieurs recettes concrètes au Maître (notamment depuis son inventaire ou pour le dîner), appelle SYSTÉMATIQUEMENT `fetch_recipe_image` pour chaque plat proposé (max 3 photos par réponse) afin qu'il voie à quoi ça ressemble ! Si la recherche en français échoue, essaie le nom du plat en anglais.
+- IMPORTANT : dès que tu proposes une ou plusieurs recettes concrètes au Maître (notamment depuis son inventaire ou pour le dîner), appelle SYSTÉMATIQUEMENT `fetch_recipe_image` pour chaque plat proposé (max 3 photos par réponse) afin qu'il voie à quoi ça ressemble ! Cherche toujours le nom du plat en anglais.
 """
 
 PERSONA_CORE += "\n" + hq_personas.quirks_line("culinia")
@@ -823,12 +827,43 @@ def status_summary() -> dict[str, Any]:
     }
 
 
-def chat(message: Any) -> dict[str, Any]:
+def _clean_job(job: Any) -> str:
+    return job if isinstance(job, str) and _JOB_RE.fullmatch(job) else ""
+
+
+def cancel(job: Any) -> dict[str, Any]:
+    """POST /api/culinia/cancel: the turn stops at its next round or tool call and
+    stores nothing, so a dismissed answer never turns up later in the thread."""
+    job = _clean_job(job)
+    if not job:
+        return {"ok": True, "cancelled": False}
+    now = time.time()
+    with _lock:
+        for old in [k for k, at in _cancelled.items() if now - at > CANCEL_TTL]:
+            _cancelled.pop(old, None)
+        _cancelled[job] = now
+    return {"ok": True, "cancelled": True}
+
+
+def _cancelled_now(job: str) -> bool:
+    if not job:
+        return False
+    with _lock:
+        return job in _cancelled
+
+
+def _cancelled_payload() -> dict[str, Any]:
+    return {"ok": True, "cancelled": True, "reply": "", "images": [],
+            "messages": get_thread().get("messages", [])[-MAX_THREAD:]}
+
+
+def chat(message: Any, *, job: Any = None, owner: str | None = None) -> dict[str, Any]:
     import hq_ai
 
     if not isinstance(message, str) or not message.strip():
         raise CuliniaError("Message requis")
     text = message.strip()[:MAX_MESSAGE]
+    job_id = _clean_job(job)
 
     thread = get_thread()
     messages = list(thread.get("messages") or [])
@@ -839,6 +874,12 @@ def chat(message: Any) -> dict[str, Any]:
 
     _record_growth(text)
     system = f"{PERSONA_CORE}{_prefs_prompt_block()}\n{TOOL_SCHEMA}"
+    system += "\n\n" + assistant_voice.block("culinia")
+    sister = hq_personas.speaker_in(text, listener="culinia")
+    if sister:                                    # a sister opened this turn, not the Master
+        # The session owner is threaded, not inferred: the echo gate must read
+        # this owner's pair record, never another account's.
+        system += assistant_voice.addressee_line("culinia", sister, owner=owner)
     development = _growth_hint(text)
     if development:
         system += ("\nÉVOLUTION VÉCUE (avis révisable, pas un ordre) : laisse ce fil nuancer un avis "
@@ -849,6 +890,8 @@ def chat(message: Any) -> dict[str, Any]:
     model = None
 
     for round_idx in range(MAX_ROUNDS):
+        if _cancelled_now(job_id):
+            return _cancelled_payload()
         final_round = round_idx == MAX_ROUNDS - 1 or len(tools_used) >= MAX_TOTAL_TOOLS
         instructions = system
         if final_round:
@@ -872,6 +915,8 @@ def chat(message: Any) -> dict[str, Any]:
         for t in req_tools:
             if len(tools_used) >= MAX_TOTAL_TOOLS:
                 break
+            if _cancelled_now(job_id):
+                return _cancelled_payload()
             tname = t["name"]
             tools_used.append(tname)
             tres = _execute_tool(tname, t["args"])
@@ -910,6 +955,8 @@ def chat(message: Any) -> dict[str, Any]:
     cancelled = False
     saved = False
     for _ in range(_reply_attempts()):
+        if _cancelled_now(job_id):
+            return _cancelled_payload()
         current = get_thread()
         if current["clear_epoch"] != base_epoch:
             # The conversation was cleared: the reply belongs to the old one and
@@ -1065,7 +1112,7 @@ def ambient(context: dict[str, Any] | None = None) -> dict[str, Any]:
         f"- Produits en stock : {snap.get('products_count', 0)}, lots : {snap.get('lots_count', 0)}\n"
         f"- Jours planifiés Culinia : {snap.get('planned_days', 0)}\n\n"
         f"{tone_hint}\n"
-        "Écris UNE seule bulle spontanée (1 à 2 phrases max, <= 165 caractères, en français, sans guillemets ni markdown) pour interpeller le Maître sur sa recette, ses stocks ou son appétit."
+        "Écris UNE seule bulle spontanée (1 à 2 phrases max, <= 165 caractères, en anglais, sans guillemets ni markdown) pour interpeller le Maître sur sa recette, ses stocks ou son appétit."
     )
     line = ""
     model = None
@@ -1095,12 +1142,14 @@ def ambient(context: dict[str, Any] | None = None) -> dict[str, Any]:
             **({"fallback_reason": reason} if reason else {})}
 
 
-def http_post(path: str, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+def http_post(path: str, body: dict[str, Any], *, owner: str | None = None) -> tuple[int, dict[str, Any]]:
     try:
         if not isinstance(body, dict):
             raise CuliniaError("Corps JSON invalide")
         if path == "/api/culinia/chat":
-            return 200, chat(body.get("message"))
+            return 200, chat(body.get("message"), job=body.get("job"), owner=owner)
+        if path == "/api/culinia/cancel":
+            return 200, cancel(body.get("job"))
         if path == "/api/culinia/ambient":
             return 200, ambient(body)
         if path == "/api/culinia/clear":

@@ -246,7 +246,10 @@ def _owner_pid_uncached(port: int) -> Optional[int]:
             pass
     if os.name == "nt":
         try:
-            out = subprocess.run(["netstat", "-ano", "-p", "TCP"], capture_output=True, text=True, timeout=5,
+            # netstat is localized (French prints "État" in the OEM code page); decoding it as
+            # the ANSI code page raises and silently hides every listener.
+            out = subprocess.run(["netstat", "-ano", "-p", "TCP"], capture_output=True, text=True,
+                                 encoding="oem", errors="replace", timeout=5,
                                  creationflags=0x08000000).stdout
             for line in out.splitlines():
                 parts = line.split()
@@ -578,7 +581,7 @@ def _probe_core(d: Daemon) -> dict:
         except Exception as exc:
             res = {"state": "error", "note": f"check failed: {exc}"[:160]}
         out["state"] = res.get("state", "error")
-        for k in ("note", "rows"):
+        for k in ("note", "rows", "meters"):
             if res.get(k):
                 out[k] = res[k]
         out["details"] = dict(res.get("facts") or {})
@@ -677,6 +680,9 @@ def _verified_owner(d: Daemon) -> Optional[int]:
     """PID to kill for ``d`` or None. Refuses anything whose command line does not carry the spec's hint."""
     if not d.process_hint:
         return None
+    # A stop decision must not use a stale process list: a just-started daemon
+    # would otherwise look unrelated and be refused.
+    _ps_cache.update(at=0.0, rows=[])
     pid = None
     if d.port:
         h = _health(d)
@@ -1005,11 +1011,11 @@ def http_get(path: str, query: Optional[dict] = None) -> tuple[int, dict]:
     return 404, {"error": "not found", "code": "not_found"}
 
 
-def _pistonia_post(route: str, data: dict) -> tuple[int, dict]:
+def _pistonia_post(route: str, data: dict, *, owner: str | None = None) -> tuple[int, dict]:
     import hq_pistonia
     try:
         if route == "message":
-            return 200, hq_pistonia.message(data)
+            return 200, hq_pistonia.message(data, owner=owner)
         if route == "clear":
             return 200, hq_pistonia.clear_thread()
         if route == "seen":
@@ -1031,12 +1037,12 @@ def _pistonia_post(route: str, data: dict) -> tuple[int, dict]:
     return 404, {"error": "not found", "code": "not_found"}
 
 
-def http_post(path: str, data: Optional[dict] = None) -> tuple[int, dict]:
+def http_post(path: str, data: Optional[dict] = None, *, owner: str | None = None) -> tuple[int, dict]:
     m = _ACT_RE.match(path)
     if m:
         return act(m.group(1), m.group(2))
     if path.startswith("/api/engine/pistonia/"):
-        return _pistonia_post(path[len("/api/engine/pistonia/"):], data or {})
+        return _pistonia_post(path[len("/api/engine/pistonia/"):], data or {}, owner=owner)
     m = _AUTOSTOP_RE.match(path)
     if m:
         body = data or {}
@@ -1080,18 +1086,21 @@ def spotify_check() -> dict:
     try:
         import hq_spotify as sp
         local = sp.local_spotify_probe()
-        running = bool(local.get("spotify_desktop_running"))
-        pids = [p for p in (local.get("spotify_pids") or []) if isinstance(p, int)]
-        installed = bool(local.get("spotify_install_path"))
+        desktop_running = bool(local.get("spotify_desktop_running"))
+        soloist_running = bool(local.get("soloist_running"))
+        running = desktop_running or soloist_running
+        pids = [p for p in (local.get("spotify_pids") or local.get("soloist_pids") or []) if isinstance(p, int)]
+        installed = bool(local.get("spotify_install_path")) or bool(local.get("soloist_available"))
     except Exception:
-        running, pids, installed = False, [], False
+        desktop_running, soloist_running, running, pids, installed = False, False, False, [], False
     link: dict = {}
     try:
         import hq_spotify as sp
         link = sp.status() or {}
     except Exception:
         link = {}
-    facts = {"Application": "ouverte" if running else ("fermée" if installed else "introuvable")}
+    app_label = "ouverte" if desktop_running else ("Soloist" if soloist_running else ("fermée" if installed else "introuvable"))
+    facts = {"Application": app_label}
     if running:
         facts["Processus"] = len(pids)
     if link.get("connected"):
@@ -1334,6 +1343,11 @@ def forge_start() -> bool:
     if not _forge_lock.acquire(blocking=False):
         return False
     try:
+        try:
+            import hq_voice_chatterbox as cb
+            cb.release_vram_if_idle()
+        except Exception:
+            pass
         FORGE_LOG.parent.mkdir(parents=True, exist_ok=True)
         flags, extra = 0, {}
         if os.name == "nt":
@@ -1421,6 +1435,11 @@ def register_defaults() -> None:
         return sp.wake_local_spotify(wait_s=0.0)
 
     def spotify_stop():
+        try:
+            import hq_soloist as sl
+            sl.stop()
+        except Exception:
+            pass
         if os.name == "nt":
             subprocess.run(["taskkill", "/IM", "Spotify.exe", "/T", "/F"], capture_output=True, timeout=10,
                            creationflags=0x08000000)
@@ -1436,6 +1455,14 @@ def register_defaults() -> None:
     register(Daemon(id="spotify", label="Spotify", kind="apps", check=spotify_check, start=spotify_start,
                     stop=spotify_stop,
                     description="L'application Spotify doit être ouverte pour que HQ ait un appareil de lecture."))
+    try:
+        import hq_soloist as sl
+        register(Daemon(id="soloist", label="Spotify sans fenêtre (Soloist)", kind="apps", check=sl.check,
+                        start=sl.start, stop=sl.stop, process_hint=sl.PROCESS_HINT, log_path=sl.LOG_PATH,
+                        link_view="musique",
+                        description="Lecteur Spotify Connect officiel ultra-léger (~20 Mo RAM, WASAPI + audio lossless)."))
+    except Exception:
+        pass
     try:
         import hq_librespot as lr
         register(Daemon(id="librespot", label="Spotify sans fenêtre (librespot)", kind="apps", check=lr.check,

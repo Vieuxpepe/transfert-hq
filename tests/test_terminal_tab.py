@@ -257,6 +257,37 @@ class TerminalBackendTests(unittest.TestCase):
         # The transcript is only sent on a first read.
         self.assertEqual(cc_ext.job_snapshot(job["job_id"], snap["cursor"])["output"], "")
 
+    def test_saved_transcript_is_redecoded_from_oem_mojibake(self):
+        """A transcript saved before the OEM fix was read with the ANSI code page: read it back repaired."""
+        folder = cc_ext._jobs_dir()
+        folder.mkdir(parents=True, exist_ok=True)
+
+        def write(job_id: str, output: str, **extra) -> None:
+            doc = {"version": 1, "job_id": job_id, "kind": "shell", "label": "Ce PC (local)", "state": "done",
+                   "code": 0, "started": 1, "ended": 2000, "total": len(output), "output": output}
+            doc.update(extra)
+            (folder / f"{job_id}.json").write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
+
+        # What the old ANSI decode left of cp850 bytes: 0x82 -> \u201a, 0x88 -> \u02c6, 0x87 -> \u2021, 0x85 -> \u2026
+        broken = ("Envoi d'une requ\u02c6te 'Ping'\nR\u201aponse de 127.0.0.1 : octets=32\n"
+                  "paquets re\u2021us = 1\nL\u2026 encore.\n")
+        fixed = ("Envoi d'une requ\u00eate 'Ping'\nR\u00e9ponse de 127.0.0.1 : octets=32\n"
+                 "paquets re\u00e7us = 1\nL\u00e0 encore.\n")
+        write("aa11bb22cc33dd44", broken)
+        doc = cc_ext._persisted_doc("aa11bb22cc33dd44")
+        self.assertEqual(doc["output"], fixed)
+        self.assertEqual(doc["total"], len(fixed))  # the polling cursor follows the repaired text
+        self.assertEqual(cc_ext.job_snapshot("aa11bb22cc33dd44", 0)["output"], fixed)
+
+        # Saved after the fix: the marker says these characters are real, so they are never re-decoded.
+        write("aa11bb22cc33dd55", broken, charset="auto")
+        self.assertEqual(cc_ext._persisted_doc("aa11bb22cc33dd55")["output"], broken)
+
+        # Already correct (accents intact, no marker): left exactly as stored.
+        clean = "R\u00e9ponse de 127.0.0.1 : octets=32, \u00e9t\u00e9 d\u00e9j\u00e0."
+        write("aa11bb22cc33dd66", clean)
+        self.assertEqual(cc_ext._persisted_doc("aa11bb22cc33dd66")["output"], clean)
+
     def test_unknown_job_is_a_key_error(self):
         with self.assertRaises(KeyError):
             cc_ext.job_snapshot("nope", 0)

@@ -34,8 +34,8 @@ class StreamReaderTests(unittest.TestCase):
 
     def test_page_loads_the_reader_before_the_chip(self):
         page = (ROOT / "iphone_bridge.py").read_text(encoding="utf-8", errors="replace")
-        reader = page.find('<script src="/assets/hq-pistonia-stream.js"></script>')
-        chip = page.find('<script src="/assets/hq-pistonia-chip.js"></script>')
+        reader = page.find('<script src="/assets/hq-pistonia-stream.js"')
+        chip = page.find('<script src="/assets/hq-pistonia-chip.js"')
         self.assertGreater(reader, 0, "the reader script tag is missing from the page")
         self.assertGreater(chip, 0, "the chip script tag is missing from the page")
         self.assertLess(reader, chip, "the reader must load before the chip that uses it")

@@ -74,7 +74,7 @@ Dépend de A.
   - Vitesse : durée par image selon config et PC.
   - Fiabilité : échecs de mémoire, images manquantes, nouvelles tentatives par config.
   - Taux de garde : part d'images gardées par réglage, avec effectif visible.
-- Règles d'honnêteté : minimum environ 20 images par réglage sinon « pas assez de données » ; comparer seulement à checkpoint et résolution comparables ; libellé « ce que tu gardes », pas « qualité » ; afficher les combinaisons confondues, pas de cause inventée.
+- Règles d'honnêteté : minimum 8 images par réglage sinon « pas assez de données » (3 pour le planificateur) ; comparer seulement à checkpoint et résolution comparables ; libellé « ce que tu gardes », pas « qualité » ; afficher les combinaisons confondues, pas de cause inventée.
 - Bouton « Appliquer ces réglages » qui remplit le formulaire, sans rien changer en silence.
 - Une seule route en lecture, admin, avec test. Barres simples, pas de graphiques.
 - Livrer d'abord vitesse + fiabilité, puis taux de garde.

@@ -1325,6 +1325,45 @@ def list_backups() -> dict:
     return {"ok": not bad, "malformed": bad, "backups": items}
 
 
+_BACKUP_SIZE_CACHE: "tuple[float, int] | None" = None
+_BACKUP_SIZE_TTL = 120.0
+
+
+def _backup_size_bytes() -> int:
+    """Metadata-only size of the backup root, cached: the page needs an order of magnitude, not a scan per visit."""
+    global _BACKUP_SIZE_CACHE
+    now = time.time()
+    if _BACKUP_SIZE_CACHE is not None and now - _BACKUP_SIZE_CACHE[0] < _BACKUP_SIZE_TTL:
+        return _BACKUP_SIZE_CACHE[1]
+    try:
+        root = _backup_root()
+    except Exception:
+        return 0
+    total = 0
+    try:
+        for path in root.rglob("*"):
+            try:
+                if path.is_file():
+                    total += path.stat().st_size
+            except OSError:
+                continue
+    except OSError:
+        return 0
+    _BACKUP_SIZE_CACHE = (now, total)
+    return total
+
+
+def backup_summary(items: list[dict] | None = None) -> dict:
+    rows = [b for b in (items or []) if isinstance(b, dict)]
+    stamps = [float(b.get("at") or 0) for b in rows if float(b.get("at") or 0) > 0]
+    return {
+        "count": len(rows),
+        "newest": max(stamps, default=0),
+        "oldest": min(stamps, default=0),
+        "bytes": _backup_size_bytes(),
+    }
+
+
 def _backup_root() -> Path:
     raw = str(_cfg().get("backup_dir") or "").strip()
     if not raw:
@@ -1769,7 +1808,25 @@ def _deliver_push(sub: dict, payload: str) -> int:
         return 500
 
 
-def send_push(title: str, body: str, *, category: str = "alert", url: str = "/") -> dict:
+def _push_actions(actions: Any) -> list[dict]:
+    """At most two notification buttons. A button may carry a same-origin Inventoria POST the service worker runs
+    on tap (path allowlisted again there); anything else is dropped."""
+    out: list[dict] = []
+    for a in (actions or [])[:2]:
+        if not isinstance(a, dict) or not isinstance(a.get("action"), str) or not isinstance(a.get("title"), str):
+            continue
+        row: dict = {"action": a["action"][:24], "title": a["title"][:40]}
+        post = a.get("post")
+        if isinstance(post, dict) and post.get("url") in PUSH_ACTION_POSTS and isinstance(post.get("body"), dict):
+            row["post"] = {"url": post["url"], "body": post["body"]}
+        out.append(row)
+    return out
+
+
+PUSH_ACTION_POSTS = frozenset({"/api/inventoria/to-grocery"})
+
+
+def send_push(title: str, body: str, *, category: str = "alert", url: str = "/", actions: Any = None) -> dict:
     """Send one opt-in notification. Never returns or logs VAPID private material.
 
     Categories: alert, attention (critical), automation_failure.
@@ -1789,15 +1846,19 @@ def send_push(title: str, body: str, *, category: str = "alert", url: str = "/")
         subs = list(data.get("subscriptions") or [])
         if not subs:
             return {"ok": False, "sent": 0, "pruned": 0, "errors": 0, "error": "aucun abonné"}
-        payload = json.dumps(
-            {
-                "title": str(title or "HQ")[:80],
-                "body": str(body or "")[:180],
-                "url": str(url or "/")[:200],
-                "category": category,
-            },
-            ensure_ascii=False,
-        )
+        msg = {
+            "title": str(title or "HQ")[:80],
+            "body": str(body or "")[:180],
+            "url": str(url or "/")[:200],
+            "category": category,
+        }
+        btns = _push_actions(actions)
+        if btns:
+            msg["actions"] = btns
+        payload = json.dumps(msg, ensure_ascii=False)
+        if len(payload.encode("utf-8")) > 3000:          # Web Push payloads are small: drop the buttons, keep the alert
+            msg.pop("actions", None)
+            payload = json.dumps(msg, ensure_ascii=False)
         sent = 0
         pruned = 0
         errors = 0

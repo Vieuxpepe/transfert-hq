@@ -73,6 +73,9 @@ XTTS WAV is served. Browser speech fallback remains synthesized by the browser.
 
 ## Imported ElevenLabs recordings (2026-11-03)
 
+For stored-key usage, V4 Turbo bracketed cues, and assistant chip sound banks,
+see the [ElevenLabs agent guide](elevenlabs-agent-guide.md).
+
 The 46 renamed downloads are represented by 44 distinct recordings under
 `assets/companion/chat/reactions/elevenlabs_20261103/`. MP3s are decoded to PCM
 WAV from the original sources, preserving pitch, tempo and spoken content.
@@ -287,3 +290,18 @@ experimental; XTTS stays default. Streaming (`TTS.stream`) is not wired; measure
 **Commands:** `python scripts/phonon_audition.py --lang fr` (writes WAVs to `C:\AI\Phonon\samples`),
 `python scripts/bench_voice.py [--xtts]`, `python -m pytest tests/test_hq_voice_phonon.py`,
 `node tests/check_hq_voice_studio.mjs`. Log: `.tmp/phonon_daemon.log`.
+
+
+## Per-assistant sound stash
+
+Every assistant chip (Else, Inventoria, Culinia, Securia, Forgia, Pistonia, Musica) owns a bank of short recorded clips,
+played by `assets/hq-assistant-sfx.js` (`HqAssistantSfx.play(id, kind)`). Transferania keeps her own reaction engine.
+
+- **Bank:** `assets/assistant-sfx/<id>/manifest.json` -> `{"samples": {"<kind>": [{"url", "duration_ms"}]}}`.
+  Kinds: `open`, `reply`, `think`, `error`, `done`, `ack`. Clips must live in that assistant's own folder
+  (`/assets/assistant-sfx/<id>/name[.8hex].ogg|mp3|m4a|wav`, 150 ms to 6 s). An empty bank is silent: drop clips in
+  and list them in the manifest, no code change needed.
+- **Silent when:** the chip is hidden/off, that assistant's own mute is active (Else: `hq_else_mute_until_v1`; Transferania's mute never affects the others), the tab is hidden, `hq_asfx_<id>=0` or
+  `hq_asfx_all=0`. One clip at a time across assistants; per-kind cooldowns; no immediate repeat of a variant.
+- **Hooks:** each chip calls `sfx(kind)` on open, think (request sent), reply/done, and error.
+- **Test:** `node tests/check_assistant_sfx.mjs`.

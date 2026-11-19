@@ -14,6 +14,7 @@ import hq_finances
 import hq_grocery
 import hq_inventory
 import hq_meals
+import hq_state
 
 
 class TestHqCulinia(unittest.TestCase):
@@ -23,7 +24,8 @@ class TestHqCulinia(unittest.TestCase):
         hq_culinia.bind(root=self.tmp_root)
 
     def tearDown(self) -> None:
-        hq_culinia.bind(root=ROOT)
+        # Back to the run's sandbox root, never the live checkout.
+        hq_culinia.bind(root=hq_state.state_root())
         self._tmp.cleanup()
 
     def test_meal_plan_persistence_and_status_summary(self) -> None:
@@ -242,6 +244,64 @@ class TestHqCulinia(unittest.TestCase):
         with self.assertRaises(hq_culinia.CuliniaError):
             hq_culinia.image_path("../secret.jpg")
 
+    def test_cancel_stops_the_turn_before_it_is_stored(self) -> None:
+        hq_culinia.cancel("cl-testjob")
+        code, res = hq_culinia.http_post("/api/culinia/chat", {"message": "Un menu ?", "job": "cl-testjob"})
+        self.assertEqual(code, 200)
+        self.assertTrue(res["cancelled"])
+        self.assertEqual(hq_culinia.get_thread()["messages"], [])
+
+    def test_cancel_lands_between_tool_rounds(self) -> None:
+        def generate(*_args, **_kwargs):
+            hq_culinia.cancel("cl-midjob")
+            return json.dumps({"reply": "Je vérifie.", "tools": [{"name": "list_recipes", "args": {}}]}), "mock"
+
+        with patch("hq_ai.generate", side_effect=generate):
+            res = hq_culinia.chat("mes recettes ?", job="cl-midjob")
+        self.assertTrue(res["cancelled"])
+        self.assertEqual(hq_culinia.get_thread()["messages"], [])
+
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OwnerThreadingTests(unittest.TestCase):
+    """A sister opening the turn must be answered under the signed-in owner."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        import hq_ai
+
+        hq_ai.bind(root=self.root, now=lambda: 1_700_000_000.0, key=lambda: "k")
+        hq_culinia.bind(root=self.root)
+
+    def tearDown(self) -> None:
+        # Back to the run's sandbox root, never the live checkout.
+        hq_culinia.bind(root=hq_state.state_root())
+        self._tmp.cleanup()
+
+    def test_a_sister_turn_carries_the_session_owner(self) -> None:
+        seen = []
+
+        def fake_line(key, other, *, owner=None):
+            seen.append((key, other, owner))
+            return ""
+
+        with patch("hq_ai.generate", return_value=("Bien reçu.", "m")), \
+                patch("hq_assistant_voice.addressee_line", side_effect=fake_line):
+            hq_culinia.chat("Pistonia: la cuisine est propre ?", owner="Administrateur")
+        self.assertEqual(seen, [("culinia", "pistonia", "Administrateur")])
+
+    def test_a_master_turn_has_no_sister_note(self) -> None:
+        seen = []
+
+        def fake_line(key, other, *, owner=None):
+            seen.append((key, other, owner))
+            return ""
+
+        with patch("hq_ai.generate", return_value=("Bien reçu.", "m")), \
+                patch("hq_assistant_voice.addressee_line", side_effect=fake_line):
+            hq_culinia.chat("Rien d'important, juste fatigué.", owner="Administrateur")
+        self.assertEqual(seen, [])

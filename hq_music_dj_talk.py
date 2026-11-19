@@ -48,13 +48,36 @@ def facts_now(state: dict[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {"active": bool(state.get("active"))}
     if seg:
         out["émission"] = {"titre": seg.get("title"), "thème": seg.get("theme")}
+        if seg.get("arc"):
+            out["émission"]["arc"] = seg["arc"]
         if seg.get("facts"):
             out["faits vérifiés"] = [str(f)[:240] for f in (seg.get("facts") or [])[:4]]
+    if state.get("session_steer") and isinstance(state["session_steer"], dict):
+        out["orientation persistante"] = state["session_steer"].get("label") or state["session_steer"].get("text")
     if row:
         out["titre en cours"] = {"nom": row.get("name"), "artistes": row.get("artists"), "album": row.get("album"),
                                  "pourquoi je l'ai choisi": row.get("why"), "origine": dj.POOL_LABELS.get(row.get("pool"), row.get("pool")),
                                  "ce que j'en ai dit": dj._strip_tags(row.get("line") or "")[:240] or None,
                                  "pari": bool(row.get("pick"))}
+        if row.get("genres"):
+            out["titre en cours"]["genres"] = list(row["genres"])[:3]
+        if isinstance(row.get("bpm"), (int, float)):
+            out["titre en cours"]["bpm"] = round(float(row["bpm"]))
+        for k in ("tempo_band", "energy_1_5", "era"):
+            if row.get(k) is not None:
+                out["titre en cours"][k] = row[k]
+    try:
+        deep = dj._deep_taste_signals(analyze=False)
+        dossier_summary = ""
+        if dj.music.get_taste().get("history_sharing", True):
+            import hq_musica_profile as mp
+            dossier_summary = mp.prompt_dossier(max_chars=500)
+        if dossier_summary:
+            out["profil musical du Maître"] = dossier_summary
+        elif deep.get("custom_notes"):
+            out["profil musical du Maître"] = deep["custom_notes"][:240]
+    except Exception:  # noqa: BLE001
+        pass
     return out
 
 

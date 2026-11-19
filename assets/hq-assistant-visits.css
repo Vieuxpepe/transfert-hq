@@ -7,8 +7,10 @@
   display: block;
   pointer-events: none;
   opacity: 1;
-  transition: transform 1.6s cubic-bezier(.22, .9, .3, 1), opacity .5s ease;
+  transform-origin: 50% 100%;
+  transition: transform 1.25s cubic-bezier(.22, .9, .3, 1), opacity .45s ease;
   will-change: transform;
+  animation: hq-visit-breathe 5.6s ease-in-out infinite;
   /* The clone keeps its own chip shadow; a filter here repaints every frame. */
 }
 
@@ -26,6 +28,12 @@
 .hq-visit-visitor > button *::after {
   animation: none !important;
   transition: none !important;
+}
+
+/* A still portrait still breathes: 1.5 px is enough to read as alive. */
+@keyframes hq-visit-breathe {
+  0%, 100% { translate: 0 0; }
+  50% { translate: 0 -1.5px; }
 }
 
 /* A quiet provenance dot: diagnostics stay on hover, not in the scene. */
@@ -51,6 +59,23 @@
   transform: translateX(-50%) scale(1.25);
 }
 
+/* The rung two of them actually reached, once it was earned: one quiet word
+   under the visitor, never the thing neither of them says. */
+.hq-visit-bond {
+  position: absolute;
+  left: 50%;
+  bottom: -22px;
+  transform: translateX(-50%);
+  font-size: var(--text-xs);
+  line-height: 1.2;
+  letter-spacing: .04em;
+  text-transform: lowercase;
+  color: var(--muted, #94a3b8);
+  opacity: .78;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
 .hq-visit-loading {
   position: fixed;
   z-index: 1302;
@@ -62,7 +87,7 @@
   border-radius: 999px;
   background: color-mix(in srgb, var(--panel, #0f172a) 94%, transparent);
   color: var(--muted, #94a3b8);
-  font: 600 10px/1.2 system-ui, -apple-system, "Segoe UI", sans-serif;
+  font: 600 var(--text-xs)/1.2 system-ui, -apple-system, "Segoe UI", sans-serif;
   letter-spacing: .04em;
   pointer-events: none;
   opacity: 0;
@@ -111,7 +136,7 @@
   border-radius: 13px;
   background: color-mix(in srgb, var(--panel, #0f172a) 94%, transparent);
   color: var(--text, #e2e8f0);
-  font: 500 12.5px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  font: 500 var(--text-sm)/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
   box-shadow: 0 10px 26px rgba(0, 0, 0, .32);
   opacity: 0;
   transform: translateY(-4px);
@@ -194,22 +219,83 @@
   background: color-mix(in srgb, var(--accent, #7dd3fc) 24%, var(--panel, #0f172a));
 }
 
-/* Idle life: a very small float on each chip, desynchronised by its duration.
-   `translate` is intentional: hover, drag and visit staging still own `transform`. */
-@keyframes hq-chip-idle-float {
+/* Idle life: each chip moves in her own way, very small and desynchronised by her
+   duration. `translate` and `rotate` are intentional: hover, drag and visit staging
+   still own `transform`, and event reactions use `scale`, so the layers compose. */
+@keyframes hq-idle-sway {                       /* Culinia: stirring, a gentle sway */
+  0%, 100% { translate: 0 0; rotate: 0deg; }
+  25% { translate: 2px -1px; rotate: 1.2deg; }
+  75% { translate: -2px -1px; rotate: -1.2deg; }
+}
+@keyframes hq-idle-nod {                        /* Forgia: still, then one sharp nod */
+  0%, 62%, 100% { translate: 0 0; rotate: 0deg; }
+  66% { translate: 0 1.5px; rotate: -3deg; }
+  72% { translate: 0 0; rotate: 1deg; }
+  78% { translate: 0 0; rotate: 0deg; }
+}
+@keyframes hq-idle-bob {                        /* Musica: a small bob to a beat */
   0%, 100% { translate: 0 0; }
-  50% { translate: 0 -3px; }
+  50% { translate: 0 -2.5px; }
+}
+@keyframes hq-idle-shuffle {                    /* Inventoria: a tidy sideways shuffle */
+  0%, 100% { translate: 0 0; }
+  20%, 35% { translate: 3px 0; }
+  55%, 70% { translate: -3px 0; }
+  85% { translate: 0 0; }
+}
+@keyframes hq-idle-tremble {                    /* Pistonia: slow and heavy, a brief tremble */
+  0%, 100% { translate: 0 0; rotate: 0deg; }
+  40% { translate: 0 -1px; rotate: 0deg; }
+  72% { rotate: .7deg; }
+  75% { rotate: -.7deg; }
+  78% { rotate: .6deg; }
+  81% { rotate: -.6deg; }
+  85% { rotate: 0deg; }
+}
+@keyframes hq-idle-scan {                       /* Securia: a glance left, a glance right */
+  0%, 100% { rotate: 0deg; }
+  15%, 30% { rotate: -4deg; }
+  45%, 60% { rotate: 4deg; }
+  75% { rotate: 0deg; }
+}
+@keyframes hq-idle-drift {                      /* Else: barely there, drifting */
+  0%, 100% { translate: 0 0; }
+  33% { translate: 2px -2px; }
+  66% { translate: -1.5px -3px; }
 }
 
-.hq-culinia-chip { animation: hq-chip-idle-float 6.4s ease-in-out -0.4s infinite; }
-.hq-forgia-chip { animation: hq-chip-idle-float 7.2s ease-in-out -1.9s infinite; }
-.hq-musica-chip { animation: hq-chip-idle-float 6.1s ease-in-out -3.1s infinite; }
+.hq-culinia-chip { animation: hq-idle-sway 6.4s ease-in-out -0.4s infinite; }
+.hq-forgia-chip { animation: hq-idle-nod 7.2s cubic-bezier(.3, .7, .3, 1) -1.9s infinite; }
+.hq-musica-chip { animation: hq-idle-bob 2.6s ease-in-out -1.1s infinite; }
+/* While the music plays, she keeps the beat a little faster. */
+.hq-musica-chip:has(.hq-musica-chip-dance.is-dancing) { animation-duration: .95s; }
 .hq-inventoria-chip,
-.hq-inventoria-toggle { animation: hq-chip-idle-float 7.8s ease-in-out -2.3s infinite; }
-.hq-pistonia-chip { animation: hq-chip-idle-float 6.8s ease-in-out -4.2s infinite; }
-.hq-securia-chip { animation: hq-chip-idle-float 7.4s ease-in-out -5.4s infinite; }
+.hq-inventoria-toggle { animation: hq-idle-shuffle 7.8s ease-in-out -2.3s infinite; }
+.hq-pistonia-chip { animation: hq-idle-tremble 6.8s ease-in-out -4.2s infinite; }
+.hq-securia-chip { animation: hq-idle-scan 7.4s ease-in-out -5.4s infinite; }
+/* Elsea: a quick little flutter, like wings that never quite settle. */
+.hq-elsea-chip { animation: hq-idle-flutter 3.6s ease-in-out -0.8s infinite; }
+@keyframes hq-idle-flutter {
+  0%, 100% { translate: 0 0; }
+  20% { translate: 0 -2px; }
+  35% { translate: 0 0; }
+  48% { translate: 0 -1.5px; }
+  60% { translate: 0 0; }
+}
 .hq-else-chip,
-.hq-else-toggle { animation: hq-chip-idle-float 8.2s ease-in-out -1.1s infinite; }
+.hq-else-toggle { animation: hq-idle-drift 8.2s ease-in-out -1.1s infinite; }
+
+/* Night (23:00-06:00, set by the visits script): everything moves more slowly. */
+body.hq-night .hq-culinia-chip { animation-duration: 10.5s; }
+body.hq-night .hq-forgia-chip { animation-duration: 11.5s; }
+body.hq-night .hq-musica-chip { animation-duration: 4.2s; }
+body.hq-night .hq-inventoria-chip,
+body.hq-night .hq-inventoria-toggle { animation-duration: 12.5s; }
+body.hq-night .hq-pistonia-chip { animation-duration: 11s; }
+body.hq-night .hq-securia-chip { animation-duration: 12s; }
+body.hq-night .hq-elsea-chip { animation-duration: 7s; }
+body.hq-night .hq-else-chip,
+body.hq-night .hq-else-toggle { animation-duration: 13s; }
 
 /* A visit or a drag needs the chip to hold still. */
 .hq-visit-host { animation: none !important; }
@@ -218,6 +304,7 @@
 .hq-musica-chip-dock.is-dragging .hq-musica-chip,
 .hq-musica-chip.is-chip-pinching,
 .hq-securia-chip-dock.is-dragging .hq-securia-chip,
+.hq-elsea-chip-dock.is-dragging .hq-elsea-chip,
 .hq-pistonia.is-dragging .hq-pistonia-chip,
 .hq-else.is-dragging .hq-else-chip,
 .hq-inventoria.is-dragging .hq-inventoria-chip,
@@ -233,12 +320,12 @@
 }
 
 .hq-visit-host.hq-visit-speaking {
-  transform: translateY(-1px) rotate(0deg);
+  transform: translateY(-1px) scale(1.015) rotate(0deg);
   opacity: 1;
 }
 
 .hq-visit-host.hq-visit-listening {
-  transform: translateY(1px) rotate(var(--hq-visit-lean, 0deg));
+  transform: translateY(1px) scale(.995) rotate(var(--hq-visit-lean, 0deg));
   opacity: .92;
 }
 
@@ -248,12 +335,12 @@
 }
 
 .hq-visit-visitor > button.hq-visit-speaking {
-  transform: translateY(-1px) rotate(0deg) !important;
+  transform: translateY(-1px) scale(1.015) rotate(0deg) !important;
   opacity: 1;
 }
 
 .hq-visit-visitor > button.hq-visit-listening {
-  transform: translateY(1px) rotate(var(--hq-visit-lean, 0deg)) !important;
+  transform: translateY(1px) scale(.995) rotate(var(--hq-visit-lean, 0deg)) !important;
   opacity: .92;
 }
 
@@ -262,6 +349,7 @@ body.hq-visit-active .hq-culinia-chip-bubble,
 body.hq-visit-active .hq-forgia-chip-bubble,
 body.hq-visit-active .hq-musica-chip-bubble,
 body.hq-visit-active .hq-securia-chip-bubble,
+body.hq-visit-active .hq-elsea-chip-bubble,
 body.hq-visit-active .hq-inventoria-bubble,
 body.hq-visit-active .hq-pistonia-bubble,
 body.hq-visit-active .hq-else-bubble {
@@ -269,7 +357,7 @@ body.hq-visit-active .hq-else-bubble {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .hq-visit-visitor { transition: opacity .2s ease; }
+  .hq-visit-visitor { animation: none !important; transition: opacity .2s ease; }
   .hq-visit-bubble { transition: opacity .15s ease; }
   .hq-visit-host.hq-visit-speaking,
   .hq-visit-host.hq-visit-listening,
@@ -285,10 +373,11 @@ body.hq-visit-active .hq-else-bubble {
   .hq-inventoria-toggle,
   .hq-pistonia-chip,
   .hq-securia-chip,
+  .hq-elsea-chip,
   .hq-else-chip,
   .hq-else-toggle { animation: none !important; }
 }
 
 @media (max-width: 520px) {
-  .hq-visit-bubble { font-size: 12px; padding: 8px 10px; }
+  .hq-visit-bubble { font-size: var(--text-sm); padding: 8px 10px; }
 }

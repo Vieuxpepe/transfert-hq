@@ -1,0 +1,29 @@
+{
+  "assistant": "securia",
+  "samples": {
+    "open": [
+      {
+        "url": "/assets/assistant-sfx/securia/open.0a583e6c.ogg",
+        "duration_ms": 240
+      }
+    ],
+    "think": [
+      {
+        "url": "/assets/assistant-sfx/securia/think.a837379f.ogg",
+        "duration_ms": 910
+      }
+    ],
+    "reply": [
+      {
+        "url": "/assets/assistant-sfx/securia/reply.b632924b.ogg",
+        "duration_ms": 280
+      }
+    ],
+    "error": [
+      {
+        "url": "/assets/assistant-sfx/securia/error.e32a1e16.ogg",
+        "duration_ms": 680
+      }
+    ]
+  }
+}

@@ -1,5 +1,6 @@
 """3D mesh, STL, and v1 compatibility for Dessiner."""
 import copy
+import math
 import struct
 import tempfile
 import unittest
@@ -71,6 +72,16 @@ class SolidTests(unittest.TestCase):
         self.check_manifold(mesh)
         self.assertAlmostEqual(volume(mesh), 100 * 60 * 20 - 30 * 30 * 8)
 
+    def test_construction_geometry_is_never_a_profile(self):
+        d = sample()
+        d["objects"][0]["construction"] = True  # one side of the base rectangle is reference only
+        with self.assertRaisesRegex((D.DrawingError, S.SolidError), "construction"):
+            S.build_mesh(D.validate_document(d))
+        raw = sample()
+        raw["objects"][0]["construction"] = True
+        with self.assertRaisesRegex(S.SolidError, "construction"):
+            S.build_mesh(raw)
+
     def test_circle_cut_and_two_cuts(self):
         d = sample()
         d["points"].append({"id": "center", "x": 30, "y": 30})
@@ -81,6 +92,37 @@ class SolidTests(unittest.TestCase):
         mesh = S.build_mesh(D.validate_document(d))
         self.check_manifold(mesh)
         self.assertAlmostEqual(volume(mesh), 100 * 60 * 20 - 20 * S._area(S._profile(d, ["circle"])) - 20 * 15 * 5, places=2)
+
+    def test_ellipse_and_closed_spline_rings(self):
+        d = {"format": D.FORMAT, "version": 6, "units": "mm", "mode": "construction",
+             "grid": {"spacing": 10, "visible": True, "snap": True}, "snap": {"angle": True, "angleStep": 15},
+             "points": [{"id": "e0", "x": 0, "y": 0}], "objects": [{"id": "e1", "type": "ellipse", "center": "e0", "rx": 10, "ry": 5}],
+             "constraints": [], "features": [], "sketches": []}
+        ring = S._profile(d, ["e1"])
+        self.assertAlmostEqual(S._area(ring), math.pi * 50, delta=0.5)
+        self.assertAlmostEqual(min(x for x, _ in ring), -10, places=6)
+        self.assertAlmostEqual(max(y for _, y in ring), 5, places=6)
+        bad = copy.deepcopy(d)
+        bad["objects"][0]["rx"] = -10
+        with self.assertRaisesRegex(S.SolidError, "Ellipse invalide"):
+            S._profile(bad, ["e1"])
+
+        pts = [(0, 0), (20, 0), (20, 20), (0, 20)]
+        d["points"] += [{"id": f"s{i}", "x": x, "y": y} for i, (x, y) in enumerate(pts)]
+        d["objects"].append({"id": "sp", "type": "spline", "pts": [f"s{i}" for i in range(4)], "closed": True})
+        curve = S._profile(d, ["sp"])
+        self.assertGreater(S._area(curve), 0)
+        self.assertGreaterEqual(len(curve), 48, "a closed spline samples its wrap span")
+        self.assertTrue(all(math.isfinite(x) and math.isfinite(y) for x, y in curve))
+
+        d["objects"][-1].pop("closed")
+        with self.assertRaisesRegex(S.SolidError, "ouverte"):
+            S._profile(d, ["sp"])
+
+        d["objects"].append({"id": "l1", "type": "line", "p1": "s0", "p2": "s1"})
+        d["objects"][-2]["closed"] = True
+        with self.assertRaisesRegex(S.SolidError, "seule"):
+            S._profile(d, ["e1", "l1"])
 
     def test_concave_closed_loop(self):
         d = sample()

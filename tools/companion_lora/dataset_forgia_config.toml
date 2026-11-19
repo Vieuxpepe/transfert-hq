@@ -1,0 +1,16 @@
+[general]
+shuffle_caption = true
+caption_extension = ".txt"
+keep_tokens = 2
+
+[[datasets]]
+resolution = [1024, 1024]
+batch_size = 1
+enable_bucket = true
+min_bucket_reso = 640
+max_bucket_reso = 1280
+bucket_reso_steps = 64
+
+  [[datasets.subsets]]
+  image_dir = "C:/Transfert/.hq-ai/forgia_lora_dataset/10_forgia"
+  num_repeats = 3

@@ -257,6 +257,7 @@
       clock: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 7v5l3 2",
       bell: "M6 17v-6a6 6 0 0 1 12 0v6l1.5 2h-15zM10 21h4",
       plus: "M12 5v14M5 12h14",
+      search: "M10.5 17a6.5 6.5 0 1 0 0-13 6.5 6.5 0 0 0 0 13zM20 20l-4.6-4.6",
       minus: "M5 12h14",
       arrow: "M5 12h14M13 6l6 6-6 6",
       box: "M4 8l8-4 8 4v8l-8 4-8-4zM4 8l8 4 8-4M12 12v8",
@@ -267,6 +268,9 @@
       list: "M4 6l1.5 1.5L8 5M4 12l1.5 1.5L8 11M4 18l1.5 1.5L8 17M11 6h9M11 12h9M11 18h9",
       image: "M4 5h16v14H4zM8.5 10h.01M4 17l5-5 4 4 3-3 4 4",
       store: "M4 9l1-5h14l1 5M4 9v11h16V9M9 20v-6h6v6",
+      scan: "M4 8V5h3M17 5h3v3M20 16v3h-3M7 19H4v-3M7 9v6M10 9v6M13 9v6M16 9v6",
+      qr: "M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h2v2h-2zM18 18h2v2h-2zM14 18h2M18 14h2",
+      bolt: "M13 3L5 14h6l-1 7 8-11h-6z",
     };
     const ico = (name, cls) => {
       const NS = "http://www.w3.org/2000/svg";
@@ -318,6 +322,8 @@
     };
 
     const root = doc.createElement("div");
+    function sfx(kind) { try { if (win.HqAssistantSfx) win.HqAssistantSfx.play("inventoria", kind, win); } catch (_) {} }
+    try { if (win.HqAssistantSfx) win.HqAssistantSfx.register("inventoria", () => root, win); } catch (_) {}
     root.id = "hq-inventoria";
     root.className = "hq-inventoria";
 
@@ -532,9 +538,13 @@
     shopEmpty.className = "hq-inventoria-shop-empty";
     decorate(shopEmpty, "check");
     shopEmpty.hidden = true;
-    copyBox.open = true; watchBox.open = true; notifyBox.open = true; memoryBox.open = true;
+    copyBox.open = true;                // the shopping list stays open; the settings sections are an accordion (see below)
+    watchBox.open = false; notifyBox.open = false; memoryBox.open = false;
     paneChat.append(threadLog, noticeBox, draftBox, detBox, groceryBox, photoSheet, quickBox, chatForm);
-    paneShop.append(alertBox, shopEmpty, copyBox);
+    const streakEl = doc.createElement("p");
+    streakEl.className = "hq-inventoria-streak";
+    streakEl.hidden = true;
+    paneShop.append(alertBox, shopEmpty, streakEl, copyBox);
     // Photos: what leaves the machine, and an off switch.
     const photoSet = doc.createElement("details");
     photoSet.className = "hq-inventoria-photoset";
@@ -703,6 +713,7 @@
     }
 
     function setBusy(on) {
+      if (!!on !== moodBusyLatch) sfx(on ? "think" : "reply");
       moodBusyLatch = !!on;
       root.classList.toggle("is-busy", moodBusyLatch || currentMood === "busy");
       if (moodBusyLatch) setMood("busy", 0);
@@ -720,6 +731,7 @@
     }
 
     function setOpen(on) {
+      if (!!on && !open) sfx("open");
       open = !!on;
       root.classList.toggle("is-open", open);
       try { win.localStorage.setItem(LS_OPEN, open ? "1" : "0"); } catch (_) {}
@@ -901,11 +913,18 @@
         return id;
       });
     };
-    const askInventoria = (text, retried, image, intent, force, signal) => ensureSession(!!retried)
+    // retried: false (first try), "fresh" (new session) or "same" (same session, once).
+    const askInventoria = (text, retried, image, intent, force, signal, job) => ensureSession(retried === "fresh")
       .then((sid) => jsonPost("/api/inventoria/sessions/" + sid + "/message",
-        image ? Object.assign({ text, image }, intent ? { intent } : {}, force ? { force: true } : {}) : { text }, signal))
+        image ? Object.assign({ text, image, job }, intent ? { intent } : {}, force ? { force: true } : {}) : { text, job }, signal))
       .then((r) => {
-        if (!r.ok && !retried && (r.status === 404 || r.status === 409)) return askInventoria(text, true, image, intent, force, signal);
+        if (!r.ok && !retried) {
+          const retryable = !!(r.data && r.data.retryable);
+          // A gone (404) or closed (non-retryable 409) session needs a new one. A retryable 409 is a
+          // write race on a live session: resend there once, keeping the conversation.
+          if (r.status === 404 || (r.status === 409 && !retryable)) return askInventoria(text, "fresh", image, intent, force, signal, job);
+          if (r.status === 409 && retryable) return askInventoria(text, "same", image, intent, force, signal, job);
+        }
         if (!r.ok) {
           const err = new Error((r.data && r.data.error) || "Inventoria indisponible");
           err.retryable = !!(r.data && r.data.retryable);
@@ -915,8 +934,10 @@
         if (d.duplicate_photo) return { duplicate: d.duplicate_photo };
         const msgs = d.messages || [];
         let reply = "", at = null;
+        if (d.cancelled) return { cancelled: true, kept: d.kept_changes > 0 ? d.kept_changes : 0 };
         for (let i = msgs.length - 1; i >= 0; i--) if (msgs[i].role === "assistant") { reply = String(msgs[i].text || ""); at = msgs[i].at; break; }
-        return { reply, at, operations: d.operations || (d.operation ? [d.operation] : []), grocery: (d.grocery && d.grocery.lines) || [], detections: d.detections || null };
+        return { reply, at, operations: d.operations || (d.operation ? [d.operation] : []), grocery: (d.grocery && d.grocery.lines) || [],
+                 detections: d.detections || null, cards: d.cards || {}, applied: d.applied || [] };
       });
 
     // Draft review: Inventoria only ever proposes. Apply = confirmed preview + commit through the existing pipeline.
@@ -929,7 +950,8 @@
       noticeBox.hidden = false;
       const p = doc.createElement("p");
       p.className = "hq-inventoria-draft-title";
-      p.textContent = text;
+      p.textContent = text || "";
+      p.hidden = !text;
       const row = doc.createElement("div");
       row.className = "hq-inventoria-draft-actions";
       (buttons || []).forEach((b) => {
@@ -949,15 +971,19 @@
     const clearGrocery = () => { groceryBox.hidden = true; groceryBox.replaceChildren(); };
     // Items she recognised in a photo of several physical things: an editable list. Nothing is drafted until you press the button.
     const detKey = (r) => r.item_id || ("n:" + String(r.name).toLowerCase());
+    // Which operation a card drafts is decided by the server (response `cards`, message meta
+    // `<kind>_op`) from item ids and names. No id means the card's Ignorer only hides it.
     const tagBoxes = (r, photo) => (r.boxes || []).map((b) => ({ p: photo, b }));
-    const showDetections = (d, image) => {
+    const showDetections = (d, image, opId) => {
       det = { mode: d.mode === "count" ? "count" : "add", places: d.places || [], photos: image ? [image] : [], shown: 0, truncated: d.truncated || 0,
               rows: (d.rows || []).map((r) => Object.assign({ keep: r.confidence !== "low" }, r, { boxes: tagBoxes(r, 0) })) };
+      det.op = opId ? { id: opId } : null;         // the operation an Ignorer on this card must cancel
       renderDetections();
     };
     // A second photo of the same scan: rows are merged by item; a thing seen in both keeps the larger count and is marked "check".
-    const mergeDetections = (d, image) => {
-      if (!det) { showDetections(d, image); return; }
+    const mergeDetections = (d, image, opId) => {
+      if (!det) { showDetections(d, image, opId); return; }
+      if (!det.op && opId) det.op = { id: opId };
       const photo = image ? det.photos.push(image) - 1 : det.photos.length - 1;
       det.shown = Math.max(0, photo);
       det.truncated = (det.truncated || 0) + (d.truncated || 0);
@@ -1135,7 +1161,23 @@
       const skip = doc.createElement("button");
       skip.type = "button"; skip.className = "hq-inventoria-draft-cancel"; skip.textContent = en ? "Dismiss" : "Ignorer";
       decorate(skip, "x");
-      skip.addEventListener("click", () => { resolveCard(); clearDetect(); });
+      skip.addEventListener("click", () => {
+        if (!det || !det.op) { resolveCard(); clearDetect(); return; }
+        skip.disabled = true;
+        jsonPost(opUrl(det.op.id, "cancel"), {}).then((r) => {
+          if (!r.ok) throw r;
+          forgetOperation(det.op.id);
+          resolveCard();
+          clearDetect();
+        }).catch((r) => {
+          skip.disabled = false;
+          const n = doc.createElement("p");
+          n.className = "hq-inventoria-draft-note";
+          n.setAttribute("role", "alert");
+          n.textContent = (r && r.data && r.data.error) || "Impossible d'ignorer ce changement (photo).";
+          detBox.insertBefore(n, actions);
+        });
+      });
       const actions = doc.createElement("div");
       actions.className = "hq-inventoria-draft-actions";
       actions.append(go, more, skip);
@@ -1222,10 +1264,10 @@
         go.disabled = more.disabled = skip.disabled = true;
         const mode = det.mode;
         ensureSession(false).then((sid) => jsonPost("/api/inventoria/detections", { session_id: sid, mode, rows })).then((r) => {
-          if (!r.ok || !r.data || !r.data.operation) throw r;
+          if (!r.ok || !r.data || !(r.data.operation || (r.data.applied && r.data.applied.length))) throw r;
           resolveCard();
           clearDetect();
-          showDraft(r.data.operations || [r.data.operation]);
+          handleTurnResult(r.data);
         }).catch((r) => {
           go.disabled = more.disabled = skip.disabled = false;
           const n = doc.createElement("p"); n.className = "hq-inventoria-draft-note";
@@ -1235,9 +1277,10 @@
       });
     };
     // Items she says you NEED (from a photo of a list, an empty shelf...) wait here until you add them to the grocery list.
-    const showGrocery = (lines) => {
+    const showGrocery = (lines, opId) => {
       const rows = (lines || []).filter((l) => l && l.name);
       if (!rows.length) return;
+      const groceryOp = opId ? { id: opId } : null;
       selectTab("chat");
       groceryBox.replaceChildren();
       groceryBox.hidden = false;
@@ -1267,7 +1310,23 @@
       row.append(add, skip);
       groceryBox.append(title, list, row);
       const note = (t) => { const n = doc.createElement("p"); n.className = "hq-inventoria-draft-note"; n.textContent = t; groceryBox.replaceChildren(n); };
-      skip.addEventListener("click", () => { resolveCard(); clearGrocery(); });
+      skip.addEventListener("click", () => {
+        if (!groceryOp) { resolveCard(); clearGrocery(); return; }
+        skip.disabled = true;
+        jsonPost(opUrl(groceryOp.id, "cancel"), {}).then((r) => {
+          if (!r.ok) throw r;
+          forgetOperation(groceryOp.id);
+          resolveCard();
+          clearGrocery();
+        }).catch((r) => {
+          skip.disabled = false;
+          const n = doc.createElement("p");
+          n.className = "hq-inventoria-draft-note";
+          n.setAttribute("role", "alert");
+          n.textContent = (r && r.data && r.data.error) || "Impossible d'ignorer ce changement (courses).";
+          groceryBox.insertBefore(n, row);
+        });
+      });
       add.addEventListener("click", () => {
         add.disabled = skip.disabled = true;
         jsonPost("/api/inventoria/to-grocery", { lines: rows.map((l) => ({ name: l.name, qty: l.qty, unit: l.unit || "", store: l.store || "" })) }).then((r) => {
@@ -1278,8 +1337,19 @@
       });
     };
     const draftNote = (text) => { const p = doc.createElement("p"); p.className = "hq-inventoria-draft-note"; p.textContent = text; draftBox.replaceChildren(p); draftBox.hidden = false; };
+    // The turn's operations, shared by the draft and the grocery/detection cards, so an
+    // Ignorer cancels the server-side operation instead of only hiding the card.
+    let draftOps = [];
+    const forgetOperation = (opId) => {
+      if (!draftOps.some((o) => o.id === opId)) return;
+      draftOps = draftOps.filter((o) => o.id !== opId);
+      if (!draftOps.length) draftNote("Brouillon annulé.");
+      else showDraft(draftOps);
+    };
+    // server change labels are French ("Ajuster Lait de -1"): translated when the panel is in English, also when glued into a longer text
+    const T = (text) => (uiLang === "en" && win.HqInventoriaI18n ? win.HqInventoriaI18n.translate(String(text == null ? "" : text)) : text);
     const describe = (c) => {
-      let s = c.label_fr || c.op;
+      let s = T(c.label_fr || c.op);
       const b = c.before && c.before.qty, a = c.after && c.after.qty;
       if (typeof b === "number" && typeof a === "number") s += " (" + b + " → " + a + ")";
       return s;
@@ -1300,13 +1370,19 @@
     const showDraft = (operations, opts) => {
       const ops = (operations || []).filter((o) => o && o.id && (o.proposals || []).length);
       if (!ops.length) return;
+      draftOps = ops.slice();
       selectTab("chat");
       draftBox.replaceChildren();
       draftBox.hidden = false;
       const total = ops.reduce((n, o) => n + o.proposals.length, 0);
-      const title = decorate(doc.createElement("p"), "list");
+      // Only new items (e.g. the unknown lines of a receipt): one short question answered with one tap.
+      const onlyNew = !(opts && opts.undo) && ops.every((o) => o.proposals.every((p) => p.op === "item.create"));
+      const title = decorate(doc.createElement("p"), onlyNew ? "sparkle" : "list");
       title.className = "hq-inventoria-draft-title";
-      title.textContent = (opts && opts.undo ? "Annulation du lot — rien n'est appliqué (" : "Brouillon à vérifier — rien n'est appliqué (") + total + " changement" + (total > 1 ? "s" : "") + ")";
+      title.textContent = onlyNew
+        ? (uiLang === "en" ? "New item" + (total > 1 ? "s" : "") + " — add " + (total > 1 ? "them" : "it") + "?"
+                           : (total > 1 ? "Nouveaux articles — les ajouter ?" : "Nouvel article — l'ajouter ?"))
+        : (opts && opts.undo ? "Annulation du lot — rien n'est appliqué (" : "Brouillon à vérifier — rien n'est appliqué (") + total + " changement" + (total > 1 ? "s" : "") + ")";
       const list = doc.createElement("ul");
       list.className = "hq-inventoria-draft-list";
       const opIcon = (t) => /^Annuler/.test(t) ? "undo" : /^Créer/.test(t) ? "sparkle" : /^Déplacer/.test(t) ? "arrow" : /^Modifier/.test(t) ? "list"
@@ -1328,8 +1404,9 @@
       };
       fillList(ops.flatMap((o) => o.proposals.map((p) => p.label_fr || p.op)));
       const apply = doc.createElement("button");
-      apply.type = "button"; apply.textContent = "Appliquer"; apply.className = "hq-inventoria-draft-apply";
-      decorate(apply, "check");
+      apply.type = "button"; apply.className = "hq-inventoria-draft-apply";
+      apply.textContent = onlyNew ? (uiLang === "en" ? "Add" : "Ajouter") : "Appliquer";
+      decorate(apply, onlyNew ? "plus" : "check");
       const cancel = doc.createElement("button");
       cancel.type = "button"; cancel.textContent = "Annuler"; cancel.className = "hq-inventoria-draft-cancel";
       decorate(cancel, "x");
@@ -1337,9 +1414,44 @@
       row.className = "hq-inventoria-draft-actions";
       row.append(apply, cancel);
       draftBox.append(title, list, row);
+      // A guessed match (a nickname-less name that only half fits) shows the guess with the nearest other items: one tap swaps it.
+      const wordsOf = (t) => String(t || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").split(/[^a-z0-9]+/).filter((w) => w.length > 1);
+      const offerGuessFix = (change, rawHint) => {
+        const conf = change && change.refs && change.refs.confidence;
+        const cur = change && change.item_id;
+        const delta = change && change.after && change.before ? change.after.qty - change.before.qty : 0;
+        if (!cur || !delta || conf === "high" || change.op !== "item.adjust") return;
+        loadInventory().then((inv) => {
+          const now = (inv.items || []).find((i) => i.id === cur);
+          const hw = wordsOf(rawHint || (now && now.name));
+          const alts = (inv.items || []).filter((i) => i.id !== cur)
+            .map((i) => [i, wordsOf(i.name).filter((w) => hw.some((h) => w.startsWith(h) || h.startsWith(w))).length]).filter((x) => x[1] > 0)
+            .sort((a, b) => b[1] - a[1] || String(a[0].name).localeCompare(String(b[0].name), "fr")).slice(0, 3).map((x) => x[0]);
+          if (!alts.length || !draftBox.contains(row)) return;
+          const en = uiLang === "en";
+          const box = doc.createElement("div");
+          box.className = "hq-inventoria-guess";
+          const q = doc.createElement("span");
+          q.textContent = (en ? "I matched " : "J'ai compris ") + "« " + (now ? now.name : "?") + " » " + (en ? "— not it?" : "— pas celui-là ?");
+          box.appendChild(q);
+          alts.forEach((a) => {
+            const b = doc.createElement("button");
+            b.type = "button"; b.textContent = a.name; b.className = "hq-inventoria-guess-alt";
+            b.addEventListener("click", () => {
+              box.querySelectorAll("button").forEach((x) => { x.disabled = true; });
+              apply.disabled = cancel.disabled = true;
+              jsonPost(opUrl(ops[0].id, "cancel"), {}).then(() => { clearDraft(); return quickAdjust(a.id, delta); })
+                .catch(() => { box.querySelectorAll("button").forEach((x) => { x.disabled = false; }); apply.disabled = cancel.disabled = false; });
+            });
+            box.appendChild(b);
+          });
+          draftBox.insertBefore(box, row);
+        }).catch(() => {});
+      };
       const errText = (r) => (r && r.data && r.data.error) || "Brouillon impossible à appliquer";
       // validate + preview (unconfirmed) every operation first, so the list shows real before/after numbers
-      Promise.all(ops.map((o) => jsonPost(opUrl(o.id, "validate"), {})
+      // An operation already previewed (an auto-apply that stopped before its commit) skips straight to the preview.
+      Promise.all(ops.map((o) => (o.status === "previewed" ? Promise.resolve({ ok: true, data: { validation: { ok: true } } }) : jsonPost(opUrl(o.id, "validate"), {}))
         .then((v) => (v.ok && v.data.validation && v.data.validation.ok ? jsonPost(opUrl(o.id, "preview"), { confirm: false }) : { ok: false, invalid: true, data: v.data }))))
         .then((results) => {
           if (results.some((r) => r.invalid)) {
@@ -1348,6 +1460,9 @@
             return;
           }
           if (results.every((r) => r.ok && r.data.preview)) fillList(results.flatMap((r) => (r.data.preview.changes || []).map(describe)));
+          if (!(opts && opts.undo) && ops.length === 1 && ops[0].proposals.length === 1 && results[0].ok && results[0].data.preview) {
+            offerGuessFix((results[0].data.preview.changes || [])[0], ops[0].proposals[0].refs && ops[0].proposals[0].refs.name_hint);
+          }
         }).catch(() => {});
       cancel.addEventListener("click", () => {
         apply.disabled = cancel.disabled = true;
@@ -1387,6 +1502,13 @@
     let mergeNext = false;
     const runChat = (text, image, intent, keep, force) => {
       if ((!text && !image) || chatBusy) return;
+      if (!isOnline()) {                              // no signal: a photo needs one; a sentence is kept and sent when it returns
+        if (image) { failNote(null, uiLang === "en" ? "Photos need a connection. Try again when you are back online." : "Une photo demande une connexion. Réessaie une fois en ligne."); return; }
+        chatInput.value = "";
+        enqueue("say", { text }, text.slice(0, 60), newCid());
+        showLine(toneLine("queued", "q", uiLang === "en" ? "No connection: your message is kept and will be sent when you are back." : "Pas de connexion : ton message est gardé et partira au retour du réseau."));
+        return;
+      }
       chatBusy = true; chatSend.disabled = true; chatInput.value = "";
       stopVoice();
       const my = ++chatSeq;
@@ -1399,17 +1521,34 @@
       appendThread("user", (image ? "📷 " : "") + (text || "(photo)"));
       const userRow = threadLog.lastElementChild;
       const ctl = new win.AbortController();
-      const finish = () => { typing.remove(); chatBusy = false; chatSend.disabled = false; setBusy(false); };
-      const typing = addTyping(() => {                 // cancel: stop waiting (the server may still finish; its result is ignored)
-        chatSeq++; ctl.abort(); finish();
+      const chatJob = "iot-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+      const finish = () => { typing.remove(); chatBusy = false; chatSend.disabled = false; setBusy(false); win.setTimeout(flushQueue, 0); };
+      const typing = addTyping(() => {                 // cancel: ask the server to drop the turn, then stop waiting
+        chatSeq++;
+        jsonPost("/api/inventoria/cancel", { job: chatJob }).catch(() => {});
+        ctl.abort(); finish();
         showLine(uiLang === "en" ? "Cancelled." : "Annulé.");
-        showNotice(uiLang === "en" ? "Request cancelled. Nothing was applied." : "Demande annulée. Rien n'a été appliqué.",
+        // Stock is never changed by a cancelled turn. A note or watch she saved before the
+        // stop is kept (those apply at once), so the notice promises only the stock.
+        showNotice(uiLang === "en" ? "Request cancelled. No stock change was applied." : "Demande annulée. Aucun changement de stock n'a été appliqué.",
           [{ label: uiLang === "en" ? "Send again" : "Renvoyer", icon: "send", fn: () => runChat(lastReq.text, lastReq.image, lastReq.intent, lastReq.keep, lastReq.force) },
            { label: uiLang === "en" ? "Close" : "Fermer", icon: "x" }]);
       });
-      askInventoria(text, false, image, intent, force, ctl.signal).then((res) => {
+      askInventoria(text, false, image, intent, force, ctl.signal, chatJob).then((res) => {
         typing.remove();
         if (my !== chatSeq) return;
+        if (res.cancelled) {
+          if (userRow) userRow.remove();
+          syncEmpty();
+          showLine(uiLang === "en" ? "Cancelled." : "Annulé.");
+          if (res.kept) {
+            refreshStatus({ force: true });
+            showNotice(uiLang === "en" ? "Request cancelled. No stock change was applied; a note or alert she saved before stopping was kept."
+                                       : "Demande annulée. Aucun changement de stock; une note ou alerte enregistrée avant l'arrêt est conservée.",
+              [{ label: uiLang === "en" ? "Close" : "Fermer", icon: "x" }]);
+          }
+          return;
+        }
         if (res.duplicate) {                           // the same picture was analysed before: ask before analysing (and applying) it again
           if (userRow) userRow.remove();
           syncEmpty();
@@ -1422,14 +1561,17 @@
              { label: en ? "Cancel" : "Annuler", icon: "x" }]);
           return;
         }
-        const { reply, operations, grocery, detections, at } = res;
+        const { reply, operations, grocery, detections, at, cards } = res;
         currentCardAt = at;
         showLine(reply || IDLE_LINE);
         if (reply) appendThread("assistant", reply);
         refreshStatus({});
         if (operations && operations.length) showDraft(operations);
-        if (grocery && grocery.length) showGrocery(grocery);
-        if (detections && detections.rows && detections.rows.length) { if (keep) mergeDetections(detections, image); else showDetections(detections, image); }
+        if (res.applied && res.applied.length) showApplied(res.applied, { quiet: true });   // her reply stays on the bubble line
+        if (grocery && grocery.length) showGrocery(grocery, cards.grocery || "");
+        if (detections && detections.rows && detections.rows.length) {
+          if (keep) mergeDetections(detections, image, cards.detections || ""); else showDetections(detections, image, cards.detections || "");
+        }
         if (reply && voiceBox.checked) speakLine(reply); else if (reply) setMood("speaking", 1800);
       }).catch((e) => {
         if (my !== chatSeq || (e && e.name === "AbortError")) return;
@@ -1443,7 +1585,9 @@
     };
     chatForm.addEventListener("submit", (ev) => {
       ev.preventDefault();
-      runChat(chatInput.value.trim());
+      const said = chatInput.value.trim();
+      if (askWhere(said)) { chatInput.value = ""; return; }
+      runChat(said);
     });
 
     const syncPhotoUi = () => {
@@ -1613,11 +1757,12 @@
         else openPhotoSheet(info.url, info);
       }).catch((e) => { showLine(e && e.message ? e.message : "Photo impossible"); });
     });
-    chatForm.insertBefore(photoBtn, chatSend);
-    chatForm.appendChild(photoInput);
+    chatForm.appendChild(photoInput);       // photoBtn stays as the programmatic "send a photo" action; the bar shows camBtn
 
     // --- companion life: conversation restore, memory, greeting, dictation (no model call except when chatting)
-    let uiLang = "fr", chatTouched = false, rec = null, lastStatus = 0;
+    let uiLang = lsGet("hq_inventoria_lang") === "en" ? "en" : "fr", chatTouched = false, rec = null, lastStatus = 0;
+    let lastStatusData = null;
+    const statusHooks = [];
     const getJson = (url) => win.fetch(url, { credentials: "same-origin" })
       .then((r) => r.json().then((d) => ({ ok: r.ok, status: r.status, data: d })));
     const avatar = () => {
@@ -1634,6 +1779,7 @@
       if (role !== "user") row.appendChild(avatar());
       row.appendChild(p);
       threadLog.appendChild(row);
+      return row;
     };
     const emptyHint = doc.createElement("div");
     emptyHint.className = "hq-inventoria-empty";
@@ -1673,7 +1819,8 @@
       threadSum.textContent = "Conversation (" + (msgs || []).length + ")";
     };
     const appendThread = (role, text) => {
-      addLogLine(role, text);
+      const fresh = addLogLine(role, text);          // only live messages rise in (a restored thread must not animate all at once)
+      if (fresh && fresh.classList) fresh.classList.add("is-new");
       syncEmpty();
       if (role !== "user") line.hidden = true;   // the reply now lives in the thread; the top line returns for greetings and warnings
       const n = threadLog.childElementCount;
@@ -1711,9 +1858,9 @@
       const en = uiLang === "en";
       const items = [
         [en ? "What's running low?" : "Qu'est-ce qui est bas ?", "alert", () => sendToChat(en ? "What is running low right now?" : "Qu'est-ce qui est bas en ce moment ?")],
+        [en ? "Where is…" : "Où est…", "search", () => { selectTab("chat"); chatInput.value = en ? "Where is " : "Où est "; chatInput.focus(); }],
         [en ? "I bought…" : "J'ai acheté…", "plus", () => { selectTab("chat"); chatInput.value = en ? "I bought " : "J'ai acheté "; chatInput.focus(); }],
         [en ? "Prepare a restock" : "Prépare un réappro", "cart", () => sendToChat(en ? "Prepare a restock draft for everything that is low." : "Prépare un brouillon de réapprovisionnement pour tout ce qui est bas.")],
-        ...(photosOn() ? [[en ? "Photo" : "Photo", "camera", () => { if (!chatBusy) photoBtn.click(); }]] : []),
       ];
       items.forEach(([label, icon, fn]) => {
         const b = doc.createElement("button");
@@ -1735,6 +1882,7 @@
         const label = doc.createElement("span");
         label.className = "hq-inventoria-alert-text";
         label.append(ico(a.level === "trend" ? "clock" : a.level === "soon" ? "trend" : "alert", "hq-inventoria-alert-status"), doc.createTextNode(alertText(a)));
+        openSheetOn(label, a.id);
         const lead = itemBadge(a.name, 30);
         const btn = doc.createElement("button");
         btn.type = "button"; btn.className = "hq-inventoria-alert-act"; btn.textContent = uiLang === "en" ? "Restock?" : "Réappro ?";
@@ -1765,8 +1913,12 @@
       watchSum.textContent = "Surveillances (" + (rows || []).length + ")";
     };
     let lastShopping = null;
-    const checked = {};   // item id -> true while ticked (kept across refreshes)
+    const CHECKED_KEY = "hq_inventoria_checked_v1";
+    const checked = {};   // item id -> true while ticked (kept across refreshes, and across a closed app while you walk the store)
+    try { Object.assign(checked, JSON.parse(lsGet(CHECKED_KEY) || "{}")); } catch (_) {}
+    const saveChecked = () => { lsSet(CHECKED_KEY, JSON.stringify(Object.keys(checked).filter((k) => checked[k]).reduce((o, k) => { o[k] = true; return o; }, {}))); };
     const syncBought = () => {
+      saveChecked();
       const n = Object.keys(checked).filter((k) => checked[k]).length;
       boughtBtn.disabled = n === 0;
       boughtBtn.textContent = (uiLang === "en" ? "Mark bought (" : "Marquer acheté (") + n + ")";
@@ -1775,8 +1927,20 @@
       checkList.replaceChildren();
       checkTitle.textContent = uiLang === "en" ? "Tick what you bought, then mark it:" : "Coche ce que tu as acheté, puis valide :";
       const live = {};
-      (items || []).forEach((it) => {
+      const other = uiLang === "en" ? "Other" : "Autre";
+      const rows = (items || []).slice();
+      const grouped = rows.some((it) => it.store);   // at the store: one section per shop
+      if (grouped) rows.sort((a, b) => (a.store ? 0 : 1) - (b.store ? 0 : 1) || String(a.store || "").localeCompare(String(b.store || ""), "fr"));
+      let lastStore = null;
+      rows.forEach((it) => {
         live[it.id] = true;
+        if (grouped && (it.store || other) !== lastStore) {
+          lastStore = it.store || other;
+          const h = doc.createElement("li");
+          h.className = "hq-inventoria-check-store";
+          h.textContent = lastStore;
+          checkList.appendChild(h);
+        }
         const li = doc.createElement("li");
         const cb = doc.createElement("input");
         cb.type = "checkbox"; cb.checked = !!checked[it.id];
@@ -1787,9 +1951,16 @@
         qty.setAttribute("aria-label", "Quantité achetée de " + it.name);
         const lab = doc.createElement("span");
         lab.textContent = it.name + (it.unit ? " (" + it.unit + ")" : "");
-        cb.addEventListener("change", () => { checked[it.id] = cb.checked; syncBought(); });
+        openSheetOn(lab, it.id);
+        cb.addEventListener("change", () => { checked[it.id] = cb.checked; li.classList.toggle("is-ticked", cb.checked); syncBought(); });
         const lead = itemBadge(it.name, 24);
         li.append(cb, qty);
+        li.addEventListener("click", (ev) => {           // in shop mode the whole row is the checkbox
+          if (!paneShop.classList.contains("is-shopping") || ev.target === cb || ev.target === qty) return;
+          ev.stopPropagation(); ev.preventDefault();
+          cb.checked = !cb.checked; checked[it.id] = cb.checked; li.classList.toggle("is-ticked", cb.checked); syncBought();
+        }, true);
+        li.classList.toggle("is-ticked", !!checked[it.id]);
         if (lead) li.appendChild(lead);
         li.appendChild(lab);
         checkList.appendChild(li);
@@ -1801,16 +1972,19 @@
       const items = [];
       checkList.querySelectorAll("li").forEach((li) => {
         const cb = li.querySelector('input[type="checkbox"]'), qty = li.querySelector(".hq-inventoria-check-qty");
+        if (!cb || !qty) return;                       // a store heading
         const n = parseInt(qty.value, 10);
         if (cb.checked && n >= 1) items.push({ id: qty.dataset.id, qty: n });
       });
       if (!items.length) return;
       boughtBtn.disabled = true;
-      ensureSession(false).then((sid) => jsonPost("/api/inventoria/purchased", { session_id: sid, items })).then((r) => {
-        if (!r.ok || !r.data || !r.data.operation) throw r;
+      oneTap("purchased", { items }, items.length + (uiLang === "en" ? " bought" : " achetés")).then((r) => {
+        if (r.queued) { Object.keys(checked).forEach((k) => delete checked[k]); syncBought(); return; }
+        if (!r.ok || !r.data || !(r.data.operation || (r.data.applied && r.data.applied.length))) throw r;
         Object.keys(checked).forEach((k) => delete checked[k]);
         chatTouched = true;
-        showDraft([r.data.operation]);
+        handleTurnResult(r.data);
+        syncBought();
       }).catch((r) => { copyNote.textContent = (r && r.data && r.data.error) || "Impossible de préparer le brouillon."; syncBought(); });
     });
     shareBtn.addEventListener("click", () => {
@@ -1830,8 +2004,26 @@
       try { win.localStorage.setItem("hq_inventoria_copy_group", groupBox.checked ? "1" : "0"); } catch (_) {}
       renderShopping();
     });
+    const shopModeBtn = doc.createElement("button");
+    shopModeBtn.type = "button"; shopModeBtn.className = "hq-inventoria-shopmode";
+    decorate(shopModeBtn, "list");
+    let wakeLock = null;
+    const setShopMode = (on) => {
+      paneShop.classList.toggle("is-shopping", on);
+      shopModeBtn.setAttribute("aria-pressed", on ? "true" : "false");
+      shopModeBtn.textContent = on ? (uiLang === "en" ? "Leave shop mode" : "Quitter le mode courses") : (uiLang === "en" ? "Shop mode" : "Mode courses");
+      try {                                                // keep the screen on while walking the store (where the browser allows it)
+        if (on && win.navigator.wakeLock) win.navigator.wakeLock.request("screen").then((l) => { wakeLock = l; }, () => {});
+        else if (!on && wakeLock) { wakeLock.release(); wakeLock = null; }
+      } catch (_) {}
+    };
+    shopModeBtn.addEventListener("click", () => setShopMode(!paneShop.classList.contains("is-shopping")));
+    paneShop.insertBefore(shopModeBtn, copyBox);
+    setShopMode(false);
     const renderShopping = () => {
       if (!lastShopping) return;
+      shopModeBtn.hidden = !(lastShopping.all && lastShopping.all.count);
+      if (shopModeBtn.hidden && paneShop.classList.contains("is-shopping")) setShopMode(false);   // list done: leave shop mode so the calm line shows
       const pick = soonBox.checked ? lastShopping.all : lastShopping.urgent;
       const total = lastShopping.all ? lastShopping.all.count : 0;
       copyBox.hidden = total === 0;
@@ -1885,7 +2077,12 @@
     const refreshStatus = (opts) => getJson("/api/inventoria/status").then((r) => {
       if (!r.ok || !r.data) return;
       lastStatus = Date.now();
-      uiLang = r.data.language || "fr";
+      uiLang = r.data.language === "en" ? "en" : "fr";
+      lsSet("hq_inventoria_lang", uiLang);
+      lastStatusData = r.data;
+      syncLang();
+      statusHooks.forEach((fn) => { try { fn(r.data); } catch (_) {} });
+      win.setTimeout(flushQueue, 0);                  // a status that answered means we are online: send what was waiting
       renderMemory(r.data.memory || []);
       renderAlerts(r.data.alerts || []);
       renderWatches(r.data.watches || []);
@@ -1893,8 +2090,14 @@
       renderShopping();
       const anyAlerts = (r.data.alerts || []).length > 0 || !!(lastShopping && lastShopping.all && lastShopping.all.count);
       shopEmpty.hidden = anyAlerts;
-      shopEmpty.textContent = uiLang === "en" ? "Everything is comfortably stocked." : "Tout est bien approvisionné.";
+      const calmNow = !!(r.data.calm && r.data.calm.calm && r.data.calm.line);
+      shopEmpty.textContent = calmNow ? r.data.calm.line : (uiLang === "en" ? "Everything is comfortably stocked." : "Tout est bien approvisionné.");
+      streakEl.textContent = r.data.streak || "";
+      streakEl.hidden = !(calmNow && r.data.streak);
       renderChips();
+      renderFast(r.data.prefs || null, r.data.aliases || []);
+      renderAsks(r.data.asks);
+      renderInsights(r.data);
       const nt = r.data.notify || {};
       notifyOn.checked = !!nt.enabled; notifyInstant.checked = nt.instant !== false;
       if (typeof nt.digest_hour === "number") notifyHour.value = String(nt.digest_hour);
@@ -1927,8 +2130,14 @@
           const last = msgs[msgs.length - 1];
           if (last && last.role === "assistant" && last.meta && String(last.at) !== lsGet(RESOLVED_AT)) {
             currentCardAt = last.at;
-            if (last.meta.detections && last.meta.detections.rows && last.meta.detections.rows.length) showDetections(last.meta.detections, null);
-            if (last.meta.grocery && last.meta.grocery.length) showGrocery(last.meta.grocery);
+            // The server stored each card's op id with the message; rebind it only while still pending.
+            const pendingIds = new Set(pending.map((o) => o && o.id));
+            const restoredOp = (kind) => {
+              const id = last.meta[kind + "_op"];
+              return typeof id === "string" && pendingIds.has(id) ? id : "";
+            };
+            if (last.meta.detections && last.meta.detections.rows && last.meta.detections.rows.length) showDetections(last.meta.detections, null, restoredOp("detections"));
+            if (last.meta.grocery && last.meta.grocery.length) showGrocery(last.meta.grocery, restoredOp("grocery"));
           }
           if (pending.length) showDraft(pending);
         } else if (r.status === 404) { try { win.localStorage.removeItem(SESSION_KEY); } catch (_) {} }
@@ -1949,7 +2158,7 @@
         stopVoice();
         const r = new SR();
         rec = r;
-        r.lang = uiLang === "en" ? "en-US" : "fr-CA";
+        r.lang = "en-US";
         r.interimResults = false; r.maxAlternatives = 1;
         r.onresult = (e) => {
           const t = e.results && e.results[0] && e.results[0][0] ? e.results[0][0].transcript : "";
@@ -1963,16 +2172,925 @@
       });
       chatForm.insertBefore(micBtn, chatSend);
     }
+    // ---------------------------------------------------------------- fast logging
+    // Trusted quantity changes are applied by the server at once; this toast is their Undo. Deep links (iPhone
+    // Shortcut, QR labels on places, notifications) and barcode scans all funnel into the same chat / one-tap routes.
+    const toastBox = doc.createElement("div");
+    toastBox.className = "hq-inventoria-toast";
+    toastBox.setAttribute("role", "status");
+    toastBox.hidden = true;
+    paneChat.insertBefore(toastBox, chatForm);
+    const TOAST_MS = 10000;
+    let toastTimer = 0;
+    const hideToast = () => { if (toastTimer) win.clearTimeout(toastTimer); toastTimer = 0; toastBox.hidden = true; toastBox.replaceChildren(); };
+    // Reading it, or having a finger/focus on it, keeps it: the countdown restarts shortly after you let go.
+    const holdToast = () => { if (toastTimer) { win.clearTimeout(toastTimer); toastTimer = 0; } };
+    const releaseToast = () => { if (!toastBox.hidden && !toastTimer) toastTimer = win.setTimeout(hideToast, 4000); };
+    ["pointerenter", "pointerdown", "focusin"].forEach((t) => toastBox.addEventListener(t, holdToast));
+    ["pointerleave", "pointerup", "focusout"].forEach((t) => toastBox.addEventListener(t, releaseToast));
+    const inventoryChanged = () => { try { win.dispatchEvent(new CustomEvent("hq:inventory-changed")); } catch (_) {} };
+    // Her small lines come from the server (status.tone) so the toast, the digest and the empty states share one voice and language.
+    const toneLine = (key, seed, fallback) => {
+      const v = lastStatusData && lastStatusData.tone && lastStatusData.tone[key];
+      if (!v) return fallback;
+      if (typeof v === "string") return v;
+      if (!v.length) return fallback;
+      let h = 0;
+      String(seed || "").split("").forEach((ch) => { h = (h * 31 + ch.charCodeAt(0)) >>> 0; });
+      return v[h % v.length];
+    };
+    // The tap is acknowledged at once; the real answer (or the queue notice) replaces it.
+    const showSaving = () => {
+      hideToast();
+      const s = doc.createElement("span");
+      s.className = "hq-inventoria-toast-text";
+      s.textContent = uiLang === "en" ? "Saving…" : "Enregistrement…";
+      toastBox.append(ico("check", "hq-inventoria-toast-ico"), s);
+      toastBox.hidden = false;
+      toastTimer = win.setTimeout(hideToast, 8000);
+    };
+    const showQueuedNote = () => {
+      hideToast();
+      const s = doc.createElement("span");
+      s.className = "hq-inventoria-toast-text";
+      s.textContent = toneLine("queued", "q", uiLang === "en" ? "Saved here. It will be sent when you are back online." : "Gardé ici. Envoi au retour du réseau.");
+      toastBox.append(ico("clock", "hq-inventoria-toast-ico"), s);
+      toastBox.hidden = false;
+      toastTimer = win.setTimeout(hideToast, 5000);
+    };
+    const showApplied = (applied, opts) => {
+      const list = (applied || []).filter((a) => a && a.operation_id);
+      if (!list.length) return;
+      hideToast();
+      selectTab("chat");
+      const en = uiLang === "en";
+      const txt = doc.createElement("span");
+      txt.className = "hq-inventoria-toast-text";
+      const allChanges = list.flatMap((a) => a.changes || []);
+      txt.textContent = toneLine("applied", list[0].operation_id, (en ? "Noted: " : "Noté : ") + "{c}").replace("{c}", allChanges.map(describe).join(" · "));
+      const usualMark = allChanges.some((c) => c && c.usual) ? doc.createElement("span") : null;   // true only when no number was said and the amount is the usual one
+      if (usualMark) { usualMark.className = "hq-inventoria-mark"; usualMark.textContent = toneLine("usual", "", en ? "Usual amount" : "Quantité habituelle"); }
+      const undo = doc.createElement("button");
+      undo.type = "button"; undo.className = "hq-inventoria-toast-undo"; undo.textContent = en ? "Undo" : "Annuler";
+      decorate(undo, "undo");
+      undo.addEventListener("click", () => {
+        undo.disabled = true;
+        if (toastTimer) { win.clearTimeout(toastTimer); toastTimer = 0; }
+        const ids = list.map((a) => a.operation_id).reverse();
+        const drafts = [];
+        let undone = 0;
+        const next = (i) => (i >= ids.length ? Promise.resolve() : jsonPost(opUrl(ids[i], "undo"), { apply: true }).then((r) => {
+          if (!r.ok || !r.data) throw r;
+          if (r.data.applied && r.data.applied.length) undone++;
+          else if (r.data.operation) drafts.push(r.data.operation);
+          return next(i + 1);
+        }));
+        next(0).then(() => {
+          undo.remove();
+          feedback("undone");
+          txt.textContent = drafts.length ? (en ? "This undo needs a check below." : "Cette annulation demande une vérification ci-dessous.") : toneLine("undone", ids.join(), en ? "Undone." : "Annulé.");
+          if (usualMark) usualMark.remove();
+          if (drafts.length) showDraft(drafts, { undo: true });
+          toastTimer = win.setTimeout(hideToast, 2500);
+        }).catch((r) => {
+          undo.disabled = false;
+          txt.textContent = (r && r.data && r.data.error) || (en ? "Undo failed." : "Annulation impossible.");
+        }).finally(() => { if (undone) inventoryChanged(); });
+      });
+      toastBox.append(ico("check", "hq-inventoria-toast-ico"), txt);
+      if (usualMark) toastBox.appendChild(usualMark);
+      toastBox.appendChild(undo);
+      toastBox.hidden = false;
+      toastTimer = win.setTimeout(hideToast, TOAST_MS);
+      if (!(opts && opts.quiet)) showLine(toneLine("applied_line", list[0].operation_id, en ? "Done. The stock is updated." : "C'est noté. Le stock est à jour."));
+      feedback("applied");
+      inventoryChanged();
+    };
+    // Any route answer: drafts to review and/or changes already applied (with their Undo).
+    const handleTurnResult = (d, opts) => {
+      const ops = (d && (d.operations || (d.operation ? [d.operation] : []))) || [];
+      if (ops.length) showDraft(ops);
+      if (d && d.applied && d.applied.length) showApplied(d.applied, opts);
+    };
+    const failNote = (r, fallback) => { feedback("error"); showNotice((r && r.data && r.data.error) || fallback, [{ label: "OK", icon: "x" }]); };
+    const quickAdjust = (itemId, delta, label) => {
+      showSaving();
+      return oneTap("quick", { item_id: itemId, delta }, label || ((delta > 0 ? "+" : "") + delta))
+        .then((r) => {
+          if (r.queued) { showQueuedNote(); return; }
+          if (!r.ok || !r.data) throw r;
+          chatTouched = true;
+          if (!(r.data.applied && r.data.applied.length)) hideToast();
+          handleTurnResult(r.data);
+        })
+        .catch((r) => { hideToast(); failNote(r, uiLang === "en" ? "Could not log it." : "Impossible de l'enregistrer."); });
+    };
+    const copyText = (text, note) => {
+      const done = (ok) => { note.textContent = ok ? "Copié." : "Sélectionne le texte puis copie-le."; };
+      if (win.navigator.clipboard && win.navigator.clipboard.writeText) win.navigator.clipboard.writeText(text).then(() => done(true), () => done(false));
+      else done(false);
+    };
+    let invCache = null, invCacheAt = 0;
+    const loadInventory = () => (invCache && Date.now() - invCacheAt < 15000 ? Promise.resolve(invCache)
+      : getJson("/api/inventory").then((r) => {
+        if (!r.ok || !r.data || !Array.isArray(r.data.items)) throw r;
+        invCache = r.data; invCacheAt = Date.now();
+        return invCache;
+      }));
+    win.addEventListener("hq:inventory-changed", () => { invCache = null; });
+
+    // --- Réglages: "Saisie rapide" (auto-apply, nicknames, iPhone Shortcut, QR labels)
+    const fastBox = doc.createElement("details");
+    fastBox.className = "hq-inventoria-fast";
+    fastBox.open = true;
+    const fastSum = doc.createElement("summary");
+    fastSum.textContent = "Saisie rapide";
+    decorate(fastSum, "bolt");
+    const autoLab = doc.createElement("label");
+    const autoBox = doc.createElement("input");
+    autoBox.type = "checkbox";
+    autoLab.append(autoBox, doc.createTextNode(" Appliquer tout de suite les changements de quantité simples"));
+    const autoNote = doc.createElement("p");
+    autoNote.className = "hq-inventoria-copy-note";
+    autoNote.textContent = "« −1 lait », une ligne de ticket connue, une case cochée : appliqué aussitôt, avec 10 s pour annuler. "
+      + "Créer, déplacer ou modifier un article, ou tout cas douteux, reste à confirmer.";
+    autoBox.addEventListener("change", () => {
+      jsonPost("/api/inventoria/prefs", { auto_apply: autoBox.checked })
+        .then((r) => { autoNote.dataset.saved = r.ok ? "1" : "0"; if (!r.ok) { autoBox.checked = !autoBox.checked; failNote(r, "Réglage non enregistré."); } })
+        .catch(() => { autoBox.checked = !autoBox.checked; });
+    });
+    const aliasTitle = doc.createElement("p");
+    aliasTitle.className = "hq-inventoria-fast-title";
+    aliasTitle.textContent = "Surnoms";
+    const aliasList = doc.createElement("ul");
+    aliasList.className = "hq-inventoria-alias-list";
+    const aliasHint = doc.createElement("p");
+    aliasHint.className = "hq-inventoria-copy-note";
+    aliasHint.textContent = "Dis-lui « PQ, c'est le papier toilette » et elle s'en souviendra.";
+    const shortcutTitle = doc.createElement("p");
+    shortcutTitle.className = "hq-inventoria-fast-title";
+    shortcutTitle.textContent = "Raccourci iPhone (Siri, bouton Action)";
+    const shortcutUrl = doc.createElement("input");
+    shortcutUrl.type = "text"; shortcutUrl.readOnly = true; shortcutUrl.className = "hq-inventoria-shortcut-url";
+    shortcutUrl.value = win.location.origin + "/#inventoria-say=";
+    shortcutUrl.setAttribute("aria-label", "Lien du raccourci");
+    const shortcutCopy = doc.createElement("button");
+    shortcutCopy.type = "button"; shortcutCopy.textContent = "Copier le lien";
+    decorate(shortcutCopy, "note");
+    const shortcutNote = doc.createElement("p");
+    shortcutNote.className = "hq-inventoria-copy-note";
+    shortcutNote.textContent = "Dans Raccourcis : « Dicter le texte », puis « URL » avec ce lien suivi du texte dicté, puis « Ouvrir les URL ». "
+      + "Donne-lui un nom (« Inventoria ») pour Siri, ou mets-le sur le bouton Action. Safari doit être connecté à HQ.";
+    shortcutCopy.addEventListener("click", () => copyText(shortcutUrl.value, shortcutNote));
+    const qrBtn = doc.createElement("button");
+    qrBtn.type = "button"; qrBtn.textContent = "Imprimer les étiquettes QR des emplacements";
+    decorate(qrBtn, "qr");
+    const qrNote = doc.createElement("p");
+    qrNote.className = "hq-inventoria-copy-note";
+    qrNote.textContent = "Colle une étiquette sur chaque tablette ou bac : l'appareil photo de l'iPhone l'ouvre directement dans Inventoria.";
+    const hapticLab = doc.createElement("label");
+    const hapticBox = doc.createElement("input");
+    hapticBox.type = "checkbox"; hapticBox.checked = hapticsOn();
+    hapticLab.append(hapticBox, doc.createTextNode(" Vibration quand un changement est appliqué"));
+    hapticBox.addEventListener("change", () => { lsSet("hq_inventoria_haptics", hapticBox.checked ? "1" : "0"); if (hapticBox.checked) feedback("applied"); });
+    fastBox.append(fastSum, autoLab, autoNote, hapticLab, aliasTitle, aliasList, aliasHint);
+    const linkBox = doc.createElement("details");
+    linkBox.className = "hq-inventoria-fast hq-inventoria-linkbox";
+    const linkSum = doc.createElement("summary");
+    linkSum.textContent = "Raccourci iPhone et étiquettes QR";
+    decorate(linkSum, "qr");
+    shortcutTitle.hidden = true;                      // the section title already says it
+    linkBox.append(linkSum, shortcutTitle, shortcutUrl, shortcutCopy, shortcutNote, qrBtn, qrNote);
+    paneSet.insertBefore(fastBox, paneSet.firstChild);
+    paneSet.insertBefore(linkBox, fastBox.nextSibling);
+    // --- Réglages: "Discrétion" (quiet hours, a daily cap and a pause for what Inventoria may push)
+    const quietBox = doc.createElement("details");
+    quietBox.className = "hq-inventoria-fast hq-inventoria-quietbox";
+    const quietSum = doc.createElement("summary");
+    quietSum.textContent = "Discrétion";
+    decorate(quietSum, "clock");
+    const numField = (label, hi) => {
+      const lab = doc.createElement("label");
+      const inp = doc.createElement("input");
+      inp.type = "number"; inp.min = "0"; inp.max = String(hi); inp.step = "1"; inp.className = "hq-inventoria-quiet-num";
+      lab.append(doc.createTextNode(label + " "), inp);
+      return [lab, inp];
+    };
+    const [capLab, capIn] = numField("Alertes max par jour", 20);
+    const [qsLab, qsIn] = numField("Silence de (h)", 23);
+    const [qeLab, qeIn] = numField("jusqu'à (h)", 23);
+    const quietNote = doc.createElement("p");
+    quietNote.className = "hq-inventoria-copy-note";
+    quietNote.textContent = "Au-delà, ou la nuit, les alertes attendent. Le résumé du matin reste un seul message.";
+    const quietStatus = doc.createElement("p");
+    quietStatus.className = "hq-inventoria-copy-note hq-inventoria-quiet-status";
+    const quietRow = doc.createElement("div");
+    quietRow.className = "hq-inventoria-draft-actions";
+    const snoozeBtn = (label, days) => {
+      const b = doc.createElement("button");
+      b.type = "button"; b.textContent = label;
+      b.addEventListener("click", () => saveAsks({ snooze_days: days }));
+      return b;
+    };
+    quietRow.append(snoozeBtn("Pause 1 jour", 1), snoozeBtn("Pause 1 semaine", 7), snoozeBtn("Reprendre", 0));
+    const renderAsks = (asks) => {
+      if (!asks) return;
+      capIn.value = String(asks.max_per_day); qsIn.value = String(asks.quiet_start); qeIn.value = String(asks.quiet_end);
+      const en = uiLang === "en";
+      quietStatus.textContent = asks.snoozed
+        ? (en ? "Paused until " : "En pause jusqu'au ") + new Date(asks.snooze_until * 1000).toLocaleDateString(en ? "en-CA" : "fr-CA", { month: "short", day: "numeric" })
+        : "";
+      quietStatus.hidden = !asks.snoozed;
+    };
+    const saveAsks = (extra) => jsonPost("/api/inventoria/prefs", { asks: Object.assign({
+      max_per_day: parseInt(capIn.value, 10), quiet_start: parseInt(qsIn.value, 10), quiet_end: parseInt(qeIn.value, 10) }, extra || {}) })
+      .then((r) => { if (r.ok && r.data) renderAsks(r.data.asks); else failNote(r, "Réglage non enregistré."); })
+      .catch(() => failNote(null, "Réglage non enregistré."));
+    [capIn, qsIn, qeIn].forEach((inp) => inp.addEventListener("change", () => saveAsks()));
+    quietBox.append(quietSum, capLab, qsLab, qeLab, quietNote, quietStatus, quietRow);
+    paneSet.insertBefore(quietBox, linkBox.nextSibling);
+    // Settings accordion: opening a section closes the others, so the tab stays one screen long.
+    const SECTIONS = [fastBox, linkBox, quietBox, watchBox, notifyBox, photoSet, memoryBox];
+    SECTIONS.forEach((d) => d.addEventListener("toggle", () => { if (d.open) SECTIONS.forEach((o) => { if (o !== d && o.open) o.open = false; }); }));
+    SECTIONS.forEach((d) => { d.open = d === fastBox; });
+    const renderFast = (prefs, aliases) => {
+      if (prefs) autoBox.checked = !!prefs.auto_apply;
+      aliasList.replaceChildren();
+      (aliases || []).forEach((a) => {
+        const li = doc.createElement("li");
+        const t = doc.createElement("span");
+        t.textContent = a.alias + " → " + (a.item_name || "?");
+        const x = doc.createElement("button");
+        x.type = "button"; x.textContent = "Oublier"; x.setAttribute("aria-label", "Oublier le surnom " + a.alias);
+        decorate(x, "x", true);
+        x.addEventListener("click", () => {
+          x.disabled = true;
+          jsonPost("/api/inventoria/alias", { action: "remove", alias: a.alias })
+            .then((r) => { if (r.ok) renderFast(null, r.data.aliases || []); else { x.disabled = false; failNote(r, "Impossible d'oublier ce surnom."); } })
+            .catch(() => { x.disabled = false; });
+        });
+        li.append(t, x);
+        aliasList.appendChild(li);
+      });
+      aliasList.hidden = !(aliases || []).length;
+    };
+    const placeLink = (pl) => win.location.origin + "/#inventoria-place=" + encodeURIComponent(pl.code || pl.id);
+    const printLabels = () => {
+      if (!win.QRCode) { qrNote.textContent = "Générateur QR indisponible sur cette page."; return; }
+      qrBtn.disabled = true;
+      loadInventory().then((inv) => {
+        const places = (inv.places || []).slice().sort((a, b) => String(a.name).localeCompare(String(b.name), "fr"));
+        if (!places.length) { qrNote.textContent = "Aucun emplacement pour l'instant."; return; }
+        const scratch = doc.createElement("div");
+        scratch.style.cssText = "position:absolute;left:-9999px;top:0";
+        doc.body.appendChild(scratch);
+        const cells = places.map((pl) => {
+          const box = doc.createElement("div");
+          scratch.appendChild(box);
+          new win.QRCode(box, { text: placeLink(pl), width: 256, height: 256, correctLevel: win.QRCode.CorrectLevel ? win.QRCode.CorrectLevel.M : undefined });
+          const canvas = box.querySelector("canvas");
+          const img = box.querySelector("img");
+          const src = canvas ? canvas.toDataURL("image/png") : (img ? img.src : "");
+          return { name: String(pl.name || ""), code: String(pl.code || ""), src };
+        });
+        scratch.remove();
+        const w = win.open("", "_blank");
+        if (!w) { qrNote.textContent = "Autorise les fenêtres pour imprimer les étiquettes."; return; }
+        const d = w.document;
+        d.title = "Étiquettes Inventoria";
+        const style = d.createElement("style");
+        style.textContent = "body{font:13px system-ui,sans-serif;margin:12mm}.g{display:grid;grid-template-columns:repeat(3,1fr);gap:8mm}"
+          + ".c{border:1px dashed #999;padding:4mm;text-align:center;break-inside:avoid}.c img{width:38mm;height:38mm}"
+          + ".n{font-weight:600;margin-top:2mm}.k{color:#555;font-size:13px}";
+        d.head.appendChild(style);
+        const grid = d.createElement("div");
+        grid.className = "g";
+        cells.forEach((c) => {
+          const cell = d.createElement("div"); cell.className = "c";
+          const im = d.createElement("img"); im.src = c.src; im.alt = "";
+          const n = d.createElement("div"); n.className = "n"; n.textContent = c.name;
+          const k = d.createElement("div"); k.className = "k"; k.textContent = c.code;
+          cell.append(im, n, k);
+          grid.appendChild(cell);
+        });
+        d.body.appendChild(grid);
+        w.setTimeout(() => { try { w.focus(); w.print(); } catch (_) {} }, 300);
+        qrNote.textContent = places.length + " étiquette(s) prête(s) à imprimer.";
+      }).catch(() => { qrNote.textContent = "Impossible de lire les emplacements."; }).finally(() => { qrBtn.disabled = false; });
+    };
+    qrBtn.addEventListener("click", printLabels);
+
+    // --- deep links: #inventoria-say=<text> (Shortcut/Siri), #inventoria-place=<code> (QR label), #inventoria-low=<item id> (notification)
+    const showPlace = (key) => loadInventory().then((inv) => {
+      const k = String(key || "").trim().toUpperCase();
+      const pl = (inv.places || []).find((p) => String(p.code || "").toUpperCase() === k || p.id === key);
+      if (!pl) { failNote(null, "Emplacement introuvable (" + key + ")."); return; }
+      const inside = (inv.items || []).filter((i) => i.place === pl.id);
+      const preview = inside.slice(0, 6).map((i) => i.name + " (" + i.qty + ")").join(", ");
+      const en = uiLang === "en";
+      showNotice((en ? "Place: " : "Emplacement : ") + pl.name + " — " + inside.length + (en ? " item(s)" : " article(s)") + (preview ? " : " + preview + (inside.length > 6 ? "…" : "") : ""), [
+        { label: en ? "Count by photo" : "Compter par photo", icon: "camera", primary: true, fn: () => {
+          chatInput.value = (en ? "This is " : "Voici ") + pl.name + (en ? ": count what is in it." : " : compte ce qui s'y trouve.");
+          if (lsGet(PHOTO_OK) === "1") photoInput.click(); else showPhotoConsent();
+        } },
+        { label: en ? "Add here" : "Ajouter ici", icon: "plus", fn: () => { selectTab("chat"); chatInput.value = (en ? "Add to " : "Ajoute dans ") + pl.name + " : "; chatInput.focus(); } },
+        { label: en ? "What's in it?" : "Qu'y a-t-il ?", icon: "box", fn: () => sendToChat((en ? "What is in " : "Qu'est-ce qu'il y a dans ") + pl.name + " ?") },
+      ]);
+    }).catch((r) => failNote(r, "Inventaire indisponible."));
+    const showLow = (itemId) => loadInventory().then((inv) => {
+      const it = (inv.items || []).find((i) => i.id === itemId);
+      if (!it) { failNote(null, "Article introuvable."); return; }
+      const shop = lastShopping && lastShopping.all && (lastShopping.all.items || []).find((s) => s.id === itemId);
+      const buy = shop ? shop.buy : Math.max(1, (it.min || 1) - (it.qty || 0));
+      const en = uiLang === "en";
+      showNotice(it.name + (en ? " is low (" : " est bas (") + it.qty + (it.unit ? " " + it.unit : "") + (en ? "). Add it to the grocery list?" : "). L'ajouter à la liste de courses ?"), [
+        { label: (en ? "Add to list (" : "Ajouter à la liste (") + buy + ")", icon: "cart", primary: true, fn: () => {
+          jsonPost("/api/inventoria/to-grocery", { lines: [{ name: it.name, qty: buy, unit: it.unit || "", store: (shop && shop.store) || "" }] })
+            .then((r) => { if (!r.ok) throw r; showLine(en ? "Added to your grocery list." : "Ajouté à ta liste de courses."); })
+            .catch((r) => failNote(r, "Ajout impossible."));
+        } },
+        { label: en ? "Ignore" : "Ignorer", icon: "x" },
+      ]);
+    }).catch((r) => failNote(r, "Inventaire indisponible."));
+    const handleHash = () => {
+      const h = String(win.location.hash || "");
+      const m = /^#inventoria-(say|place|low|open|shop)(?:=(.*))?$/.exec(h);
+      if (!m) return false;
+      let val = "";
+      try { val = decodeURIComponent((m[2] || "").replace(/\+/g, " ")).trim().slice(0, 1000); } catch (_) { val = ""; }
+      // The text never stays in the address bar or the history.
+      try { win.history.replaceState(null, "", win.location.pathname + win.location.search); } catch (_) {}
+      setChipVisible(true); setOpen(true); selectTab(m[1] === "shop" ? "shop" : "chat");
+      if (m[1] === "say" && val) { if (!askWhere(val)) runChat(val); }
+      else if (m[1] === "shop") selectTab("shop");
+      else if (m[1] === "place" && val) showPlace(val);
+      else if (m[1] === "low" && val) showLow(val);
+      return true;
+    };
+    win.addEventListener("hashchange", handleHash);
+
+    // --- barcode scan: link a product code to an item once, then each scan is a one-tap -/+
+    let zxingLoad = null;
+    const loadZxing = () => {
+      if (win.ZXing) return Promise.resolve(win.ZXing);
+      if (!zxingLoad) {
+        zxingLoad = new Promise((resolve, reject) => {
+          const s = doc.createElement("script");
+          s.src = "/assets/vendor-zxing.min.js";
+          s.onload = () => (win.ZXing ? resolve(win.ZXing) : reject(new Error("ZXing absent")));
+          s.onerror = () => { zxingLoad = null; reject(new Error("décodeur indisponible")); };
+          doc.head.appendChild(s);
+        });
+      }
+      return zxingLoad;
+    };
+    const scanBox = doc.createElement("div");
+    scanBox.className = "hq-inventoria-scan";
+    scanBox.hidden = true;
+    paneChat.insertBefore(scanBox, chatForm);
+    let scanReader = null;
+    const stopScan = () => {
+      try { if (scanReader) scanReader.reset(); } catch (_) {}
+      scanReader = null;
+      scanBox.hidden = true;
+      scanBox.replaceChildren();
+    };
+    const scanFile = doc.createElement("input");
+    scanFile.type = "file"; scanFile.accept = "image/*"; scanFile.hidden = true;
+    scanFile.setAttribute("capture", "environment");
+    chatForm.appendChild(scanFile);
+    const onCode = (code) => {
+      stopScan();
+      jsonPost("/api/inventoria/barcode", { action: "lookup", code }).then((r) => {
+        if (!r.ok || !r.data) throw r;
+        if (r.data.item) showScanned(r.data.item, r.data.usual || {});
+        else showLinkCard(r.data.code);
+      }).catch((r) => failNote(r, "Code illisible."));
+    };
+    const showScanned = (it, usual) => {
+      const en = uiLang === "en";
+      const use = usual.use || 1, add = usual.add || 1;
+      showNotice(it.name + " (" + it.qty + (it.unit ? " " + it.unit : "") + ")", [
+        { label: "−" + use, icon: "minus", primary: true, fn: () => quickAdjust(it.id, -use, it.name + " −" + use) },
+        { label: "+" + add, icon: "plus", fn: () => quickAdjust(it.id, add, it.name + " +" + add) },
+        { label: en ? "Sheet" : "Fiche", icon: "note", fn: () => openItemSheet(it.id) },
+        { label: en ? "Other…" : "Autre…", icon: "chat", fn: () => { selectTab("chat"); chatInput.value = (en ? "Adjust " : "Ajuste ") + it.name + (en ? " by " : " de "); chatInput.focus(); } },
+      ]);
+    };
+    const showLinkCard = (code) => loadInventory().then((inv) => {
+      const en = uiLang === "en";
+      noticeBox.replaceChildren();
+      noticeBox.hidden = false;
+      const p = doc.createElement("p");
+      p.className = "hq-inventoria-draft-title";
+      p.textContent = (en ? "New barcode " : "Nouveau code-barres ") + code + (en ? ": which item is it?" : " : c'est quel article ?");
+      const listId = "hq-inv-scan-items";
+      const input = doc.createElement("input");
+      input.type = "text"; input.className = "hq-inventoria-scan-pick"; input.setAttribute("list", listId);
+      input.placeholder = en ? "Item name" : "Nom de l'article";
+      const dl = doc.createElement("datalist");
+      dl.id = listId;
+      const items = (inv.items || []).slice().sort((a, b) => String(a.name).localeCompare(String(b.name), "fr"));
+      items.forEach((i) => { const o = doc.createElement("option"); o.value = i.name; dl.appendChild(o); });
+      const row = doc.createElement("div");
+      row.className = "hq-inventoria-draft-actions";
+      const link = doc.createElement("button");
+      link.type = "button"; link.className = "hq-inventoria-draft-apply"; link.textContent = en ? "Link" : "Lier";
+      decorate(link, "check");
+      const skip = doc.createElement("button");
+      skip.type = "button"; skip.textContent = en ? "Cancel" : "Annuler";
+      decorate(skip, "x");
+      const msg = doc.createElement("p");
+      msg.className = "hq-inventoria-draft-note";
+      link.addEventListener("click", () => {
+        const name = input.value.trim().toLowerCase();
+        const it = items.find((i) => String(i.name).toLowerCase() === name);
+        if (!it) { msg.textContent = en ? "Pick an existing item from the list." : "Choisis un article existant dans la liste."; return; }
+        link.disabled = true;
+        jsonPost("/api/inventoria/barcode", { action: "link", code, item_id: it.id }).then((r) => {
+          if (!r.ok || !r.data || !r.data.item) throw r;
+          clearNotice();
+          showScanned(r.data.item, r.data.usual || {});
+        }).catch((r) => { link.disabled = false; msg.textContent = (r && r.data && r.data.error) || "Lien impossible."; });
+      });
+      skip.addEventListener("click", clearNotice);
+      row.append(link, skip);
+      noticeBox.append(p, input, dl, msg, row);
+      try { input.focus(); } catch (_) {}
+    }).catch((r) => failNote(r, "Inventaire indisponible."));
+    scanFile.addEventListener("change", () => {
+      const f = scanFile.files && scanFile.files[0];
+      scanFile.value = "";
+      if (!f) return;
+      const url = win.URL.createObjectURL(f);
+      loadZxing().then((Z) => new Z.BrowserMultiFormatReader().decodeFromImageUrl(url))
+        .then((res) => onCode(res.getText()))
+        .catch(() => failNote(null, uiLang === "en" ? "No barcode found in that photo." : "Aucun code-barres lu sur cette photo."))
+        .finally(() => { try { win.URL.revokeObjectURL(url); } catch (_) {} });
+    });
+    const startScan = () => {
+      if (chatBusy) return;
+      selectTab("chat");
+      const live = !!(win.isSecureContext && win.navigator.mediaDevices && win.navigator.mediaDevices.getUserMedia);
+      if (!live) { scanFile.click(); return; }   // no camera stream here (plain http): a photo of the barcode works too
+      stopScan();
+      scanBox.hidden = false;
+      const video = doc.createElement("video");
+      video.setAttribute("playsinline", ""); video.muted = true;
+      const close = doc.createElement("button");
+      close.type = "button"; close.textContent = uiLang === "en" ? "Close" : "Fermer";
+      decorate(close, "x");
+      close.addEventListener("click", stopScan);
+      const photo = doc.createElement("button");
+      photo.type = "button"; photo.textContent = uiLang === "en" ? "Use a photo" : "Prendre une photo";
+      decorate(photo, "camera");
+      photo.addEventListener("click", () => { stopScan(); scanFile.click(); });
+      scanBox.append(video, close, photo);
+      loadZxing().then((Z) => {
+        scanReader = new Z.BrowserMultiFormatReader();
+        return scanReader.decodeFromConstraints({ video: { facingMode: "environment" } }, video, (res) => { if (res) onCode(res.getText()); });
+      }).catch(() => { stopScan(); scanFile.click(); });
+    };
+    // One camera button: a menu of "photo" and "scan" (just "scan" when photos are switched off).
+    const camBtn = doc.createElement("button");
+    camBtn.type = "button"; camBtn.className = "hq-inventoria-chat-photo hq-inventoria-chat-cam"; camBtn.textContent = "";
+    decorate(camBtn, "camera", true);
+    camBtn.setAttribute("aria-label", "Appareil photo : photo ou code-barres");
+    camBtn.setAttribute("aria-haspopup", "menu");
+    camBtn.setAttribute("aria-expanded", "false");
+    const camMenu = doc.createElement("div");
+    camMenu.className = "hq-inventoria-cammenu";
+    camMenu.setAttribute("role", "menu");
+    camMenu.hidden = true;
+    const closeCam = () => { camMenu.hidden = true; camBtn.setAttribute("aria-expanded", "false"); };
+    const camItem = (label, icon, fn) => {
+      const b = doc.createElement("button");
+      b.type = "button"; b.className = "hq-inventoria-cammenu-item"; b.textContent = label;
+      b.setAttribute("role", "menuitem");
+      decorate(b, icon);
+      b.addEventListener("click", () => { closeCam(); if (!chatBusy) fn(); });
+      return b;
+    };
+    const buildCamMenu = () => {
+      camMenu.replaceChildren();
+      const en = uiLang === "en";
+      camMenu.append(
+        camItem(en ? "Photo (receipt, shelf)" : "Photo (ticket, étagère)", "camera", () => photoBtn.click()),
+        camItem(en ? "Scan a barcode" : "Scanner un code-barres", "scan", startScan));
+    };
+    const camAction = () => {
+      if (chatBusy) return;
+      if (!photosOn()) { startScan(); return; }
+      if (!camMenu.hidden) { closeCam(); return; }
+      buildCamMenu();
+      camMenu.hidden = false;
+      camBtn.setAttribute("aria-expanded", "true");
+      const first = camMenu.firstElementChild;
+      if (first && first.focus) first.focus();
+    };
+    camBtn.addEventListener("click", camAction);
+    camMenu.addEventListener("keydown", (ev) => { if (ev.key === "Escape") { closeCam(); camBtn.focus(); } });
+    doc.addEventListener("click", (ev) => { if (!camMenu.hidden && ev.target !== camBtn && !(camBtn.contains && camBtn.contains(ev.target)) && !(camMenu.contains && camMenu.contains(ev.target))) closeCam(); });
+    chatForm.insertBefore(camBtn, chatSend);
+    paneChat.insertBefore(camMenu, chatForm);
+
+
+    // ---------------------------------------------------------------- what accurate stock makes possible
+    // "Where is X?" is answered from the stock at once (no model call); the shop tab shows what to use soon,
+    // this week's shelf to count and how accurate past counts were.
+    const WHERE_RE = /^(?:où\s+(?:est|sont|se\s+trouvent?|j'ai\s+mis|ai-je\s+mis)|where(?:'s|\s+is|\s+are|\s+did\s+i\s+put))\s+(?:donc\s+)?(?:le\s+|la\s+|les\s+|l'|mes\s+|mon\s+|ma\s+|my\s+|the\s+)?(.+?)\s*\??$/i;
+    const askWhere = (text) => {
+      const m = WHERE_RE.exec(String(text || "").trim());
+      if (!m || chatBusy || !m[1]) return false;
+      const q = m[1];
+      selectTab("chat");
+      appendThread("user", text);
+      chatTouched = true;
+      jsonPost("/api/inventoria/where", { q }).then((r) => {
+        const hits = (r.ok && r.data && r.data.matches) || [];
+        if (!hits.length) { runChatFallback(text); return; }
+        showWhere(hits);
+      }).catch(() => runChatFallback(text));
+      return true;
+    };
+    const runChatFallback = (text) => {
+      // Nothing matched by name: let Inventoria read the question (she can search notes, tags and places).
+      const last = threadLog.lastElementChild;
+      if (last) last.remove();
+      runChat(text);
+    };
+    const showWhere = (hits) => {
+      const en = uiLang === "en";
+      const top = hits[0];
+      const say = top.name + (top.where ? (en ? " is in " : " : ") + top.where : (en ? " has no place yet" : " n'a pas d'emplacement"))
+        + " (" + top.qty + (top.unit ? " " + top.unit : "") + ").";
+      appendThread("assistant", say);              // the answer lives in the thread; the card below only adds what the thread cannot show
+      showLine(say);
+      if (!top.photo && hits.length < 2) {
+        if (!top.id || !win.HqInventoria || !win.HqInventoria.openItem) {
+          clearNotice();
+          threadLog.scrollTop = threadLog.scrollHeight;   // the quick chips came back and shortened the log: keep the newest line in view
+          return;
+        }
+        showNotice(null, [{ label: en ? "Sheet" : "Fiche", icon: "note", primary: true, fn: () => openItemSheet(top.id) }, { label: "OK", icon: "check" }]);
+        threadLog.scrollTop = threadLog.scrollHeight;
+        return;
+      }
+      noticeBox.replaceChildren();
+      noticeBox.hidden = false;
+      const card = doc.createElement("div");
+      card.className = "hq-inventoria-where";
+      if (top.photo) {
+        const fig = doc.createElement("figure");
+        fig.className = "hq-inventoria-where-fig";
+        const img = doc.createElement("img");
+        img.className = "hq-inventoria-where-photo";
+        img.src = "/api/carnet/asset/" + encodeURIComponent(top.photo);
+        img.alt = top.photo_of === "place" ? (en ? "Photo of the place" : "Photo de l'emplacement") : (en ? "Photo of the item" : "Photo de l'article");
+        img.loading = "lazy";
+        const cap = doc.createElement("figcaption");
+        cap.textContent = top.where || top.name;
+        fig.append(img, cap);
+        card.appendChild(fig);
+      }
+      if (hits.length > 1) {
+        const more = doc.createElement("p");
+        more.className = "hq-inventoria-where-more";
+        more.textContent = (en ? "Also: " : "Aussi : ") + hits.slice(1).map((h) => h.name + (h.where ? " (" + h.where + ")" : "")).join(", ");
+        card.appendChild(more);
+      }
+      const row = doc.createElement("div");
+      row.className = "hq-inventoria-draft-actions";
+      if (top.id && win.HqInventoria && win.HqInventoria.openItem) {
+        const sheet = doc.createElement("button");
+        sheet.type = "button"; sheet.textContent = en ? "Sheet" : "Fiche";
+        decorate(sheet, "note");
+        sheet.addEventListener("click", () => { clearNotice(); openItemSheet(top.id); });
+        row.appendChild(sheet);
+      }
+      const ok = doc.createElement("button");
+      ok.type = "button"; ok.textContent = "OK";
+      decorate(ok, "check");
+      ok.addEventListener("click", clearNotice);
+      row.appendChild(ok);
+      card.appendChild(row);
+      noticeBox.appendChild(card);
+    };
+    const insightBox = doc.createElement("details");
+    insightBox.className = "hq-inventoria-insights";
+    paneShop.appendChild(insightBox);                       // the shopping list comes first; this is a collapsible strip below it
+    const insightSum = decorate(doc.createElement("summary"), "eye");
+    const renderInsights = (data) => {
+      insightBox.replaceChildren();
+      const en = uiLang === "en";
+      const nSoon = ((data && data.use_soon) || []).length;
+      const due = ((data && data.use_soon) || []).some((r) => r.days_left <= 0);
+      const bits = [];
+      if (nSoon) bits.push((en ? "Use soon: " : "À utiliser : ") + nSoon);
+      if (data && data.spot_check) bits.push((en ? "Count " : "Compter ") + data.spot_check.name);
+      if (data && data.accuracy) bits.push((en ? "Accuracy " : "Fiabilité ") + data.accuracy.accurate_pct + " %");
+      insightSum.textContent = bits.join(" · ");      // decorated once below: this only changes the label (decorating again stacked an icon per refresh)
+      insightSum.classList.toggle("is-due", due);
+      insightBox.appendChild(insightSum);
+      if (due && !insightBox.dataset.touched) insightBox.open = true;
+      const soon = (data && data.use_soon) || [];
+      if (soon.length) {
+        const t = decorate(doc.createElement("p"), "clock");
+        t.className = "hq-inventoria-fast-title";
+        t.textContent = en ? "Use soon" : "À utiliser bientôt";
+        const ul = doc.createElement("ul");
+        ul.className = "hq-inventoria-soon";
+        soon.forEach((r) => {
+          const li = doc.createElement("li");
+          const d = r.days_left;
+          li.textContent = r.name + " — " + (d < 0 ? (en ? "expired" : "périmé") : d === 0 ? (en ? "today" : "aujourd'hui")
+            : (en ? "in " + d + " d" : "dans " + d + " j"));
+          if (r.item_id) openSheetOn(li, r.item_id);
+          if (d <= 0) li.classList.add("is-due");
+          ul.appendChild(li);
+        });
+        const ideas = doc.createElement("button");
+        ideas.type = "button"; ideas.textContent = en ? "Meal ideas with these" : "Idées de repas avec ça";
+        decorate(ideas, "sparkle");
+        ideas.addEventListener("click", () => sendToChat(en ? "What can I cook with what expires soon?" : "Qu'est-ce que je peux cuisiner avec ce qui expire bientôt ?"));
+        insightBox.append(t, ul, ideas);
+      }
+      const spot = data && data.spot_check;
+      if (spot) {
+        const t = decorate(doc.createElement("p"), "eye");
+        t.className = "hq-inventoria-fast-title";
+        t.textContent = en ? "This week's check" : "Vérification de la semaine";
+        const p = doc.createElement("p");
+        p.className = "hq-inventoria-copy-note";
+        p.textContent = (en ? "Count " : "Compte ") + spot.name + " (" + spot.items + (en ? " items" : " articles") + ")"
+          + (spot.days_since == null ? (en ? ": never counted." : " : jamais compté.") : (en ? ", last counted " + spot.days_since + " days ago." : ", dernier compte il y a " + spot.days_since + " j."));
+        const go = doc.createElement("button");
+        go.type = "button"; go.textContent = en ? "Count by photo" : "Compter par photo";
+        decorate(go, "camera");
+        go.addEventListener("click", () => {
+          selectTab("chat");
+          chatInput.value = (en ? "This is " : "Voici ") + spot.name + (en ? ": count what is in it." : " : compte ce qui s'y trouve.");
+          if (lsGet(PHOTO_OK) === "1") photoInput.click(); else showPhotoConsent();
+        });
+        const later = doc.createElement("button");
+        later.type = "button"; later.textContent = en ? "Not today" : "Pas aujourd'hui";
+        later.addEventListener("click", () => {
+          later.disabled = true;
+          jsonPost("/api/inventoria/prefs", { asks: { spot_snooze_days: 1 } }).then(() => refreshStatus({ force: true })).catch(() => { later.disabled = false; });
+        });
+        insightBox.append(t, p, go, later);
+      }
+      const acc = data && data.accuracy;
+      if (acc) {
+        const p = doc.createElement("p");
+        p.className = "hq-inventoria-copy-note hq-inventoria-accuracy";
+        p.textContent = (en ? "Stock accuracy: " : "Fiabilité du stock : ") + acc.accurate_pct + (en ? "% right (" : " % juste (")
+          + acc.checked + (en ? " items counted in " : " articles comptés en ") + acc.window_days + (en ? " days)." : " j).");
+        insightBox.appendChild(p);
+      }
+      insightBox.hidden = !bits.length;
+    };
+    insightBox.addEventListener("toggle", () => { insightBox.dataset.touched = "1"; });
+
+    // ---------------------------------------------------------------- connection: changes made offline wait and are sent once
+    // quick adjusts, ticked purchases and typed sentences are kept in localStorage; each carries a client id, so a retry whose first
+    // attempt actually reached the server is recognised there and never applied twice (hq_inventoria_dedupe).
+    const QUEUE_KEY = "hq_inventoria_queue_v1";
+    const TAP_ROUTES = { quick: "/api/inventoria/quick", purchased: "/api/inventoria/purchased", cooked: "/api/inventoria/cooked" };
+    let offlineFlag = false, flushing = false;
+    const isOnline = () => !offlineFlag && win.navigator.onLine !== false;
+    const isNetErr = (e) => !!e && !e.status && (e instanceof TypeError || e.name === "TypeError" || /network|failed to fetch|load failed/i.test(String(e.message || "")));
+    const newCid = () => "cid-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+    const readQueue = () => {
+      try { const q = JSON.parse(win.localStorage.getItem(QUEUE_KEY) || "[]"); return Array.isArray(q) ? q.filter((x) => x && x.cid && x.kind) : []; } catch (_) { return []; }
+    };
+    const offlineBox = doc.createElement("div");
+    offlineBox.className = "hq-inventoria-offline";
+    offlineBox.setAttribute("role", "status");
+    offlineBox.hidden = true;
+    bubble.insertBefore(offlineBox, tabsEl);
+    const writeQueue = (q) => { try { win.localStorage.setItem(QUEUE_KEY, JSON.stringify(q.slice(-50))); } catch (_) {} renderQueue(); };
+    function renderQueue() {
+      const q = readQueue();
+      const en = uiLang === "en";
+      offlineBox.replaceChildren();
+      const offline = !isOnline();
+      offlineBox.hidden = !(offline || q.length);
+      if (offlineBox.hidden) return;
+      const head = doc.createElement("div");
+      head.className = "hq-inventoria-offline-head";
+      const msg = doc.createElement("span");
+      msg.textContent = (offline ? (en ? "Offline" : "Hors ligne") : (en ? "Waiting to send" : "En attente d'envoi")) + (q.length ? " — " + q.length + (en ? " waiting" : " en attente") : "");
+      head.append(ico(offline ? "alert" : "clock", "hq-inventoria-offline-ico"), msg);
+      if (q.length) {
+        const retry = doc.createElement("button");
+        retry.type = "button"; retry.textContent = en ? "Retry" : "Réessayer";
+        decorate(retry, "send");
+        retry.addEventListener("click", () => { offlineFlag = false; flushQueue(); });
+        head.appendChild(retry);
+      }
+      offlineBox.appendChild(head);
+      if (q.length) {
+        const ul = doc.createElement("ul");
+        ul.className = "hq-inventoria-offline-list";
+        q.forEach((it) => {
+          const li = doc.createElement("li");
+          const t = doc.createElement("span");
+          t.textContent = it.label + (it.error ? " — " + it.error : "");
+          if (it.error) li.classList.add("is-failed");
+          const x = doc.createElement("button");
+          x.type = "button"; x.textContent = en ? "Discard" : "Oublier";
+          x.setAttribute("aria-label", (en ? "Discard: " : "Oublier : ") + it.label);
+          decorate(x, "x", true);
+          x.addEventListener("click", () => writeQueue(readQueue().filter((y) => y.cid !== it.cid)));
+          li.append(t, x);
+          ul.appendChild(li);
+        });
+        offlineBox.appendChild(ul);
+      }
+    }
+    function enqueue(kind, body, label, cid) {
+      writeQueue(readQueue().concat([{ cid, kind, body, label: String(label || kind).slice(0, 80), at: Date.now() }]));
+      feedback("queued");
+    }
+    const sendTap = (kind, body, cid) => {
+      const post = (sid) => jsonPost(TAP_ROUTES[kind], Object.assign({ session_id: sid, client_id: cid }, body));
+      return ensureSession(false).then(post)
+        .then((r) => (r.status === 404 && !(r.data && /article/.test(r.data.error || "")) ? ensureSession(true).then(post) : r));
+    };
+    function oneTap(kind, body, label) {
+      const cid = newCid();
+      if (!isOnline()) { enqueue(kind, body, label, cid); return Promise.resolve({ queued: true }); }
+      return sendTap(kind, body, cid).then((r) => { offlineFlag = false; renderQueue(); return r; }).catch((e) => {
+        if (isNetErr(e)) { offlineFlag = true; enqueue(kind, body, label, cid); return { queued: true }; }
+        throw e;
+      });
+    }
+    // The first request right after the signal returns can still fail: try again shortly instead of waiting for the slow timer.
+    let flushRetry = 0, flushRetries = 0;
+    function retryFlushSoon() {
+      if (flushRetry || flushRetries >= 4) return;
+      flushRetries++;
+      flushRetry = win.setTimeout(() => { flushRetry = 0; offlineFlag = false; flushQueue(); }, 3000);
+    }
+    function flushQueue() {
+      if (flushing || !isOnline()) { renderQueue(); return Promise.resolve(); }
+      const q = readQueue().filter((x) => !x.error);
+      if (!q.length) { renderQueue(); return Promise.resolve(); }
+      flushing = true;
+      const sent = [], applied = [], drafts = [], failed = {};
+      let say = null;
+      const step = (i) => {
+        if (i >= q.length) return Promise.resolve();
+        const it = q[i];
+        if (it.kind === "say") { if (!say && !chatBusy) say = it; return step(i + 1); }   // one sentence per round, once the chat is free
+        return sendTap(it.kind, it.body, it.cid).then((r) => {
+          if (r.ok && r.data) {
+            sent.push(it.cid);
+            (r.data.applied || []).forEach((a) => applied.push(a));
+            (r.data.operations || (r.data.operation ? [r.data.operation] : [])).forEach((o) => drafts.push(o));
+          } else failed[it.cid] = (r.data && r.data.error) || (uiLang === "en" ? "refused" : "refusé");
+          return step(i + 1);
+        });
+      };
+      return step(0).catch((e) => { if (isNetErr(e)) { offlineFlag = true; retryFlushSoon(); } }).then(() => {
+        flushing = false;
+        if (say) sent.push(say.cid);
+        writeQueue(readQueue().filter((x) => !sent.includes(x.cid)).map((x) => (failed[x.cid] ? Object.assign({}, x, { error: failed[x.cid] }) : x)));
+        if (sent.length) flushRetries = 0;
+        if (applied.length) showApplied(applied);
+        if (drafts.length) showDraft(drafts);
+        if (say) { selectTab("chat"); runChat(say.body.text); }
+        inventoryChanged();
+      });
+    }
+    win.addEventListener("online", () => { offlineFlag = false; flushQueue(); });
+    win.addEventListener("offline", () => { offlineFlag = true; renderQueue(); });
+    win.setInterval(() => { if (readQueue().length && !win.document.hidden) flushQueue(); }, 30000);
+
+    // ---------------------------------------------------------------- feedback: a short vibration and the assistant's own sound
+    function hapticsOn() { return lsGet("hq_inventoria_haptics") !== "0"; }
+    const HAPTIC = { applied: 14, undone: [8, 40, 8], error: [30, 60, 30], queued: 20 };
+    let hapticSwitch = null;
+    function feedback(kind) {
+      try { if (kind === "applied" || kind === "undone") sfx("done"); else if (kind === "error") sfx("error"); } catch (_) {}
+      if (!hapticsOn()) return;
+      try {
+        if (win.navigator && typeof win.navigator.vibrate === "function") { win.navigator.vibrate(HAPTIC[kind] || 10); return; }
+        // iPhone Safari has no vibrate(): flipping a hidden native switch gives a light tap on iOS 17.4+ (silently nothing elsewhere)
+        if (!hapticSwitch) {
+          hapticSwitch = doc.createElement("label");
+          hapticSwitch.className = "hq-inventoria-haptic";
+          hapticSwitch.setAttribute("aria-hidden", "true");
+          const cb = doc.createElement("input");
+          cb.type = "checkbox"; cb.setAttribute("switch", ""); cb.tabIndex = -1;
+          hapticSwitch.appendChild(cb);
+          root.appendChild(hapticSwitch);
+        }
+        hapticSwitch.click();
+      } catch (_) {}
+    }
+
+    // ---------------------------------------------------------------- language: the panel's own words follow the same setting as her replies
+    let i18nObs = null;
+    function syncLang() {
+      const I = win.HqInventoriaI18n;
+      if (!I) return;
+      try { I.apply(root, uiLang); } catch (_) {}
+      if (!i18nObs && typeof win.MutationObserver === "function") {
+        i18nObs = new win.MutationObserver((muts) => { try { I.onMutations(muts, uiLang); } catch (_) {} });
+        i18nObs.observe(root, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ["placeholder", "aria-label", "title", "alt"] });
+      }
+      renderQueue();
+    }
+
+    // ---------------------------------------------------------------- extension point: the Suivi tab and the item sheet live in hq-inventoria-suivi.js
+    const addTab = (id, label, icon) => {
+      const tab = mkTab(id, label, icon), pane = mkPane(id);
+      tabsEl.insertBefore(tab, tabSet);
+      bubble.insertBefore(pane, paneSet);
+      TABS.splice(TABS.length - 1, 0, [id, tab, pane]);
+      pane.hidden = true;
+      tab.setAttribute("aria-selected", "false"); tab.tabIndex = -1;
+      return pane;
+    };
+    const openItemSheet = (id) => { const a = win.HqInventoria; if (a && typeof a.openItem === "function") { setChipVisible(true); setOpen(true); a.openItem(id); } };
+    const openSheetOn = (el, id) => {
+      if (!id) return;
+      el.classList.add("hq-inventoria-sheetlink");
+      el.setAttribute("role", "button"); el.tabIndex = 0;
+      el.setAttribute("title", uiLang === "en" ? "Open the item sheet" : "Ouvrir la fiche");
+      el.addEventListener("click", () => openItemSheet(id));
+      el.addEventListener("keydown", (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); openItemSheet(id); } });
+    };
+
+    // ---------------------------------------------------------------- one card at a time
+    // The draft, the photo review, the grocery card, the scanner and the notice can all be pending. Only the newest shows;
+    // a thin bar names what else is waiting and brings it forward. Nothing is dropped: each card keeps its own state.
+    const CARD_LABELS = new Map([[noticeBox, "Info"], [draftBox, "Brouillon"], [detBox, "Photo"], [groceryBox, "Courses"], [scanBox, "Scanner"]]);
+    const cardBar = doc.createElement("button");
+    cardBar.type = "button"; cardBar.className = "hq-inventoria-cardbar"; cardBar.hidden = true;
+    let cardFront = null, cardSyncing = false;
+    const openCards = () => [...CARD_LABELS.keys()].filter((b) => !b.hidden);
+    const syncCards = () => {
+      if (cardSyncing) return;
+      cardSyncing = true;
+      try {
+        const open = openCards();
+        if (!open.includes(cardFront)) cardFront = open[open.length - 1] || null;
+        open.forEach((b) => b.classList.toggle("is-queued", b !== cardFront));
+        const waiting = open.filter((b) => b !== cardFront);
+        cardBar.hidden = !waiting.length;
+        if (waiting.length) {
+          const en = uiLang === "en";
+          cardBar.textContent = (en ? "Also waiting: " : "Aussi en attente : ") + waiting.map((b) => CARD_LABELS.get(b)).join(", ") + " ›";
+        }
+      } finally { cardSyncing = false; }
+    };
+    const watchHidden = (box) => {
+      let desc = null, obj = box;
+      while (obj && !desc) { desc = Object.getOwnPropertyDescriptor(obj, "hidden"); obj = Object.getPrototypeOf(obj); }
+      let held = !!box.hidden;
+      const accessor = desc && desc.get ? desc : null;
+      Object.defineProperty(box, "hidden", {
+        configurable: true,
+        get() { return accessor ? accessor.get.call(box) : held; },
+        set(v) {
+          if (accessor) accessor.set.call(box, v); else held = !!v;
+          if (!v) cardFront = box;                   // the card that was just shown goes to the front
+          syncCards();
+        },
+      });
+    };
+    CARD_LABELS.forEach((_l, box) => watchHidden(box));
+    cardBar.addEventListener("click", () => {
+      const waiting = openCards().filter((b) => b !== cardFront);
+      if (waiting.length) { cardFront = waiting[0]; syncCards(); }
+    });
+    paneChat.insertBefore(cardBar, noticeBox);
+
     syncPhotoUi();
     syncEmpty();
     restoreThread();
     refreshStatus({ announce: false });
+    handleHash();
+    syncLang();
+    renderQueue();
+    try { win.dispatchEvent(new CustomEvent("hq:inventoria-ready")); } catch (_) {}   // the Inventaire page shows its scan button on this
 
     win.HqInventoria = {
       speak: speakLine,
       stopSpeaking: stopVoice,
       open: () => { setChipVisible(true); setOpen(true); },
       close: () => setOpen(false),
+      ui: {
+        doc, win, jsonPost, getJson, opUrl, decorate, ico, selectTab, addTab, showNotice, clearNotice, showDraft, showApplied, handleTurnResult, failNote,
+        lang: () => uiLang, feedback, loadInventory, refreshStatus, status: () => lastStatusData, onStatus: (fn) => { statusHooks.push(fn); if (lastStatusData) { try { fn(lastStatusData); } catch (_) {} } },
+        oneTap, ensureSession, sendToChat, isOnline, inventoryChanged, quickAdjust, openChat: () => selectTab("chat"), T,
+      },
+      scan: () => { setChipVisible(true); setOpen(true); selectTab("chat"); startScan(); },
+      photo: () => { setChipVisible(true); setOpen(true); selectTab("chat"); if (!chatBusy) photoBtn.click(); },
+      say: (text) => { setChipVisible(true); setOpen(true); selectTab("chat"); if (text) { chatInput.value = String(text); } try { chatInput.focus(); } catch (_) {} },
       setLine: (text, opts) => {
         showLine(String(text || IDLE_LINE));
         const mood = opts && opts.mood;
@@ -1994,6 +3112,7 @@
       root,
       toggle,
     };
+    try { win.dispatchEvent(new CustomEvent("hq:inventoria-ready")); } catch (_) {}   // again, now that window.HqInventoria exists (extensions wait for this one)
 
     try {
       if (win.localStorage.getItem(LS_VISIBLE) === "0") setChipVisible(false, { silent: true });

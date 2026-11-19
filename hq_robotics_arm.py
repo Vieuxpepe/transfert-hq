@@ -6,10 +6,13 @@ Angles at the HQ boundary are degrees in the firmware convention.
 
 from __future__ import annotations
 
+import ctypes
+import ctypes.wintypes
 import http.client
 import ipaddress
 import json
 import math
+import os
 import re
 import socket
 import time
@@ -149,8 +152,18 @@ def _segment_to_aabb_distance(p0, p1, box):
     return math.sqrt(max(0.0, best_sq))
 
 
+GRIPPER_LENGTH = 62.0   # gripper housing and fingers, back from the reference point along the forearm
+GRIPPER_EXTRA = 12.0    # fingers reach ~34 mm sideways: link radius 22 + 12
+SHOULDER_RADIUS = 50.0  # shoulder block and top of the turret, around the shoulder axis
+SHAPE_MARGIN = 40.0     # extra reach of these shapes, added to the arc-length bound below
+
+
 def _pose_link_clearance(pose, zones, link_radius):
     links = link_positions(pose)
+    elbow, tcp = links["elbow"], links["tcp"]
+    span = math.sqrt(sum((tcp[a] - elbow[a]) ** 2 for a in "xyz")) or 1.0
+    back = min(GRIPPER_LENGTH, span) / span
+    wrist = {a: tcp[a] - (tcp[a] - elbow[a]) * back for a in "xyz"}
     best = math.inf
     hit = None
     nearest = None
@@ -158,7 +171,9 @@ def _pose_link_clearance(pose, zones, link_radius):
     for zone in zones:
         d_upper = _segment_to_aabb_distance(links["shoulder"], links["elbow"], zone) - link_radius
         d_lower = _segment_to_aabb_distance(links["elbow"], links["tcp"], zone) - link_radius
-        c = min(d_upper, d_lower)
+        d_grip = _segment_to_aabb_distance(wrist, tcp, zone) - (link_radius + GRIPPER_EXTRA)
+        d_shoulder = _point_to_aabb_distance(links["shoulder"], zone) - SHOULDER_RADIUS
+        c = min(d_upper, d_lower, d_grip, d_shoulder)
         if c < nearest_dist:
             nearest_dist = c
             nearest = zone["name"]
@@ -184,8 +199,8 @@ def swept_clearance(start, end, zones, *, link_radius=22.0):
 
     def arc_bound(dt):
         return math.radians(
-            (UPPER + LOWER) * (abs(delta["base"]) + abs(delta["shoulder"])) * dt
-            + LOWER * abs(delta["elbow"]) * dt
+            (UPPER + LOWER + SHAPE_MARGIN) * (abs(delta["base"]) + abs(delta["shoulder"])) * dt
+            + (LOWER + SHAPE_MARGIN) * abs(delta["elbow"]) * dt
         )
 
     min_clearance = math.inf
@@ -269,7 +284,8 @@ def async_box_clearance(start, end, zones, *, link_radius=22.0):
             continue
         spans = {k: cur[k][1] - cur[k][0] for k in JOINTS}
         half_arc = 0.5 * math.radians(
-            (UPPER + LOWER) * (spans["base"] + spans["shoulder"]) + LOWER * spans["elbow"]
+            (UPPER + LOWER + SHAPE_MARGIN) * (spans["base"] + spans["shoulder"])
+            + (LOWER + SHAPE_MARGIN) * spans["elbow"]
         )
         lower_bound = c_mid - half_arc
         if lower_bound > 0.0:
@@ -354,76 +370,314 @@ def validate_async_box(start, end, limits, workspace):
                     validate_pose({"base": b, "shoulder": s, "elbow": e, "hand": h}, limits, workspace)
 
 
-class HttpArm:
-    """Replaceable device adapter. HTTP success is transport receipt only."""
+def serial_port_name(value):
+    """Validate and normalize a local serial port name (COM1..COM256 or /dev/ttyUSB*|ACM*)."""
+    if not isinstance(value, str):
+        raise ValueError("Port série invalide")
+    cleaned = value.strip()
+    match = re.fullmatch(r"COM([1-9]\d{0,2})", cleaned, re.IGNORECASE)
+    if match and 1 <= int(match.group(1)) <= 256:
+        return f"COM{int(match.group(1))}"
+    if os.name != "nt" and re.fullmatch(r"/dev/tty(?:USB|ACM)\d{1,3}", cleaned):
+        return cleaned
+    raise ValueError("Port série invalide")
 
-    def __init__(self, address, timeout):
-        self.address = pinned_ip(address)
-        self.timeout = timeout
 
-    def _command(self, data, timeout=None):
-        budget = timeout or self.timeout
-        deadline = time.monotonic() + budget
-        connection = http.client.HTTPConnection(self.address, 80, timeout=budget)
-        try:
-            command = quote(json.dumps(data, separators=(",", ":")), safe="")
-            connection.request("GET", "/js?json=" + command, headers={"Connection": "close"})
-            with connection.getresponse() as response:
-                if response.status != 200:
-                    raise DeviceError("Requête refusée par le RoArm")
-                raw = response.read(4097)
-                if len(raw) > 4096 or time.monotonic() >= deadline:
-                    raise DeviceError("Réponse RoArm invalide")
-                # The real firmware acknowledges a command with an empty body or `null`, not `{}`.
-                value = {} if raw.strip() in (b"", b"null") else json.loads(raw)
-                if not isinstance(value, dict):
-                    raise DeviceError("Réponse RoArm invalide")
-                return value
-        except (OSError, ValueError, http.client.HTTPException):
-            raise DeviceError("RoArm indisponible ou réponse invalide") from None
-        finally:
-            connection.close()
+def list_serial_ports():
+    """Return active local serial port names (e.g. ['COM3']) via stdlib winreg on Windows."""
+    if os.name != "nt":
+        return []
+    try:
+        import winreg
+        ports = []
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"HARDWARE\DEVICEMAP\SERIALCOMM") as key:
+            idx = 0
+            while True:
+                try:
+                    _, val, _ = winreg.EnumValue(key, idx)
+                    idx += 1
+                    try:
+                        ports.append(serial_port_name(str(val)))
+                    except ValueError:
+                        pass
+                except OSError:
+                    break
+        return sorted(set(ports), key=lambda p: (len(p), p))
+    except OSError:
+        return []
+
+
+def _parse_roarm_feedback(raw):
+    """Validate and convert a T:1051 RoArm-M2-S telemetry dict."""
+    try:
+        if raw.get("T") != 1051:
+            raise ValueError
+        pose = {key: math.degrees(number(raw[field], -math.tau, math.tau))
+                for key, field in zip(JOINTS, ("b", "s", "e", "t"))}
+        xyz = {key: number(raw[key], -700, 700) for key in ("x", "y", "z")}
+        predicted = position(pose)
+        if any(abs(xyz[key] - predicted[key]) > 5 for key in xyz):
+            raise ValueError
+        loads = {key: number(raw[field], -32768, 32767)
+                 for key, field in zip(JOINTS, ("torB", "torS", "torE", "torH")) if field in raw}
+        torque = {}
+        for key, field in zip(JOINTS, ("torswitchB", "torswitchS", "torswitchE", "torswitchH")):
+            if field in raw:
+                if type(raw[field]) is not int or raw[field] not in (0, 1):
+                    raise ValueError
+                torque[key] = raw[field]
+        if not torque:
+            torque_state = "unknown"
+        elif set(torque) != set(JOINTS):
+            torque_state = "partial"
+        elif all(value == 1 for value in torque.values()):
+            torque_state = "enabled"
+        else:
+            torque_state = "disabled"
+        volts = number(raw["v"], 1, 3000) / 100 if "v" in raw else None
+    except (KeyError, ValueError):
+        raise DeviceError("Télémétrie incompatible avec le profil RoArm M2-S pince") from None
+    return {"source": "hardware", "actual": pose, "xyz": xyz, "load": loads, "torque": torque,
+            "torque_state": torque_state, "voltage": volts}
+
+
+class _RoArmProtocol:
+    """Shared RoArm-M2-S JSON command layer across HTTP and Serial transports."""
 
     def feedback(self):
-        raw = self._command({"T": 105})
-        try:
-            if raw.get("T") != 1051:
-                raise ValueError
-            pose = {key: math.degrees(number(raw[field], -math.tau, math.tau))
-                    for key, field in zip(JOINTS, ("b", "s", "e", "t"))}
-            xyz = {key: number(raw[key], -700, 700) for key in ("x", "y", "z")}
-            predicted = position(pose)
-            if any(abs(xyz[key] - predicted[key]) > 5 for key in xyz):
-                raise ValueError
-            loads = {key: number(raw[field], -32768, 32767)
-                     for key, field in zip(JOINTS, ("torB", "torS", "torE", "torH")) if field in raw}
-            torque = {}
-            for key, field in zip(JOINTS, ("torswitchB", "torswitchS", "torswitchE", "torswitchH")):
-                if field in raw:
-                    if type(raw[field]) is not int or raw[field] not in (0, 1):
-                        raise ValueError
-                    torque[key] = raw[field]
-            if not torque:
-                torque_state = "unknown"
-            elif set(torque) != set(JOINTS):
-                torque_state = "partial"
-            elif all(value == 1 for value in torque.values()):
-                torque_state = "enabled"
-            else:
-                torque_state = "disabled"
-            volts = number(raw["v"], 1, 3000) / 100 if "v" in raw else None
-        except (KeyError, ValueError):
-            raise DeviceError("Télémétrie incompatible avec le profil RoArm M2-S pince") from None
-        return {"source": "hardware", "actual": pose, "xyz": xyz, "load": loads, "torque": torque,
-                "torque_state": torque_state, "voltage": volts}
+        return _parse_roarm_feedback(self._command({"T": 105}))
 
     def move(self, pose, speed, acceleration):
         if self._command({"T": 102, **{key: math.radians(pose[key]) for key in JOINTS},
                           "spd": speed, "acc": acceleration}):
             raise DeviceError("Réponse inattendue à la commande RoArm")
 
+    def set_torque(self, enabled):
+        """Enable or release servo torque without tripping an emergency latch."""
+        if self._command({"T": 210, "cmd": 1 if enabled else 0}):
+            raise DeviceError("Réponse inattendue à la commande de couple RoArm")
+
     def emergency_stop(self):
         # T:0 re-enables torque after ten seconds in the reference firmware.
         # T:210 cmd:0 requests torque release without that timed re-enable.
         if self._command({"T": 210, "cmd": 0}):
             raise DeviceError("Réponse inattendue à la demande de coupure du couple")
+
+
+class HttpArm(_RoArmProtocol):
+    """Replaceable device adapter. HTTP success is transport receipt only."""
+
+    def __init__(self, address, timeout):
+        self.address = pinned_ip(address)
+        self.timeout = timeout
+        self._conn = None
+
+    def close(self):
+        if self._conn is not None:
+            try:
+                self._conn.close()
+            except OSError:
+                pass
+            self._conn = None
+
+    def _command(self, data, timeout=None):
+        budget = timeout or self.timeout
+        deadline = time.monotonic() + budget
+        command = quote(json.dumps(data, separators=(",", ":")), safe="")
+        for attempt in range(2):
+            reused = self._conn is not None
+            connection = self._conn if reused else http.client.HTTPConnection(self.address, 80, timeout=budget)
+            self._conn = connection
+            try:
+                connection.timeout = budget
+                connection.request("GET", "/js?json=" + command, headers={"Connection": "keep-alive"})
+                with connection.getresponse() as response:
+                    if response.status != 200:
+                        self.close()
+                        raise DeviceError("Requête refusée par le RoArm")
+                    raw = response.read(4097)
+                    if response.will_close:
+                        self.close()
+                    if len(raw) > 4096 or time.monotonic() >= deadline:
+                        self.close()
+                        raise DeviceError("Réponse RoArm invalide")
+                    # The real firmware acknowledges a command with an empty body or `null`, not `{}`.
+                    value = {} if raw.strip() in (b"", b"null") else json.loads(raw)
+                    if not isinstance(value, dict):
+                        self.close()
+                        raise DeviceError("Réponse RoArm invalide")
+                    return value
+            except DeviceError:
+                raise
+            except (OSError, ValueError, http.client.HTTPException):
+                self.close()
+                if reused and attempt == 0 and time.monotonic() < deadline:
+                    continue
+                raise DeviceError("RoArm indisponible ou réponse invalide") from None
+
+
+class _Win32DCB(ctypes.Structure):
+    _fields_ = [
+        ("DCBlength", ctypes.wintypes.DWORD),
+        ("BaudRate", ctypes.wintypes.DWORD),
+        ("fBinary", ctypes.wintypes.DWORD, 1),
+        ("fParity", ctypes.wintypes.DWORD, 1),
+        ("fOutxCtsFlow", ctypes.wintypes.DWORD, 1),
+        ("fOutxDsrFlow", ctypes.wintypes.DWORD, 1),
+        ("fDtrControl", ctypes.wintypes.DWORD, 2),
+        ("fDsrSensitivity", ctypes.wintypes.DWORD, 1),
+        ("fTXContinueOnXoff", ctypes.wintypes.DWORD, 1),
+        ("fOutX", ctypes.wintypes.DWORD, 1),
+        ("fInX", ctypes.wintypes.DWORD, 1),
+        ("fErrorChar", ctypes.wintypes.DWORD, 1),
+        ("fNull", ctypes.wintypes.DWORD, 1),
+        ("fRtsControl", ctypes.wintypes.DWORD, 2),
+        ("fAbortOnError", ctypes.wintypes.DWORD, 1),
+        ("fDummy2", ctypes.wintypes.DWORD, 17),
+        ("wReserved", ctypes.wintypes.WORD),
+        ("XonLim", ctypes.wintypes.WORD),
+        ("XoffLim", ctypes.wintypes.WORD),
+        ("ByteSize", ctypes.c_ubyte),
+        ("Parity", ctypes.c_ubyte),
+        ("StopBits", ctypes.c_ubyte),
+        ("XonChar", ctypes.c_char),
+        ("XoffChar", ctypes.c_char),
+        ("ErrorChar", ctypes.c_char),
+        ("EofChar", ctypes.c_char),
+        ("EvtChar", ctypes.c_char),
+        ("wReserved1", ctypes.wintypes.WORD),
+    ]
+
+
+class _Win32CommTimeouts(ctypes.Structure):
+    _fields_ = [
+        ("ReadIntervalTimeout", ctypes.wintypes.DWORD),
+        ("ReadTotalTimeoutMultiplier", ctypes.wintypes.DWORD),
+        ("ReadTotalTimeoutConstant", ctypes.wintypes.DWORD),
+        ("WriteTotalTimeoutMultiplier", ctypes.wintypes.DWORD),
+        ("WriteTotalTimeoutConstant", ctypes.wintypes.DWORD),
+    ]
+
+
+class _Win32SerialStream:
+    """Minimal stdlib Win32 COM port stream (115200 8N1) with no external dependencies."""
+
+    def __init__(self, port, timeout):
+        k32 = ctypes.windll.kernel32
+        self._k32 = k32
+        path = f"\\\\.\\{port}"
+        handle = k32.CreateFileW(path, 0xC0000000, 0, None, 3, 0, None)
+        if handle in (0, -1, 0xFFFFFFFF, 0xFFFFFFFFFFFFFFFF):
+            raise OSError(f"Cannot open {port}")
+        self._handle = handle
+        try:
+            dcb = _Win32DCB()
+            dcb.DCBlength = ctypes.sizeof(_Win32DCB)
+            if not k32.GetCommState(handle, ctypes.byref(dcb)):
+                raise OSError("GetCommState failed")
+            dcb.BaudRate = 115200
+            dcb.ByteSize = 8
+            dcb.Parity = 0
+            dcb.StopBits = 0
+            dcb.fDtrControl = 1
+            dcb.fRtsControl = 1
+            if not k32.SetCommState(handle, ctypes.byref(dcb)):
+                raise OSError("SetCommState failed")
+            ms = max(50, int(timeout * 1000))
+            timeouts = _Win32CommTimeouts(50, 0, ms, 0, ms)
+            if not k32.SetCommTimeouts(handle, ctypes.byref(timeouts)):
+                raise OSError("SetCommTimeouts failed")
+            k32.PurgeComm(handle, 0x000F)
+        except Exception:
+            self.close()
+            raise
+
+    def write(self, payload):
+        written = ctypes.wintypes.DWORD(0)
+        buf = ctypes.create_string_buffer(payload, len(payload))
+        if not self._k32.WriteFile(self._handle, buf, len(payload), ctypes.byref(written), None):
+            raise OSError("WriteFile failed")
+        if written.value != len(payload):
+            raise OSError("Short serial write")
+
+    def readline(self, max_bytes=4097):
+        chunks = bytearray()
+        one = ctypes.create_string_buffer(1)
+        read = ctypes.wintypes.DWORD(0)
+        while len(chunks) < max_bytes:
+            if not self._k32.ReadFile(self._handle, one, 1, ctypes.byref(read), None):
+                raise OSError("ReadFile failed")
+            if read.value == 0:
+                break
+            ch = one.raw
+            chunks += ch
+            if ch == b"\n":
+                break
+        return bytes(chunks)
+
+    def close(self):
+        if self._handle is not None:
+            try:
+                self._k32.CloseHandle(self._handle)
+            except OSError:
+                pass
+            self._handle = None
+
+
+class SerialArm(_RoArmProtocol):
+    """USB Serial RoArm-M2-S adapter (115200 8N1 newline-delimited JSON)."""
+
+    def __init__(self, port, timeout, *, opener=None):
+        self.port = serial_port_name(port)
+        self.timeout = timeout
+        self._opener = opener
+        self._stream = None
+
+    def close(self):
+        if self._stream is not None:
+            try:
+                self._stream.close()
+            except OSError:
+                pass
+            self._stream = None
+
+    def _open_stream(self, budget):
+        if self._opener is not None:
+            return self._opener(self.port, budget)
+        if os.name == "nt":
+            return _Win32SerialStream(self.port, budget)
+        raise DeviceError("Transport série non supporté sur cet OS")
+
+    def _command(self, data, timeout=None):
+        budget = timeout or self.timeout
+        deadline = time.monotonic() + budget
+        payload = (json.dumps(data, separators=(",", ":")) + "\n").encode("utf-8")
+        expect_reply = data.get("T") == 105
+        for attempt in range(2):
+            reused = self._stream is not None
+            try:
+                if self._stream is None:
+                    self._stream = self._open_stream(budget)
+                self._stream.write(payload)
+                raw = self._stream.readline(4097)
+                if len(raw) > 4096 or time.monotonic() >= deadline:
+                    self.close()
+                    raise DeviceError("Réponse RoArm invalide")
+                stripped = raw.strip()
+                if not stripped:
+                    if expect_reply:
+                        self.close()
+                        raise DeviceError("RoArm indisponible ou réponse invalide")
+                    return {}
+                value = {} if stripped == b"null" else json.loads(stripped)
+                if not isinstance(value, dict):
+                    self.close()
+                    raise DeviceError("Réponse RoArm invalide")
+                return value
+            except DeviceError:
+                raise
+            except (OSError, ValueError):
+                self.close()
+                if reused and attempt == 0 and time.monotonic() < deadline:
+                    continue
+                raise DeviceError("RoArm indisponible ou réponse invalide") from None

@@ -9,17 +9,19 @@
 
   const LS_FORGE_SOUND = "hq_companion_forge_sound";
   const LS_MUTE = "hq_companion_mute_until";
+  const LS_ON = "hq_companion_on";
+  const LS_PERSONA = "hq_companion_persona";
   const IMPACT_KINDS = new Set(["slap", "muffled", "grab", "hair_pat", "tit_pull"]);
 
-  const TIT_PULL_ELASTIC_RE = /else_tit_pull_(01|07)\./i;
-  const TIT_PULL_SLOSH_RE = /else_tit_pull_(10|13)\./i;
+  const TIT_PULL_ELASTIC_RE = /transferania_tit_pull_(01|07)\./i;
+  const TIT_PULL_SLOSH_RE = /transferania_tit_pull_(10|13)\./i;
 
   function titPullStemPool(pool, kind, stemId) {
     if (!pool?.length) return pool;
     const urls = pool.map(String);
     if (stemId) {
       const stem = String(stemId).padStart(2, "0");
-      const one = urls.filter(u => new RegExp(`else_tit_pull_${stem}\\.`, "i").test(u));
+      const one = urls.filter(u => new RegExp(`transferania_tit_pull_${stem}\\.`, "i").test(u));
       if (one.length) return one;
     }
     if (kind === "slosh") {
@@ -57,6 +59,10 @@
 
   function enabled(win) {
     if (!win || win.document.hidden || muted(win)) return false;
+    try {
+      // Transferania switched off in Compagnons: stay silent.
+      if (win.localStorage.getItem(LS_ON) === "0" || win.localStorage.getItem(LS_PERSONA) === "off") return false;
+    } catch (_) {}
     try {
       const v = win.localStorage.getItem(LS_FORGE_SOUND);
       if (v === null) return true;
@@ -401,7 +407,13 @@
     oralPhaseLast = "idle";
   }
 
+  function stopAll() {
+    try { player?.stop?.(undefined, true); } catch (_) {}
+    try { clearOralAudio(); } catch (_) {}
+  }
+
   return {
+    stopAll,
     bind,
     prime,
     enabled,

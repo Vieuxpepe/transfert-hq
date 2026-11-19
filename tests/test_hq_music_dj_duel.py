@@ -72,7 +72,7 @@ class ArchiveTests(DjBase):
         (dj._cache_dir() / name).write_bytes(b"x")
         other = dj._cache_dir() / ("drop-" + "c" * 20 + ".mp3")
         other.write_bytes(b"x")
-        dj._prune_cache(keep=0)
+        dj._prune_cache(keep=0, force=True)  # the prune is throttled per minute in normal use
         self.assertTrue((dj._cache_dir() / name).is_file())
         self.assertFalse(other.exists())
 

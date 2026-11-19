@@ -162,7 +162,7 @@ def _settings(data: dict, *, kind: str) -> dict | None:
     width = _int(data.get("width"), 256, 1536)
     height = _int(data.get("height"), 256, 1536)
     steps = _int(data.get("steps"), 1, 40)
-    n_iter = _int(data.get("n_iter"), 1, 2)
+    n_iter = _int(data.get("n_iter"), 1, 4)
     seed = _int(data.get("seed"), -1, 2**32 - 1)
     batch = _int(data.get("batch_size", 1), 1, 1)
     cfg = _number(data.get("cfg_scale"), 1, 15)

@@ -4516,11 +4516,11 @@
     }
 
     const jiggleLines = [1, 2, 3, 4, 5].map(
-      (n) => "/assets/companion/jiggle/Else_cute_jiggling_0" + n + ".mp3"
+      (n) => "/assets/companion/jiggle/Transferania_cute_jiggling_0" + n + ".mp3"
     );
     let jiggleVoice = null;
     let slapVoice = null;
-    const slapLine = "/assets/companion/jiggle/Else_enthusiastic_slap_on_tits_03.mp3";
+    const slapLine = "/assets/companion/jiggle/Transferania_enthusiastic_slap_on_tits_03.mp3";
 
     function ensureJiggleVoice() {
       if (jiggleVoice) return jiggleVoice;
@@ -4531,6 +4531,7 @@
 
     function playJiggle() {
       if (dangleAudio?.playFlickJiggle(win)) return;
+      if (dangleAudio && !dangleAudio.enabled(win)) return; // off / muted / sound off: no raw fallback
       const voice = ensureJiggleVoice();
       voice.pause();
       voice.src = jiggleLines[Math.floor(Math.random() * jiggleLines.length)];
@@ -4541,6 +4542,7 @@
 
     function playSlap() {
       if (dangleAudio?.playFlickSlap(win, 0.85)) return;
+      if (dangleAudio && !dangleAudio.enabled(win)) return; // off / muted / sound off: no raw fallback
       if (!slapVoice) {
         slapVoice = new Audio(slapLine);
         slapVoice.preload = "auto";

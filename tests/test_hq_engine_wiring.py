@@ -18,14 +18,20 @@ class EngineWiringTests(unittest.TestCase):
         self.assertIn('body[data-view="engine"] [data-panel="engine"]', BRIDGE)
 
     def test_admin_gate_in_client_and_nav(self):
-        self.assertRegex(BRIDGE, r"view === 'engine'\) && !hqSessionIsAdmin\(\)\) view = 'accueil'")
+        # The gate is shared with the other admin-only views, so it names 'engine' in the
+        # list of views that non-admins are bounced out of.
+        self.assertRegex(
+            BRIDGE,
+            r"\['[^\]]*'engine'[^\]]*\]\.includes\(view\) && !hqSessionIsAdmin\(\)\) view = 'accueil'")
         self.assertRegex(BRIDGE, r'\[data-view-link="engine"\](?:,[^{]*)?\{display:none\}')
         self.assertIn('data-view-link="engine"', BRIDGE)
 
     def test_routes_use_the_engine_module(self):
         self.assertIn("import hq_engine", BRIDGE)
         self.assertRegex(BRIDGE, r'raw\.startswith\("/api/engine/"\)[^\n]*\n\s+code, payload = hq_engine\.http_get')
-        self.assertRegex(BRIDGE, r'raw\.startswith\("/api/engine/"\)[^\n]*\n(?:[^\n]*\n){1,25}?\s+code, payload = hq_engine\.http_post\(raw, data\)')
+        self.assertRegex(
+            BRIDGE,
+            r'raw\.startswith\("/api/engine/"\)[^\n]*\n(?:[^\n]*\n){1,25}?\s+code, payload = hq_engine\.http_post\(raw, data(?:, owner=[^)]*)?\)')
         self.assertIn("/engine-agent/v1/", BRIDGE)
         self.assertIn("hq_engine_fleet.handle_agent", BRIDGE)
         self.assertIn("hq_engine.bind(ROOT, notify=_inventoria_notify)", BRIDGE)
@@ -37,7 +43,8 @@ class EngineWiringTests(unittest.TestCase):
         self.assertLess(abs(post_at - neighbour), 2500)
 
     def test_assets_linked_and_hooked_in_setview(self):
-        self.assertIn('/assets/hq-engine.css', BRIDGE)
+        # The sheet is no longer in the <head>: it rides the lazy map and loads when Engine opens.
+        self.assertIn("engine: ['hq-engine.css']", BRIDGE)
         self.assertIn('/assets/hq-engine.js', BRIDGE)
         self.assertIn("window.hqEngineShow", BRIDGE)
         self.assertIn("window.hqEngineHide", BRIDGE)

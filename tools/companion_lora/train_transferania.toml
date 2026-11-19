@@ -1,4 +1,4 @@
-# SDXL character LoRA — waiIllustriousSDXL_v170 (Forge active checkpoint)
+# SDXL character LoRA v2 — waiIllustriousSDXL_v170 (Forge active checkpoint)
 
 pretrained_model_name_or_path = "C:/AI/stable-diffusion-webui-forge/models/Stable-diffusion/waiIllustriousSDXL_v170.safetensors"
 dataset_config = "C:/Transfert/tools/companion_lora/dataset_config.toml"
@@ -14,20 +14,26 @@ gradient_accumulation_steps = 1
 network_module = "networks.lora"
 network_dim = 32
 network_alpha = 16
-network_train_unet_only = true
+network_train_unet_only = false
 
 optimizer_type = "AdamW8bit"
-learning_rate = 1e-4
-unet_lr = 1e-4
+learning_rate = 1.2e-4
+unet_lr = 1.2e-4
+text_encoder_lr = 5e-5
 lr_scheduler = "cosine"
-lr_warmup_steps = 50
+lr_warmup_steps = 35
+min_snr_gamma = 5.0
+noise_offset = 0.0357
 
 mixed_precision = "fp16"
 save_precision = "fp16"
+fp8_base = true
+no_half_vae = true
 cache_latents = true
 cache_latents_to_disk = true
-cache_text_encoder_outputs = true
+cache_text_encoder_outputs = false
 gradient_checkpointing = true
+sdpa = true
 xformers = false
 
 seed = 42

@@ -11,8 +11,9 @@
 
 .hq-securia-chip-dock[hidden] { display: none !important; }
 body:not(.session-admin) .hq-securia-chip-dock,
-body:not([data-view="securite"]) .hq-securia-chip-dock,
-body:not([data-view="securite"]) .hq-securia-drawer { display: none !important; }
+body:not(.session-admin) .hq-securia-drawer { display: none !important; }
+body:not([data-view="securite"]) .hq-securia-chip-dock:not(.has-alert):not(.is-pinned),
+body:not([data-view="securite"]) .hq-securia-drawer:not(.has-alert):not(.is-pinned) { display: none !important; }
 .hq-securia-chip-dock.is-dragging { transition: none; opacity: .96; }
 
 .hq-securia-chip {
@@ -47,10 +48,21 @@ body:not([data-view="securite"]) .hq-securia-drawer { display: none !important; 
   animation: hq-securia-alert-pulse 2s infinite;
 }
 
+.hq-securia-chip.is-danger {
+  --hq-securia-accent: #ef4444;
+  animation: hq-securia-danger-pulse 1.4s infinite;
+}
+
 @keyframes hq-securia-alert-pulse {
   0% { box-shadow: 0 8px 22px rgba(0,0,0,.38), 0 0 0 0 rgba(245, 158, 11, 0.55); }
   70% { box-shadow: 0 8px 22px rgba(0,0,0,.38), 0 0 0 10px rgba(245, 158, 11, 0); }
   100% { box-shadow: 0 8px 22px rgba(0,0,0,.38), 0 0 0 0 rgba(245, 158, 11, 0); }
+}
+
+@keyframes hq-securia-danger-pulse {
+  0% { box-shadow: 0 8px 22px rgba(0,0,0,.38), 0 0 0 0 rgba(239, 68, 68, 0.7); }
+  70% { box-shadow: 0 8px 22px rgba(0,0,0,.38), 0 0 0 14px rgba(239, 68, 68, 0); }
+  100% { box-shadow: 0 8px 22px rgba(0,0,0,.38), 0 0 0 0 rgba(239, 68, 68, 0); }
 }
 
 .hq-securia-chip:hover {
@@ -124,7 +136,7 @@ body:not([data-view="securite"]) .hq-securia-drawer { display: none !important; 
   border-radius: 999px;
   background: #ef4444;
   color: #fff;
-  font-size: 10px;
+  font-size: var(--text-xs);
   font-weight: 800;
   display: flex;
   align-items: center;
@@ -144,7 +156,7 @@ body:not([data-view="securite"]) .hq-securia-drawer { display: none !important; 
   background: rgba(15, 23, 42, 0.96);
   border: 1px solid rgba(245, 158, 11, 0.55);
   color: #fef3c7;
-  font-size: 12px;
+  font-size: var(--text-sm);
   line-height: 1.4;
   box-shadow: 0 10px 26px rgba(0, 0, 0, 0.45);
   cursor: pointer;
@@ -157,6 +169,23 @@ body:not([data-view="securite"]) .hq-securia-drawer { display: none !important; 
   font-size: 11px;
   color: #38bdf8;
   margin-bottom: 2px;
+}
+
+.hq-securia-whisper.is-danger {
+  border-color: rgba(239, 68, 68, 0.75);
+  background: rgba(26, 10, 15, 0.96);
+  color: #fee2e2;
+  box-shadow: 0 10px 26px rgba(239, 68, 68, 0.35);
+}
+
+.hq-securia-whisper.is-danger strong {
+  color: #f87171;
+}
+
+.hq-securia-icon-btn.is-active {
+  background: rgba(56, 189, 248, 0.28);
+  border-color: #38bdf8;
+  color: #fff;
 }
 
 @keyframes hq-securia-whisper-in {
@@ -234,12 +263,12 @@ body:not([data-view="securite"]) .hq-securia-drawer { display: none !important; 
 
 .hq-securia-drawer-title {
   font-weight: 800;
-  font-size: 0.95rem;
+  font-size:var(--text-md);
   line-height: 1.1;
 }
 
 .hq-securia-drawer-sub {
-  font-size: 0.72rem;
+  font-size: var(--text-xs);
   color: #7dd3fc;
 }
 
@@ -255,7 +284,7 @@ body:not([data-view="securite"]) .hq-securia-drawer { display: none !important; 
   color: #bae6fd;
   border-radius: 8px;
   padding: 5px 8px;
-  font-size: 0.75rem;
+  font-size: var(--text-sm);
   font-weight: 600;
   cursor: pointer;
 }
@@ -279,7 +308,7 @@ body:not([data-view="securite"]) .hq-securia-drawer { display: none !important; 
   max-width: 88%;
   padding: 9px 12px;
   border-radius: 12px;
-  font-size: 0.84rem;
+  font-size: var(--text-sm);
   line-height: 1.45;
   white-space: pre-wrap;
   word-break: break-word;
@@ -308,7 +337,7 @@ body:not([data-view="securite"]) .hq-securia-drawer { display: none !important; 
 }
 
 .hq-securia-tool-tag {
-  font-size: 0.68rem;
+  font-size: var(--text-xs);
   font-family: monospace;
   padding: 1px 6px;
   border-radius: 4px;
@@ -332,7 +361,7 @@ body:not([data-view="securite"]) .hq-securia-drawer { display: none !important; 
   color: #7dd3fc;
   border-radius: 999px;
   padding: 4px 10px;
-  font-size: 0.72rem;
+  font-size: var(--text-xs);
   font-weight: 600;
   cursor: pointer;
 }
@@ -358,7 +387,7 @@ body:not([data-view="securite"]) .hq-securia-drawer { display: none !important; 
   color: #f8fafc;
   padding: 8px 12px;
   font: inherit;
-  font-size: 0.85rem;
+  font-size: var(--text-sm);
   outline: none;
 }
 
@@ -373,7 +402,7 @@ body:not([data-view="securite"]) .hq-securia-drawer { display: none !important; 
   border-radius: 10px;
   padding: 0 14px;
   font-weight: 700;
-  font-size: 0.82rem;
+  font-size: var(--text-sm);
   cursor: pointer;
 }
 
@@ -381,3 +410,45 @@ body:not([data-view="securite"]) .hq-securia-drawer { display: none !important; 
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+/* Confirmation card for a queued security action: the tool never runs from the turn itself. */
+.hq-securia-proposal {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(56, 189, 248, 0.42);
+  background: rgba(8, 27, 40, 0.9);
+  font-size: var(--text-sm);
+  line-height: 1.4;
+}
+
+.hq-securia-proposal.is-done { border-color: rgba(52, 211, 153, 0.55); }
+.hq-securia-proposal.is-failed { border-color: rgba(248, 113, 113, 0.6); }
+.hq-securia-proposal.is-dismissed { opacity: 0.72; }
+.hq-securia-proposal-summary { font-weight: 600; }
+
+.hq-securia-proposal-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 7px;
+}
+
+.hq-securia-proposal-btn {
+  padding: 4px 9px;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.45);
+  background: rgba(255, 255, 255, 0.06);
+  color: inherit;
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+
+.hq-securia-proposal-btn.is-apply {
+  background: #0ea5e9;
+  border-color: #0ea5e9;
+  color: #04131f;
+  font-weight: 700;
+}
+
+.hq-securia-proposal-btn:disabled { opacity: 0.55; cursor: default; }
+.hq-securia-proposal-note { margin-top: 6px; font-size: var(--text-xs); opacity: 0.85; word-break: break-word; }

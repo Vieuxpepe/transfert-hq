@@ -252,10 +252,25 @@ def describe_path_acl(path: Path) -> dict[str, Any]:
 
 
 def _windows_restrict(path: Path) -> str:
-    """Replace DACL with bridge-user SID + SYSTEM only. Fail-closed if unverifiable."""
+    """Replace DACL with bridge-user SID + SYSTEM only. Fail-closed if unverifiable.
+
+    ``icacls /reset`` temporarily exposes the broad inherited DACL and a concurrent
+    verification can observe that intermediate state. Serialize the whole check /
+    rewrite / verify sequence so parallel ``open_store`` calls cannot race it, and
+    leave an already compliant DACL untouched.
+    """
     if not _APPLY_ACL or os.name != "nt":
         return "skipped"
+    with _guard:
+        return _windows_restrict_locked(path)
+
+
+def _windows_restrict_locked(path: Path) -> str:
     user_sid = _current_user_sid()
+    facts = describe_path_acl(path)
+    user_ok = user_sid in facts["sids"] or (os.environ.get("USERNAME") or "").lower() in facts["text"].lower()
+    if facts["acceptable"] and user_ok:
+        return "restricted"
     if path.is_dir():
         user_grant = f"*{user_sid}:(OI)(CI)F"
         system_grant = f"*{SYSTEM_SID}:(OI)(CI)F"

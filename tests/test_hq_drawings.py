@@ -20,6 +20,7 @@ from pathlib import Path
 from urllib.parse import urlencode
 
 import hq_drawings as D
+import hq_drawings_live as live
 import iphone_bridge
 
 PIN = "424242"
@@ -361,6 +362,40 @@ class ValidationTests(unittest.TestCase):
             with self.subTest(i=i):
                 self.assertBad(bad)
 
+    def test_v6_depth_objects_and_relations_roundtrip(self):
+        d = {"format": D.FORMAT, "version": 6, "units": "mm", "mode": "construction",
+             "grid": {"spacing": 10, "visible": True, "snap": True}, "snap": {"angle": True, "angleStep": 15},
+             "points": [{"id": "c1", "x": 0, "y": 0}, {"id": "c2", "x": 20, "y": 0},
+                        {"id": "e", "x": 0, "y": 30}, {"id": "s1", "x": 30, "y": 0},
+                        {"id": "s2", "x": 40, "y": 10}, {"id": "s3", "x": 50, "y": 0},
+                        {"id": "l1a", "x": 0, "y": -10}, {"id": "l1b", "x": 20, "y": -10},
+                        {"id": "l2a", "x": 0, "y": 10}, {"id": "l2b", "x": 20, "y": 10},
+                        {"id": "axa", "x": 10, "y": -20}, {"id": "axb", "x": 10, "y": 20},
+                        {"id": "m", "x": 5, "y": 5}],
+             "objects": [{"id": "k1", "type": "circle", "center": "c1", "r": 5},
+                         {"id": "k2", "type": "circle", "center": "c2", "r": 8},
+                         {"id": "el", "type": "ellipse", "center": "e", "rx": 10, "ry": 4, "construction": True},
+                         {"id": "sp", "type": "spline", "pts": ["s1", "s2", "s3"]},
+                         {"id": "l1", "type": "line", "p1": "l1a", "p2": "l1b"},
+                         {"id": "l2", "type": "line", "p1": "l2a", "p2": "l2b"},
+                         {"id": "ax", "type": "centerline", "p1": "axa", "p2": "axb"}],
+             "constraints": [{"id": "g1", "type": "concentric", "items": ["k1", "k2"]},
+                             {"id": "g2", "type": "collinear", "items": ["l1", "l2"]},
+                             {"id": "g3", "type": "midpoint", "point": "m", "line": "l1"},
+                             {"id": "g4", "type": "symmetric", "points": ["c1", "c2"], "line": "ax"},
+                             {"id": "g5", "type": "point_on_curve", "point": "m", "item": "k1"}],
+             "features": [], "sketches": []}
+        out = D.validate_document(d)
+        self.assertEqual([o["type"] for o in out["objects"]], ["circle", "circle", "ellipse", "spline", "line", "line", "centerline"])
+        self.assertIs(out["objects"][2]["construction"], True, "construction survives normalization")
+        self.assertEqual([k["type"] for k in out["constraints"]], ["concentric", "collinear", "midpoint", "symmetric", "point_on_curve"])
+
+        bad = json.loads(json.dumps(d))
+        bad["objects"][4]["construction"] = True  # l1 (a line: a valid profile kind, but reference only)
+        bad["features"] = [{"id": "f1", "type": "extrude", "profile": ["l1"], "depth": 5, "extent": "blind"}]
+        with self.assertRaisesRegex(D.DrawingError, "construction"):
+            D.validate_document(bad)
+
     def test_size_limits(self):
         d = sample_doc()
         d["objects"] = [{"id": f"t{i}", "type": "text", "x": 0, "y": 0, "text": "x"} for i in range(D.MAX_OBJECTS + 1)]
@@ -384,6 +419,157 @@ class ValidationTests(unittest.TestCase):
         with self.assertRaises(D.DrawingError) as cm:
             D.decode_png(too_big)
         self.assertEqual(cm.exception.status, 413)
+
+
+class DeleteDrawingTests(unittest.TestCase):
+    """The library's « Supprimer »: one stem, its companions, nothing else."""
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp(prefix="hq-draw-del-"))
+        (self.root / "Inbox").mkdir()
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def _save(self, name):
+        return D.save_drawing(self.root, {"name": name, "source": "desktop", "doc": sample_doc(), "png": png_url()})
+
+    def test_delete_removes_the_stem_and_its_companions_only(self):
+        gone = self._save("support")
+        kept = self._save("bracket")
+        d = self.root / "Inbox" / "Drawings"
+        res = D.delete_drawing(self.root, gone["stem"])
+        self.assertTrue(res["ok"])
+        self.assertEqual(sorted(res["removed"]),
+                         sorted(gone["stem"] + s for s in (D.DOC_SUFFIX, D.PNG_SUFFIX, D.DXF_SUFFIX)))
+        self.assertEqual([p.name for p in d.iterdir() if p.name.startswith(gone["stem"])], [])
+        self.assertTrue((d / (kept["stem"] + D.DOC_SUFFIX)).is_file(), "another stem is untouched")
+        self.assertEqual([i["stem"] for i in D.list_drawings(self.root)["items"]], [kept["stem"]])
+
+    def test_delete_refuses_missing_and_invalid_stems(self):
+        with self.assertRaises(D.DrawingError) as cm:
+            D.delete_drawing(self.root, "never-saved")
+        self.assertEqual(cm.exception.status, 404)
+        for bad in ("", "../outside/evil", "a/b", "a" * 121):
+            with self.assertRaises(D.DrawingError, msg=bad):
+                D.delete_drawing(self.root, bad)
+        self.assertTrue((self.root / "Inbox").is_dir(), "a refused stem never touches the filesystem")
+
+
+class DraftAndDuplicateTests(unittest.TestCase):
+    """The server-side scratch copy (a full localStorage must never lose a drawing) and the library's « Dupliquer »."""
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp(prefix="hq-draw-draft-"))
+        (self.root / "Inbox").mkdir()
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def _save(self, name="support"):
+        return D.save_drawing(self.root, {"name": name, "source": "desktop", "doc": sample_doc(), "png": png_url()})
+
+    def test_draft_keeps_one_latest_scratch_file_plus_dated_snapshots(self):
+        first = D.write_draft(self.root, {"stem": "", "name": "brouillon", "doc": sample_doc()})
+        self.assertTrue(first["ok"])
+        self.assertEqual(first["key"], "scratch")
+        store = self.root / "Inbox" / "Drawings" / D.DRAFTS_DIR
+        self.assertEqual(sorted(p.name for p in store.iterdir()), ["scratch" + D.DRAFT_SUFFIX])
+        small = sample_doc()
+        small["objects"] = small["objects"][:1]
+        small["constraints"] = []
+        D.write_draft(self.root, {"stem": "", "name": "brouillon", "doc": small})
+        names = sorted(p.name for p in store.iterdir())
+        self.assertIn("scratch" + D.DRAFT_SUFFIX, names, "the latest draft is always at the plain name")
+        self.assertEqual(len(names), 2, "the replaced draft becomes ONE dated snapshot, not a second latest")
+        self.assertRegex(names[0], r"^scratch\.hqdraw\.draft-\d+\.json$")
+        body = json.loads((store / ("scratch" + D.DRAFT_SUFFIX)).read_text("utf-8"))
+        self.assertEqual(body["objects"], len(small["objects"]), "the draft says what it holds")
+        for _ in range(D.DRAFT_KEEP + 4):  # bounded: never more than K copies per stem
+            D.write_draft(self.root, {"stem": "", "doc": small})
+        self.assertLessEqual(len(list(store.iterdir())), D.DRAFT_KEEP)
+        self.assertEqual(D.list_drawings(self.root)["items"], [], "a draft is not a drawing")
+        self.assertTrue(D.clear_draft(self.root, "")["cleared"])
+        self.assertEqual([p.name for p in store.iterdir()], [], "clearing removes the dated snapshots too")
+        self.assertFalse(D.clear_draft(self.root, "")["cleared"], "clearing twice is harmless")
+
+    def test_draft_keeps_the_stem_of_the_drawing_being_edited(self):
+        saved = self._save("support")
+        D.write_draft(self.root, {"stem": saved["stem"], "name": "", "doc": sample_doc()})
+        path = self.root / "Inbox" / "Drawings" / D.DRAFTS_DIR / (saved["stem"] + D.DRAFT_SUFFIX)
+        self.assertTrue(path.is_file())
+        body = json.loads(path.read_text("utf-8"))
+        self.assertEqual(body["draft"], 1)
+        self.assertEqual(body["stem"], saved["stem"])
+        self.assertEqual(D.list_drawings(self.root)["items"][0]["stem"], saved["stem"], "the library is untouched")
+
+    def test_draft_validates_its_document(self):
+        bad = sample_doc()
+        bad["objects"][0]["p1"] = "nope"
+        with self.assertRaises(D.DrawingError):
+            D.write_draft(self.root, {"stem": "", "doc": bad})
+        with self.assertRaises(D.DrawingError):
+            D.write_draft(self.root, {"stem": "", "doc": "x"})
+        with self.assertRaises(D.DrawingError):
+            D.write_draft(self.root, "x")
+
+    def test_library_lineage_groups_copies_without_parsing_them(self):
+        src = self._save("support")
+        first = D.duplicate_drawing(self.root, src["stem"])
+        second = D.duplicate_drawing(self.root, first["stem"])
+        items = {it["stem"]: it for it in D.list_drawings(self.root)["items"]}
+        self.assertNotIn("parent", items[src["stem"]])
+        self.assertEqual(items[src["stem"]]["root"], src["stem"])
+        self.assertEqual(items[first["stem"]]["parent"], src["stem"])
+        self.assertEqual(items[first["stem"]]["root"], src["stem"])
+        self.assertEqual(items[second["stem"]]["parent"], first["stem"])
+        self.assertEqual(items[second["stem"]]["root"], src["stem"], "a copy of a copy belongs to the same family")
+        self.assertEqual({it["versions"] for it in items.values()}, {3})
+
+    def test_lineage_tail_is_read_without_the_document_body(self):
+        drawings = self.root / "Inbox" / "Drawings"
+        drawings.mkdir(parents=True, exist_ok=True)
+        big = drawings / ("big" + D.DOC_SUFFIX)
+        big.write_bytes(b'{"objects":[' + b"0," * 50000 + b'0],"meta":{"stem":"big","parent":"src"}}')
+        self.assertGreater(big.stat().st_size, 100000)
+        self.assertEqual(D.lineage_of(D._doc_tail(drawings, big.name)), "src")
+        plain = drawings / ("plain" + D.DOC_SUFFIX)
+        plain.write_bytes(b'{"objects":[]}')
+        self.assertEqual(D.lineage_of(D._doc_tail(drawings, plain.name)), "")
+        self.assertNotIn("parent", {it["stem"]: it for it in D.list_drawings(self.root)["items"]}.get("plain", {"parent": None}))
+
+    def test_hidden_sketch_flag_roundtrips(self):
+        doc = sample_doc()
+        doc["version"] = 6
+        doc["sketches"] = [{"id": "sk1", "name": "Base", "plane": "XY", "offset": 0, "hidden": True, "locked": True}]
+        out = D.validate_document(doc)
+        self.assertIs(out["sketches"][0]["hidden"], True)
+        self.assertIs(out["sketches"][0]["locked"], True)
+        loose = dict(doc)
+        loose["sketches"] = [{"id": "sk1", "name": "Base", "plane": "XY", "offset": 0, "hidden": "yes"}]
+        self.assertNotIn("hidden", D.validate_document(loose)["sketches"][0], "only a real true hides a sketch")
+        saved = D.save_drawing(self.root, {"name": "avec-masquee", "source": "desktop", "doc": doc, "png": png_url()})
+        self.assertIs(D.open_drawing(self.root, saved["stem"])["doc"]["sketches"][0]["hidden"], True)
+
+    def test_duplicate_makes_a_new_immutable_stem_with_the_same_png_and_lineage(self):
+        src = self._save("support")
+        out = D.duplicate_drawing(self.root, src["stem"])
+        self.assertNotEqual(out["stem"], src["stem"])
+        self.assertTrue(out["name"].endswith("copie"))
+        drawings = self.root / "Inbox" / "Drawings"
+        orig = json.loads((drawings / (src["stem"] + D.DOC_SUFFIX)).read_text("utf-8"))
+        copy = json.loads((drawings / (out["stem"] + D.DOC_SUFFIX)).read_text("utf-8"))
+        self.assertEqual(copy["meta"]["parent"], src["stem"])
+        self.assertEqual({k: v for k, v in copy.items() if k != "meta"},
+                         {k: v for k, v in orig.items() if k != "meta"}, "the same geometry, lineage aside")
+        self.assertEqual((drawings / (out["stem"] + D.PNG_SUFFIX)).read_bytes(),
+                         (drawings / (src["stem"] + D.PNG_SUFFIX)).read_bytes())
+        self.assertEqual(D.open_drawing(self.root, out["stem"])["doc"]["meta"]["parent"], src["stem"])
+        self.assertEqual(D.clear_draft(self.root, out["stem"])["cleared"], False)
+        with self.assertRaises(D.DrawingError):
+            D.duplicate_drawing(self.root, "../Inbox")
+        with self.assertRaises(D.DrawingError):
+            D.duplicate_drawing(self.root, "absent")
 
 
 class DxfTests(unittest.TestCase):
@@ -584,6 +770,29 @@ class HttpTests(unittest.TestCase):
         status, _h, _b = self._post(self.payload(), cookie=None)
         self.assertEqual(status, 401)
 
+    def test_live_route_is_reachable_and_admin_only(self):
+        live.reset()
+        body = {"key": "live-http", "doc": {"format": "hqdraw", "version": 6, "units": "mm", "objects": []},
+                "client": "pc", "rev": 0, "name": "PC"}
+        path = "/api/drawings/live"
+        for cookie, origin, expected in ((None, "self", 401), ("phone", "self", 403), ("admin", None, 403)):
+            status, _h, _b = self._post(body, cookie=cookie, origin=origin, path=path)
+            self.assertEqual(status, expected)
+        for cookie, expected in ((None, 401), ("phone", 403)):
+            status, _h, _b = self._get(path + "?key=live-http&client=pad", cookie=cookie)
+            self.assertEqual(status, expected)
+        status, _h, raw = self._post(body, path=path)
+        self.assertEqual(status, 201, raw)
+        rev = json.loads(raw)["rev"]
+        status, _h, raw = self._get(path + "?key=live-http&client=pad&rev=0")
+        self.assertEqual(status, 200, raw)
+        got = json.loads(raw)
+        self.assertTrue(got["changed"])
+        self.assertEqual(got["doc"]["version"], 6)
+        status, _h, raw = self._get(path + "?key=live-http&client=pad&rev=" + str(rev))
+        self.assertEqual(status, 200, raw)
+        self.assertFalse(json.loads(raw)["changed"])
+
     def test_csrf_origin_enforced(self):
         status, _h, body = self._post(self.payload(), origin=None)
         self.assertEqual(status, 403)
@@ -624,6 +833,11 @@ class HttpTests(unittest.TestCase):
         self.assertIn("attachment", h.get("Content-Disposition", ""))
         self.assertIn(b"$INSUNITS", body)
 
+    def test_json_array_is_rejected(self):
+        status, _h, body = self._post(None, raw=b"[]")
+        self.assertEqual(status, 400)
+        self.assertEqual(json.loads(body)["error"], "JSON invalide")
+
     def test_bad_requests(self):
         status, _h, _b = self._post(None, raw=b"{not json")
         self.assertEqual(status, 400)
@@ -641,6 +855,35 @@ class HttpTests(unittest.TestCase):
             status, _h, _b = self._get(path)
             self.assertEqual(status, 400, path)
         status, _h, _b = self._get("/api/drawings/open?stem=does-not-exist")
+        self.assertEqual(status, 404)
+
+    def _drop_empty_drawings_dir(self):
+        """Leave the shared temp root as found: the mesh test asserts Drawings was never created."""
+        d = self.tmp / "Inbox" / "Drawings"
+        try:
+            if d.is_dir() and not any(d.iterdir()):
+                d.rmdir()
+        except OSError:
+            pass
+
+    def test_delete_route_is_admin_only_and_removes_the_drawing(self):
+        self.addCleanup(self._drop_empty_drawings_dir)
+        path = "/api/drawings/delete"
+        self._post(self.payload("del-piece"))
+        stem = "del-piece_HQWeb-Mobile"
+        doc = self.tmp / "Inbox" / "Drawings" / (stem + D.DOC_SUFFIX)
+        png = self.tmp / "Inbox" / "Drawings" / (stem + D.PNG_SUFFIX)
+        self.assertTrue(doc.is_file())
+        for cookie, origin, expected in ((None, "self", 401), ("phone", "self", 403), ("admin", None, 403)):
+            status, _h, _b = self._post({"stem": stem}, cookie=cookie, origin=origin, path=path)
+            self.assertEqual(status, expected)
+        self.assertTrue(doc.is_file(), "a refused request never deletes")
+        status, _h, body = self._post({"stem": stem}, path=path)
+        self.assertEqual(status, 200, body)
+        self.assertFalse(doc.exists())
+        self.assertFalse(png.exists())
+        self.assertNotIn(stem, [i["stem"] for i in json.loads(self._get("/api/drawings")[2])["items"]])
+        status, _h, body = self._post({"stem": stem}, path=path)
         self.assertEqual(status, 404)
 
     def test_body_size_limit(self):
@@ -668,6 +911,36 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(status, 403)
         status, _h, _b = self._get("/api/desk/snapshot", cookie=None)
         self.assertEqual(status, 401)
+
+    def test_draft_and_duplicate_routes_are_admin_and_csrf_guarded(self):
+        try:
+            self._draft_and_duplicate()
+        finally:  # other tests of this class check that nothing was persisted
+            shutil.rmtree(self.tmp / "Inbox" / "Drawings", ignore_errors=True)
+
+    def _draft_and_duplicate(self):
+        status, _h, body = self._post({"stem": "", "name": "brouillon", "doc": sample_doc()}, path="/api/drawings/draft")
+        self.assertEqual(status, 200, body)
+        self.assertEqual(json.loads(body)["key"], "scratch")
+        status, _h, body = self._post({"clear": True, "key": ""}, path="/api/drawings/draft")
+        self.assertEqual(status, 200, body)
+        self.assertTrue(json.loads(body)["ok"])
+        status, _h, _b = self._post({"clear": True, "key": ""}, cookie=None, path="/api/drawings/draft")
+        self.assertEqual(status, 401)
+        status, _h, _b = self._post({"clear": True, "key": ""}, cookie="phone", path="/api/drawings/draft")
+        self.assertEqual(status, 403)
+        status, _h, _b = self._post({"clear": True, "key": ""}, origin="https://evil.example", path="/api/drawings/draft")
+        self.assertEqual(status, 403)
+        status, _h, body = self._post({"name": "piece", "source": "desktop", "doc": sample_doc(), "png": png_url()})
+        self.assertEqual(status, 200, body)
+        stem = json.loads(body)["stem"]
+        status, _h, body = self._post({"stem": stem}, path="/api/drawings/duplicate")
+        self.assertEqual(status, 200, body)
+        self.assertNotEqual(json.loads(body)["stem"], stem)
+        status, _h, _b = self._post({"stem": stem}, cookie=None, path="/api/drawings/duplicate")
+        self.assertEqual(status, 401)
+        status, _h, body = self._post({"stem": "absent"}, path="/api/drawings/duplicate")
+        self.assertEqual(status, 404, body)
 
     def test_app_page_has_dessiner_tab(self):
         html = iphone_bridge.render_app().decode("utf-8")

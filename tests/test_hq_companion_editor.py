@@ -84,6 +84,25 @@ class EditorTests(Base):
         self.assertEqual(before, after)
         self.assertFalse(self.calls)
 
+    def test_preview_with_expired_personhood_events_does_not_write(self):
+        import hq_personhood
+        owner = memory.current_owner()
+        for _ in range(6):
+            hq_personhood.record_event("transferania", kind="correction", topic="café", text="non",
+                                       outcome="negative", now=self.clock[0], owner=owner)
+        self.clock[0] += hq_personhood.RETENTION + 86400
+        before = {str(p): p.read_bytes() for p in self.root.rglob("*") if p.is_file()}
+        code, out = self.request("context_preview", kind="chat", message="Tu te souviens du café ?",
+                                 persona="warm", view="accueil")
+        self.assertEqual(code, 200, out)
+        self.assertTrue(out["read_only"])
+        after_preview = {str(p): p.read_bytes() for p in self.root.rglob("*") if p.is_file()}
+        self.assertEqual(before, after_preview)
+        # Sensitivity check: a persisting snapshot on the exact same expired state DOES prune and write.
+        hq_personhood.snapshot("transferania", owner=owner, now=self.clock[0], persist=True)
+        after_persist = {str(p): p.read_bytes() for p in self.root.rglob("*") if p.is_file()}
+        self.assertNotEqual(before, after_persist)
+
     def test_preview_wrong_kind_empty_or_oversized_message(self):
         for kwargs in ({"kind": "wrong", "message": "Hi"}, {"kind": "chat", "message": ""},
                        {"kind": "chat", "message": "x" * 1601}):

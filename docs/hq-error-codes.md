@@ -63,6 +63,26 @@ Prefer **`agent_triage.error_code_hints`** and **`request_id_index`** in **`GET 
 | `deprecated` | 410 | Route/action retired |
 | `gemini_visit_quota` | 502 | Visit-specific Gemini budget spent; NVIDIA fallback was unavailable or also failed |
 
+## Atelier 3D
+
+| Code | Typical HTTP | Agent hint |
+|------|--------------|------------|
+| `printer_offline` | 503 | No live link for that printer yet — check IP, LAN/Developer mode, `link.error` in `/api/print3d/state` |
+| `printer_error` | 502 | The printer refused or dropped a command (bad access/check code, unreachable) |
+| `camera_unavailable` | 503/504 | Camera hub has no frame — printer camera off, wrong code, or another client holds it |
+| `camera_busy` | 429 | Already 4 viewers on that printer's camera |
+| `printer_busy` | 409 | A start was refused: the printer is printing, paused or preparing |
+| `not_sliced` | 422 | The file cannot start on that printer: Bambu needs a sliced 3MF, Flashforge .gcode/.gx/sliced 3MF |
+| `bad_plate` | 422 | The plate number is not in the sliced 3MF |
+| `filament_mismatch` | 422 | A filament in the file has no matching loaded AMS slot (type/colour) |
+| `duplicate` | 409 | Another printer already uses that IP address |
+| `ambiguous` | 409 | Elsea was given a printer name matching several printers |
+| `makerworld_blocked` | 502 | Cloudflare challenged the profile page or the cookie expired — paste a fresh cookie + User-Agent; design totals still work with a known uid |
+| `makerworld_unreachable` | 502 | makerworld.com not reachable |
+| `makerworld_parse` | 502 | MakerWorld changed its page/JSON shape — see `hq_makerworld.parse_*` |
+| `makerworld_not_configured` | 400 | No MakerWorld handle in Atelier 3D settings |
+| `rate_limited` | 429 | Manual MakerWorld refresh within a minute of the last one |
+
 ## Reader / diagnostics
 
 | Code | Typical HTTP | Agent hint |

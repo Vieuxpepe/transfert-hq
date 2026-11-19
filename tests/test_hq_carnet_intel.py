@@ -12,6 +12,7 @@ import json
 import os
 import sys
 import unittest
+from tests.hq_symlink_test_helper import skip_without_symlinks
 from unittest import mock
 from pathlib import Path
 
@@ -454,6 +455,7 @@ class SnapshotTests(IntelBase):
         self.assertEqual((status, out["code"]), (503, "snapshots_unavailable"))
         self.assertEqual(self.snap_files(), [])
 
+    @skip_without_symlinks
     def test_a_linked_reference_is_refused_not_followed(self):
         outside = self.tmp.parent / ("outside-" + os.urandom(3).hex())
         outside.write_bytes(b"secret")
@@ -919,6 +921,7 @@ class BackupTests(IntelBase):
         self.assertNotIn("snapshots", out)
         self.assertTrue(out["valid"])
 
+    @skip_without_symlinks
     def test_redirected_store_is_refused(self):
         self.proj_page([para("x")])
         target = self.tmp / "elsewhere"

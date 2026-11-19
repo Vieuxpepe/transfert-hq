@@ -264,8 +264,96 @@ class MixTests(unittest.TestCase):
         out = dig.mix(pools, affinity={"artist 3": 5.0}, weight={"top": 1}, skip_uris=set(), banned=set(), aired={}, cap=3)
         self.assertEqual(out[0]["uri"], "spotify:track:3")
 
+    def test_familiarity_target_shifts_novelty_vs_comfort_weights(self):
+        with mock.patch.object(dig.random, "betavariate", side_effect=lambda a, b: a / (a + b)):
+            explorer = dig.weights(["discovery", "classics"], focus=None, pool_stats={}, target_familiarity=0.20)
+            comfort = dig.weights(["discovery", "classics"], focus=None, pool_stats={}, target_familiarity=0.85)
+        self.assertGreater(explorer["discovery"], explorer["classics"])
+        self.assertGreater(comfort["classics"], comfort["discovery"])
+
+    def test_tired_artists_and_tracks_rest_when_pool_is_large_and_fallback_when_small(self):
+        large = {"top": [track(i) for i in range(1, 18)]}
+        rested = dig.mix(large, affinity={"artist 1": 6.0}, weight={"top": 1}, skip_uris=set(), banned=set(),
+                         aired={}, cap=20, tired_artists={"artist 1"}, tired_tracks={("song 2", "artist 2")})
+        rested_uris = {r["uri"] for r in rested}
+        self.assertNotIn("spotify:track:1", rested_uris)
+        self.assertNotIn("spotify:track:2", rested_uris)
+
+        small = {"top": [track(1), track(2), track(3)]}
+        fallback = dig.mix(small, affinity={}, weight={"top": 1}, skip_uris=set(), banned=set(),
+                           aired={}, cap=10, tired_artists={"artist 1"})
+        self.assertEqual(len(fallback), 3)
+        self.assertEqual(fallback[-1]["uri"], "spotify:track:1")
+
+    def test_bpm_genre_and_mood_energy_scoring_in_mix(self):
+        slow = {**track(1, artist="AmbientA"), "genres": ["ambient"], "bpm": 80}
+        fit = {**track(2, artist="SynthB"), "genres": ["darksynth"], "bpm": 148}
+        fast = {**track(3, artist="NoiseC"), "genres": ["ambient"], "bpm": 210}
+        out = dig.mix({"top": [slow, fit, fast]}, affinity={}, weight={"top": 1}, skip_uris=set(), banned=set(),
+                      aired={}, cap=3, boosted_genres=["darksynth"], target_bpm_range={"min": 135, "max": 160},
+                      mood_energy=4)
+        self.assertEqual(out[0]["uri"], "spotify:track:2")
+
+    def test_arc_sequence_smooths_transitions_and_keeps_premiere_first(self):
+        rows = [
+            {**track(99, pool="premiere"), "energy_1_5": 5},
+            {**track(1, artist="CalmA"), "energy_1_5": 2},
+            {**track(2, artist="HypeB"), "energy_1_5": 5},
+            {**track(3, artist="WarmC"), "energy_1_5": 2},
+            {**track(4, artist="DriveD"), "energy_1_5": 4},
+        ]
+        ordered = dig._arc_sequence(rows)
+        self.assertEqual(ordered[0]["uri"], "spotify:track:99")
+        self.assertEqual(ordered[1]["uri"], "spotify:track:1")
+        self.assertEqual(ordered[2]["uri"], "spotify:track:3")  # smooth neighbor before stepping up
+
+
+class SonicCacheAndSimilarTests(Base):
+    def test_warm_sonic_cache_and_enrich_pools(self):
+        import hq_ai
+        import hq_music as music
+
+        rows = [
+            {**track(10, artist="Perturbator"), "genres": ["darksynth"], "album": "Dangerous Days 2014"},
+            {**track(11, artist="UnknownBand")},
+        ]
+        ai_json = json.dumps({"tracks": {
+            "spotify:track:11": {"tempo_band": "slow", "energy_1_5": 2, "mood_tags": ["nocturnal"], "era": "2020s"},
+        }})
+        with mock.patch.object(hq_ai, "generate", return_value=(ai_json, "mock-model")):
+            added = dig.warm_sonic_cache([rows[1]], max_batch=5)
+        self.assertGreaterEqual(added, 1)
+        cached = music._load(dig.SONIC_CACHE_FILE, {})
+        self.assertIn("spotify:track:11", cached.get("tracks", {}))
+
+        enriched = dig.enrich_pools({"top": rows})["top"]
+        self.assertEqual(enriched[0]["tempo_band"], "mid")  # inferred deterministically from darksynth
+        self.assertEqual(enriched[0]["era"], "2010s")
+        self.assertEqual(enriched[1]["energy_1_5"], 2)  # loaded from track_sonic_cache.json
+        self.assertEqual(enriched[1]["mood_tags"], ["nocturnal"])
+
+    def test_similar_pool_excludes_seed_and_dedupes(self):
+        seed = {**track(50, artist="Carpenter Brut"), "genres": ["synthwave"]}
+        found = [track(50, artist="Carpenter Brut"), track(51, artist="Carpenter Brut"), track(52, artist="Dance With the Dead")]
+        with mock.patch.object(hq_spotify, "search", return_value={"tracks": found}):
+            rows = dig.similar_pool(seed, limit=5)
+        uris = [r["uri"] for r in rows]
+        self.assertNotIn("spotify:track:50", uris)
+        self.assertEqual(uris, ["spotify:track:51", "spotify:track:52"])
+
 
 class CollectTests(Base):
+    def test_pinned_pool_resolves_reference_tracks(self):
+        import hq_musica_profile as mp
+        mp.save_overrides({"pinned_tracks": ["Carpenter Brut - Turbo Killer"]})
+        with mock.patch.object(hq_spotify, "search", return_value={"tracks": [track(77, artist="Carpenter Brut")]}), \
+             mock.patch.object(hq_spotify, "top_tracks", return_value={"tracks": []}), \
+             mock.patch("hq_music_radar.get_radar", return_value={"items": []}), \
+             mock.patch.object(hq_musica, "_run_tool", return_value={"tracks": []}), \
+             mock.patch.dict(dig.RAW_SOURCES, {k: (lambda: []) for k in dig.RAW_SOURCES}):
+            pools = dig.collect(history=True)
+        self.assertIn("pinned", pools)
+        self.assertEqual(pools["pinned"][0]["uri"], "spotify:track:77")
     def test_late_source_is_dropped_not_awaited(self):
         def slow(*a, **k):
             time.sleep(1.5)

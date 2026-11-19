@@ -142,6 +142,21 @@ def create_session_record(
     }
 
 
+def session_memory_owner(session: dict | None) -> str:
+    """Stable owner key for companion memory, personhood and relationships.
+
+    Prefer the authenticated account id from the session record; fall back to
+    the display name, then ``admin`` for legacy single-user installs.
+    """
+    if not session or not isinstance(session, dict):
+        return "admin"
+    uid = str(session.get("user_id") or "").strip()
+    if uid:
+        return uid
+    name = str(session.get("user") or "").strip()
+    return name or "admin"
+
+
 def parse_stored_session(raw: object, config: dict | None, now: float | None = None) -> dict | None:
     """Validate, deserialize, and safely migrate a stored session record.
 
@@ -1004,6 +1019,11 @@ class SecurityLog:
     EVENT_TRIPWIRE_LOCKDOWN = "auth.tripwire.lockdown"
     EVENT_TRIPWIRE_UNLOCKED = "auth.tripwire.unlocked"
     EVENT_TRIPWIRE_UNLOCK_FAILED = "auth.tripwire.unlock_failed"
+    # Declared for the Securia decoy layer. Nothing emits these yet: no honeypot,
+    # AI-scraper block or proof-of-work gate is installed, so their counts stay 0.
+    EVENT_HONEYPOT_TRIGGERED = "auth.honeypot.triggered"
+    EVENT_AI_SCRAPER_BLOCKED = "auth.ai_scraper.blocked"
+    EVENT_POW_FAILED = "auth.pow.failed"
 
     ALLOWED_EVENTS = frozenset({
         EVENT_LOGIN_SUCCESS,
@@ -1031,6 +1051,9 @@ class SecurityLog:
         EVENT_TRIPWIRE_LOCKDOWN,
         EVENT_TRIPWIRE_UNLOCKED,
         EVENT_TRIPWIRE_UNLOCK_FAILED,
+        EVENT_HONEYPOT_TRIGGERED,
+        EVENT_AI_SCRAPER_BLOCKED,
+        EVENT_POW_FAILED,
     })
 
     ALLOWED_RESULTS = frozenset({
@@ -2624,6 +2647,21 @@ class IpBlocklist:
                 return True, dict(rec)
         return False, None
 
+    def prune_penitence(self) -> dict:
+        """Drop expired quarantine entries and report what was actually removed.
+
+        Securia's « Purger les peines échues » button reads ``purged_count`` and
+        ``retained_count``. Expiry already prunes on read; this makes the purge
+        explicit and observable, and keeps permanent blocks untouched.
+        """
+        now = time.time()
+        with self._lock:
+            before = len(self._entries)
+            if self._prune_expired_locked(now):
+                self._persist()
+            after = len(self._entries)
+        return {"purged_count": before - after, "retained_count": after}
+
     def list_blocked(self) -> list[dict]:
         now = time.time()
         with self._lock:
@@ -2642,6 +2680,15 @@ class IpBlocklist:
 
 
 IP_BLOCKLIST = IpBlocklist()
+
+# Decoy routes the Securia layer reports on. The bridge registers no decoy path,
+# so this stays empty: the UI then shows 0 decoys instead of implying coverage.
+HONEYPOT_DECOY_ROUTES: frozenset[str] = frozenset()
+
+# User-agent signatures the decoy layer would match. The bridge installs no UA
+# filter, so both stay empty rather than advertising signatures nothing enforces.
+AI_SCRAPER_USER_AGENTS: frozenset[str] = frozenset()
+MALICIOUS_SCANNER_USER_AGENTS: frozenset[str] = frozenset()
 
 
 

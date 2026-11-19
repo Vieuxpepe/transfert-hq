@@ -136,7 +136,7 @@ def section_triage(run: Run) -> None:
     run.dest(page, "normal")
     page.locator("#forge-lab summary").click()
     page.locator("#forge-lab-tab-keep").click()
-    run.check(run.until(page, "() => /Pas assez de donn\u00e9es \\(2 \\/ 20\\)/.test(document.querySelector('#forge-lab-panel').textContent)", 10),
+    run.check(run.until(page, "() => /Pas assez de donn\u00e9es \\(2 \\/ 8\\)/.test(document.querySelector('#forge-lab-panel').textContent)", 10),
               "keep rate counts the 2 sorted images and says it is not enough yet")
     ctx.close()
 
@@ -153,7 +153,7 @@ def section_lab(run: Run) -> None:
     rows = page.locator("#forge-lab-panel .forge-lab-group").first.locator(".forge-lab-row")
     run.check(rows.count() == 2 and "PC salon" in rows.nth(0).inner_text() and "Bureau" in rows.nth(1).inner_text(), "the faster PC comes first inside the comparable block")
     run.check("par image" in rows.nth(0).inner_text() and page.locator("#forge-lab-panel meter").count() >= 2, "simple bars with seconds per image")
-    run.check("Pas assez de donn\u00e9es (5 / 20)" in page.locator("#forge-lab-panel").inner_text(), "a setting with 5 images says Pas assez de donn\u00e9es")
+    run.check("Pas assez de donn\u00e9es (5 / 8)" in page.locator("#forge-lab-panel").inner_text(), "a setting with 5 images says Pas assez de donn\u00e9es")
     run.check("Portable" in page.locator("#forge-lab-mixed").inner_text() and "autre-modele" in page.locator("#forge-lab-mixed").inner_text(), "confounded settings are named (Portable only with autre-modele)")
     run.check("score" not in page.locator("#forge-lab").inner_text().lower(), "no single score anywhere")
     run.shot(page, "lab-speed", "#forge-lab")

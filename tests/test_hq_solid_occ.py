@@ -3,6 +3,7 @@ import importlib.util
 import math
 import unittest
 
+import hq_solid as S
 import hq_solid_occ as O
 from tests.test_hq_solid import edge_counts, volume
 
@@ -30,6 +31,16 @@ def rect(d, x0, y0, x1, y1, prefix, sketch=None):
         d["objects"].append(o)
         ids.append(o["id"])
     return ids
+
+
+def ellipse(d, cx, cy, rx, ry, eid, sketch=None):
+    p = {"id": eid + "c", "x": cx, "y": cy}
+    o = {"id": eid, "type": "ellipse", "center": eid + "c", "rx": rx, "ry": ry}
+    if sketch:
+        p["sketch"] = o["sketch"] = sketch
+    d["points"].append(p)
+    d["objects"].append(o)
+    return eid
 
 
 def circle(d, cx, cy, r, cid, sketch=None):
@@ -96,6 +107,73 @@ class OccTests(unittest.TestCase):
         self.assertAlmostEqual(box[1], -3, places=6, msg="the boss sticks out of the front face")
         self.assertAlmostEqual(O._volume(shape), (40 * 20 + math.pi * 100) * 5 + 10 * 3 * 3, places=3)
 
+    def test_ellipse_and_closed_spline_extrude_and_revolve(self):
+        d = doc6()
+        ellipse(d, 0, 0, 10, 5, "e1")
+        d["features"].append({"id": "f1", "type": "extrude", "profile": ["e1"], "depth": 4, "extent": "blind"})
+        shape, _ = self.solid(d)
+        self.assertAlmostEqual(O._volume(shape), math.pi * 10 * 5 * 4, places=2)
+
+        rev = doc6()
+        ellipse(rev, 10, 0, 5, 3, "e2")
+        rev["points"] += [{"id": "ax0", "x": 0, "y": -20}, {"id": "ax1", "x": 0, "y": 20}]
+        rev["objects"].append({"id": "ax", "type": "centerline", "p1": "ax0", "p2": "ax1"})
+        rev["features"].append({"id": "f1", "type": "revolve", "profile": ["e2"], "axis": "ax", "angle": 360})
+        shape, _ = self.solid(rev)
+        self.assertAlmostEqual(O._volume(shape), math.pi * 5 * 3 * 2 * math.pi * 10, places=1)
+
+        tall = doc6()
+        ellipse(tall, 0, 0, 3, 8, "et")
+        tall["features"].append({"id": "f1", "type": "extrude", "profile": ["et"], "depth": 2, "extent": "blind"})
+        shape, _ = self.solid(tall)
+        self.assertAlmostEqual(O._volume(shape), math.pi * 3 * 8 * 2, places=2, msg="a tall ellipse is not refused by gp_Elips")
+        box, _ = O._bounds(shape)
+        self.assertAlmostEqual(box[0], -3, places=6)
+        self.assertAlmostEqual(box[3], 3, places=6)
+        self.assertAlmostEqual(box[1], -8, places=6)
+        self.assertAlmostEqual(box[4], 8, places=6)
+
+        xz = doc6()
+        xz["sketches"].append({"id": "skx", "name": "XZ", "plane": "XZ", "offset": 0})
+        ellipse(xz, 5, 7, 4, 2, "ex", sketch="skx")
+        xz["features"].append({"id": "f1", "type": "extrude", "profile": ["ex"], "depth": 3, "extent": "blind"})
+        shape, _ = self.solid(xz)
+        self.assertAlmostEqual(O._volume(shape), math.pi * 4 * 2 * 3, places=2)
+        box, _ = O._bounds(shape)
+        self.assertAlmostEqual(box[0], 1, places=6)
+        self.assertAlmostEqual(box[3], 9, places=6)
+        self.assertAlmostEqual(box[1], -3, places=6, msg="the normal of XZ points along -Y, so the extrusion is behind the plane")
+        self.assertAlmostEqual(box[4], 0, places=6)
+        self.assertAlmostEqual(box[2], 5, places=6)
+        self.assertAlmostEqual(box[5], 9, places=6)
+
+        loop = [(10 + 10 * math.cos(2 * math.pi * i / 8), 10 * math.sin(2 * math.pi * i / 8)) for i in range(8)]
+        s = doc6()
+        s["points"] += [{"id": f"q{i}", "x": x, "y": y} for i, (x, y) in enumerate(loop)]
+        s["objects"].append({"id": "sp", "type": "spline", "pts": [f"q{i}" for i in range(8)], "closed": True})
+        s["features"].append({"id": "f1", "type": "extrude", "profile": ["sp"], "depth": 4, "extent": "blind"})
+        pts = [(p["x"], p["y"]) for p in s["points"]]
+        poly = S.spline_polyline(pts, True)
+        area = abs(sum(poly[i][0] * poly[(i + 1) % len(poly)][1] - poly[(i + 1) % len(poly)][0] * poly[i][1] for i in range(len(poly)))) / 2
+        shape, _ = self.solid(s)
+        self.assertAlmostEqual(O._volume(shape), area * 4, places=2, msg="the spline solid follows its sampled curve")
+
+        sp_rev = doc6()
+        sp_rev["points"] += [{"id": f"r{i}", "x": 15 + 10 * math.cos(2 * math.pi * i / 8), "y": 10 * math.sin(2 * math.pi * i / 8)} for i in range(8)]
+        sp_rev["points"] += [{"id": "ax0", "x": 0, "y": -20}, {"id": "ax1", "x": 0, "y": 20}]
+        sp_rev["objects"] += [{"id": "spr", "type": "spline", "pts": [f"r{i}" for i in range(8)], "closed": True},
+                              {"id": "ax", "type": "centerline", "p1": "ax0", "p2": "ax1"}]
+        sp_rev["features"].append({"id": "f1", "type": "revolve", "profile": ["spr"], "axis": "ax", "angle": 360})
+        shape, _ = self.solid(sp_rev)
+        self.assertGreater(O._volume(shape), 0, "a closed spline revolves")
+        box, _ = O._bounds(shape)
+        self.assertGreater(box[3] - box[0], 40, "the revolved spline spans both sides of the axis")
+
+        s["objects"][-1].pop("closed")
+        s["features"][0]["id"] = "f0"
+        with self.assertRaisesRegex(S.SolidError, "ouverte"):
+            O.build_shape(s)
+
     def test_revolve_sweep_loft(self):
         d = doc6()
         rect(d, 0, 0, 10, 40, "r")
@@ -156,6 +234,15 @@ class OccTests(unittest.TestCase):
             O.build_shape(d)
         d["features"][1] = {"id": "f2", "type": "shell", "thickness": 40, "open": True}
         with self.assertRaisesRegex(SolidError, "trop épaisse"):
+            O.build_shape(d)
+
+    def test_construction_edges_are_refused(self):
+        from hq_solid import SolidError
+        d = doc6()
+        profile = rect(d, 0, 0, 10, 6, "a")
+        d["features"].append({"id": "f1", "type": "extrude", "profile": profile, "depth": 2, "extent": "blind"})
+        d["objects"][2]["construction"] = True
+        with self.assertRaisesRegex(SolidError, "construction"):
             O.build_shape(d)
 
 

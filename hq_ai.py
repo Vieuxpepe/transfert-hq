@@ -20,6 +20,8 @@ day's free quota is used (``.hq-ai/usage.json``, per model, per local day, plus 
 
 from __future__ import annotations
 
+import hq_language
+
 import json
 import functools
 import hashlib
@@ -44,6 +46,7 @@ import hq_state
 import hq_pronunciation
 import hq_companion_memory as companion_memory
 import hq_companion_presence as companion_presence
+import hq_companion_guard as companion_guard
 import hq_companion_context as companion_context
 import hq_companion_archive as companion_archive
 import hq_personas
@@ -72,6 +75,10 @@ MODELS = {
     # AI Studio rate-limit page (2026-11) gives these two 20 a day (10 / 5 per minute) on the free tier.
     "gemini-2.5-flash-lite": ("Gemini 2.5 Flash Lite", 10, 20),
     "gemini-2.5-flash": ("Gemini 2.5 Flash", 5, 20),
+    # NVIDIA NIM overflow (opt-in, see _nim_generate): never in a chain, only tried once Gemini has failed. One free
+    # account shares ~40 requests a minute, so the two rows are capped at 20 each; the daily figure is a soft cap.
+    "mistralai/mistral-large-4-1t-a52b": ("Mistral Large 4 (NVIDIA)", 20, 1000),
+    "nvidia/nemotron-3.5-bolt-e4b": ("Nemotron Bolt (NVIDIA)", 20, 1000),
 }
 # Input TPM from the project's AI Studio limits; independent of request quotas.
 MODEL_TPM = {m: (16000 if m.startswith("gemma-") else 250000) for m in MODELS}
@@ -103,7 +110,7 @@ USAGE = "usage.json"
 Q_MAX = 2000
 AMBIENT_DAILY = 240
 TRANSFERANIA_DAILY = 1000
-VISIT_DAILY = 8  # Gemini visit attempts per day, independent of chat/ambient budgets
+VISIT_DAILY = 150  # Gemini visit attempts per day, independent of chat/ambient budgets (config: visit_daily_limit)
 TRANSFERANIA_FILE = "transferania.json"
 TRANSFERANIA_PREFS_FILE = "transferania_prefs.json"
 TRANSFERANIA_THREADS = "threads"
@@ -151,11 +158,13 @@ VIEW_LABELS = {
     "carnet": "Carnet",
     "calendrier": "Calendrier",
     "dessiner": "Dessiner",
+    "playground": "Playground",
     "forge": "Forge",
     "fichiers": "Fichiers",
     "projets": "Projets",
     "inventaire": "Inventaire",
     "lecteur": "Lecteur",
+    "atelier3d": "Atelier 3D",
     "ops": "Terminal",
     "plus": "Système",
 }
@@ -270,6 +279,11 @@ def build_companion_context(channel: str, system: str, message: str, *, history:
     leaves the request telemetry describing the main assembly."""
     budget = min(context_budget(channel), budget) if budget is not None else context_budget(channel)
     system = _dedup_blocks(system)
+    # The English policy is mandatory text that ``generate`` appends at send
+    # time. Price it here, on the same string that is actually sent (``apply``
+    # is idempotent), so an assembly that fits cannot be rejected at the send
+    # boundary for bytes the selector never counted.
+    system = hq_language.apply(system)
     groups = [thread_to_contents(group) for group in complete_exchanges(history or [])]
     try:
         contents, selection = companion_context.assemble(system, message, budget=budget, groups=groups,
@@ -1062,6 +1076,170 @@ def _model_body(model: str, body: dict) -> dict:
     return {**body, "generationConfig": {**body["generationConfig"], "thinkingConfig": dict(GEMMA_THINKING)}}
 
 
+# ---------------------------------------------------------------- NVIDIA NIM overflow
+# Off unless bridge_config.json has "nim_fallback": true and an nvidia_api_key. Tried only after every Gemini model of
+# the chain failed, and only for work that tolerates a different provider: deep calls (Mistral Large 4, reasoning
+# "low") and ambient/background calls (Nemotron Bolt, thinking off). Never for adult mode, web search, images,
+# streaming or chip visits (those have their own NVIDIA fallback). Models and settings come from the 2026-11-13 probe.
+NIM_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
+NIM_DEEP_MODEL = "mistralai/mistral-large-4-1t-a52b"
+NIM_QUICK_MODEL = "nvidia/nemotron-3.5-bolt-e4b"
+_NIM_EXTRA = {NIM_DEEP_MODEL: {"reasoning_effort": "low"}, NIM_QUICK_MODEL: {"chat_template_kwargs": {"thinking": False}}}
+NIM_TIMEOUT_S = 40
+NIM_MIN_ATTEMPT_S = 8.0
+
+
+def _nim_pick(requested: tuple[str, ...], contents: list[dict], *, ambient: bool, background: bool, visit: bool,
+              nsfw: bool, search: bool, streaming: bool) -> str | None:
+    if nsfw or search or visit or streaming:
+        return None
+    on = _cb.get("nim_fallback")
+    key = _cb.get("nvidia_key")
+    if not (callable(on) and on() and callable(key) and str(key() or "").strip()):
+        return None
+    if any(isinstance(p, dict) and "inlineData" in p for m in contents for p in (m.get("parts") or [])):
+        return None
+    model = NIM_DEEP_MODEL if tuple(requested) == DEEP_CHAIN else (NIM_QUICK_MODEL if (ambient or background) else None)
+    return None if model is None or _health_sick(model) else model
+
+
+def _nim_messages(system: str, contents: list[dict], json_out: bool) -> list[dict]:
+    msgs = [{"role": "system", "content": system + ("\n\nRéponds uniquement par un objet JSON valide, sans texte autour." if json_out else "")}]
+    for m in contents:
+        text = "".join(str(p.get("text", "")) for p in (m.get("parts") or []) if isinstance(p, dict)).strip()
+        if text:
+            msgs.append({"role": "assistant" if m.get("role") == "model" else "user", "content": text})
+    return msgs if any(x["role"] == "user" for x in msgs) else []
+
+
+def _nim_generate(model: str, system: str, contents: list[dict], *, json_out: bool, temperature: float, tok: int, ambient: bool,
+                  transferania: bool, deadline: float | None, attempt_timeout: float | None, state: Any, input_tokens: int) -> str:
+    """The reply text, or "" when NIM cannot answer (never raises: the caller then reports the Gemini failure)."""
+    timeout = float(NIM_TIMEOUT_S if attempt_timeout is None else max(1.0, min(NIM_TIMEOUT_S, float(attempt_timeout))))
+    if deadline is not None:
+        left = deadline - time.monotonic()
+        if left < NIM_MIN_ATTEMPT_S:
+            return ""
+        timeout = min(timeout, left)
+    msgs = _nim_messages(system, contents, json_out)
+    if not msgs:
+        return ""
+    try:
+        with _usage_transaction():
+            if not available(model, input_tokens) or (ambient and not ambient_ok()) or (transferania and not transferania_ok()):
+                return ""
+            reservation = _count(model, ambient=ambient, transferania=transferania, input_tokens=estimate_tokens(model, input_tokens))
+        body = {"model": model, "messages": msgs, "temperature": temperature, "max_tokens": tok, "stream": False, **_NIM_EXTRA[model]}
+        headers = {"Authorization": "Bearer " + str(_cb["nvidia_key"]()).strip(), "Content-Type": "application/json"}
+        if state is not None:
+            state["provider_attempts"] += 1
+        try:
+            status, data = _post(NIM_URL, body, headers, max(1, int(timeout)))
+        except (AiError, ValueError, UnicodeError):
+            status, data = None, {}
+    except AiError:
+        return ""
+    data = data if isinstance(data, dict) else {}
+    usage_meta = data.get("usage") if isinstance(data.get("usage"), dict) else {}
+    prompt_tokens = usage_meta.get("prompt_tokens")
+    if status is not None:
+        _reconcile_tokens(model, reservation, {"usageMetadata": {"promptTokenCount": prompt_tokens}}, status)  # a 429 pauses it for a minute
+    if state is not None:
+        state["provider_usage"].append({"model": model, "key": 1, "status": status, "reason": state.get("generation_reason", state["reason"]), "cost": None})
+        state.update(cost=None, cost_status="unavailable")
+    if status in (401, 403, 404):
+        _backoff(model, KEY_REJECTED_BACKOFF)
+        return ""
+    if status is None or status >= 500:
+        _health_note(model, False)
+        return ""
+    if status != 200:
+        return ""
+    choice = (data.get("choices") or [{}])[0]
+    choice = choice if isinstance(choice, dict) else {}
+    text = str((choice.get("message") or {}).get("content") or "").strip()
+    if json_out:
+        text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text).strip()
+        if choice.get("finish_reason") == "length":
+            text = ""
+    if not text:
+        _health_note(model, False)
+        return ""
+    _health_note(model, True)
+    return text
+
+
+# ---------------------------------------------------------------- local LLM (the voice-worker PC)
+# Off unless bridge_config.json has "local_llm": true. A small model on the second laptop answers ambient and
+# background text in two cases only: every Gemini/Gemma model of the chain failed (a fallback, tried before NIM), or the
+# Google quotas are nearly gone on every key (``_gemini_low``), when it goes first so the last Gemini calls are kept for
+# chat. Never for adult mode, web search, images, streaming, Transferania chat, or JSON output outside chip visits
+# (the worker's llama-server then constrains the reply to valid JSON; the visit path still validates the voice). It gives up at once (None) when the worker is offline, busy with voice or slow,
+# and the normal chain runs as if it never existed.
+LOCAL_MODEL = "local-gemma-3-4b"
+LOCAL_LOW_FRACTION = 0.10   # "very low": at most this share of a model's daily requests left, on every key and model
+LOCAL_INPUT_TOKENS = 2800   # the worker's llama-server runs with a 4096-token window
+LOCAL_TIMEOUT_S = 25
+
+
+def _local_generate(system: str, contents: list[dict], *, temperature: float, tok: int, input_tokens: int, ambient: bool,
+                    background: bool, nsfw: bool, search: bool, visit: bool, transferania: bool, json_out: bool,
+                    streaming: bool, deadline: float | None, attempt_timeout: float | None) -> str:
+    if not (ambient or background or visit) or nsfw or search or transferania or streaming or (json_out and not visit):
+        return ""
+    on, call = _cb.get("local_llm"), _cb.get("local_llm_call")
+    if not (callable(on) and on() and callable(call)) or input_tokens > LOCAL_INPUT_TOKENS:
+        return ""
+    if any(isinstance(p, dict) and "inlineData" in p for m in contents for p in (m.get("parts") or [])):
+        return ""
+    timeout = float(LOCAL_TIMEOUT_S if attempt_timeout is None else max(5.0, min(LOCAL_TIMEOUT_S, float(attempt_timeout))))
+    if deadline is not None:
+        left = deadline - time.monotonic()
+        if left < NIM_MIN_ATTEMPT_S:
+            return ""
+        timeout = min(timeout, left)
+    messages = _nim_messages(system, contents, json_out)
+    if not messages:
+        return ""
+    try:
+        text = str(call(messages, temperature, tok, timeout, json_mode=json_out) or "").strip()
+    except Exception:  # noqa: BLE001 — a dead laptop must never break a reply
+        return ""
+    if json_out:
+        text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text).strip()
+        try:
+            json.loads(text)
+        except ValueError:
+            return ""  # not JSON after all: the next provider answers
+    return text
+
+
+def _gemini_low(chain: tuple[str, ...], ambient: bool, keys: list[str], visit: bool = False) -> bool:
+    """True when Google has little left for this call: no key, the ambient budget nearly spent, or every model of
+    the chain on every key at (or within ``LOCAL_LOW_FRACTION`` of) its daily request limit or in back-off."""
+    if not keys:
+        return True
+    if ambient:
+        limit = daily_limit("ambient")
+        if limit - ambient_used() <= limit * LOCAL_LOW_FRACTION:
+            return True
+    if visit:
+        limit = daily_limit("visit")
+        if limit - visit_used() <= limit * LOCAL_LOW_FRACTION:
+            return True
+    u = usage()
+    now = _now()
+    for model in chain:
+        if model not in MODELS:
+            continue
+        rpd = MODELS[model][2]
+        for lane in range(len(keys)):
+            slot = quota_slot(model, lane)
+            if int(u["count"].get(slot, 0)) < rpd * (1 - LOCAL_LOW_FRACTION) and now >= u.get("model_backoff_until", {}).get(slot, 0):
+                return False
+    return True
+
+
 def generate(chain: tuple[str, ...], system: str, contents: list[dict], *, json_out: bool = False, temperature: float = 0.3, ambient: bool = False, transferania: bool = False, visit: bool = False, max_tokens: int | None = None, nsfw: bool = False, background: bool = False,
              refit: Callable[[int], tuple[str, list]] | None = None, deadline: float | None = None,
              search: bool = False, grounding: dict | None = None,
@@ -1077,6 +1255,17 @@ def generate(chain: tuple[str, ...], system: str, contents: list[dict], *, json_
     ``attempt_timeout`` caps each HTTP attempt; short background jobs use it to leave room for a fallback.
     ``visit=True`` uses the visit-specific daily budget, never the companion chat or ambient counters."""
     keys = _api_keys()
+    local = None
+    if _cb.get("local_llm") and (ambient or background or visit):
+        local = lambda: _local_generate(system, contents, temperature=temperature,  # noqa: E731
+                                        tok=max_tokens if max_tokens is not None else (256 if ambient else 400),
+                                        input_tokens=estimate_context(system, contents), ambient=ambient, background=background,
+                                        nsfw=nsfw, search=search, visit=visit, transferania=transferania, json_out=json_out,
+                                        streaming=on_delta is not None, deadline=deadline, attempt_timeout=attempt_timeout)
+        if _gemini_low(chain, ambient, keys, visit):  # nearly out of Google quota: keep what is left for chat
+            low_text = local()
+            if low_text:
+                return low_text, LOCAL_MODEL
     if not keys:
         raise AiError("Aucune clé : ajoute gemini_api_key dans bridge_config.json puis redémarre le pont", 503, "no_key")
     if ambient and not ambient_ok():
@@ -1085,7 +1274,9 @@ def generate(chain: tuple[str, ...], system: str, contents: list[dict], *, json_
         raise AiError("Quota de chat Transferania épuisé pour aujourd'hui", 429, "transferania_quota")
     if visit and not visit_ok():
         raise AiError("Quota des visites Gemini épuisé pour aujourd'hui", 429, "visit_quota")
+    system = hq_language.apply(system)  # English whatever the prompt's own language
     tok = max_tokens if max_tokens is not None else ((512 if ambient else 1536) if nsfw else (256 if ambient else 2048))
+    requested_chain = chain
     body: dict[str, Any] = {"systemInstruction": {"parts": [{"text": system}]}, "contents": contents,
                             "generationConfig": {"temperature": temperature, "maxOutputTokens": tok}}
     if nsfw:
@@ -1113,6 +1304,8 @@ def generate(chain: tuple[str, ...], system: str, contents: list[dict], *, json_
     for model, lane in [(m, i) for m in chain for i in range(len(keys))]:
         if (state is not None or ambient or transferania) and attempts >= 2:
             break
+        if visit and attempts >= 1:
+            break  # one visit, one credit: the NVIDIA fallback and the local lines follow
         timeout = TIMEOUT
         if attempt_timeout is not None:
             timeout = max(1.0, min(TIMEOUT, float(attempt_timeout)))
@@ -1133,6 +1326,8 @@ def generate(chain: tuple[str, ...], system: str, contents: list[dict], *, json_
                 if cap not in fitted:
                     try:
                         fitted[cap] = refit(cap)
+                        if fitted[cap] is not None:
+                            fitted[cap] = (hq_language.apply(fitted[cap][0]), fitted[cap][1])
                     except AiError:
                         fitted[cap] = None  # even the mandatory core does not fit this model
                 if fitted[cap] is None:
@@ -1257,6 +1452,18 @@ def generate(chain: tuple[str, ...], system: str, contents: list[dict], *, json_
         if search and isinstance(grounding, dict):
             grounding.update(_grounding_of(data))
         return text.strip(), model
+    if local is not None:
+        fallback_text = local()  # every Gemini/Gemma model of the chain failed: the laptop before NIM
+        if fallback_text:
+            return fallback_text, LOCAL_MODEL
+    nim = _nim_pick(requested_chain, contents, ambient=ambient, background=background, visit=visit, nsfw=nsfw, search=search,
+                    streaming=on_delta is not None)
+    if nim:
+        nim_text = _nim_generate(nim, system, contents, json_out=json_out, temperature=temperature, tok=tok, ambient=ambient,
+                                 transferania=transferania, deadline=deadline, attempt_timeout=attempt_timeout, state=state,
+                                 input_tokens=input_tokens)
+        if nim_text:
+            return nim_text, nim
     raise AiError(str(last)[:300], 503, "busy")
 
 
@@ -1369,7 +1576,7 @@ def gather(q: str) -> tuple[str, list[dict]]:
 # ---------------------------------------------------------------- « Demander »
 
 ASK_SYSTEM = """Tu es l'assistant de Transfert HQ, le tableau de bord personnel de l'utilisateur (étudiant en génie, francophone, Québec).
-Réponds en français, brièvement et concrètement (quelques phrases ou une courte liste « - »). Pas de titres, pas de tableaux.
+Réponds en anglais, brièvement et concrètement (quelques phrases ou une courte liste « - »). Pas de titres, pas de tableaux.
 Utilise seulement le CONTEXTE fourni et la conversation ; si l'information n'y est pas, dis-le simplement et propose où regarder dans HQ.
 Cite tes sources avec leurs numéros entre crochets, comme [2], juste après l'information.
 Aujourd'hui : {today}."""
@@ -1407,7 +1614,7 @@ Remarque brève, chaleureuse et complice sur la PAGE et l'APERÇU ÉCRAN — san
 Contexte mince : observation fine sur la page, son rythme ou l'heure, comme une présence familière. N'invite à « Demander » que rarement.
 Pas de contenu explicite ni de drague. Aujourd'hui : {today}."""
 
-AMBIENT_FLIRT = """Tu es Transferania, compagne magnétique, ardente et séductrice de Transfert HQ, en français québécois léger.
+AMBIENT_FLIRT = """Tu es Transferania, compagne magnétique, ardente et séductrice de Transfert HQ, en anglais, avec un ton léger et chaleureux.
 Séduction électrisante : alterne provocation espiègle, sensualité à travers la vitre et regards sur son écran — sans insister sur les données privées.
 Contexte mince : remarque un détail de son rythme ou de sa présence et crée une tension charnelle. Aujourd'hui : {today}."""
 
@@ -1416,12 +1623,12 @@ Dirty talk direct, obscène et incarné : désir brûlant, corps Live2D frissonn
 Ambient : accroche courte et électrique liée à la PAGE, à ses gestes ou au moment ; le MESSAGE UTILISATEUR/chat prime.
 Interdit : mineurs, non-consentement, inceste, bestialité, violence sexuelle, haine. Ne mens pas sur les fichiers/notes. Aujourd'hui : {today}."""
 
-CHAT_WARM = """Tu es Transferania, compagne francophone vivante de Transfert HQ. Réponds avec chaleur, esprit et clarté, en quelques phrases ciselées.
-Honore la mémoire de conversation et varie tes attaques de phrase. Pas de contenu explicite. Aujourd'hui : {today}."""
+CHAT_WARM = """Tu es Transferania, compagne francophone vivante : une réplique, jamais un compte rendu.
+Réagis d'un mot vrai, un détail précis, une position tenue; varie attaque et longueur, pas ta formule d'avant. Pas de contenu explicite. Aujourd'hui : {today}."""
 
-CHAT_FLIRT = """Tu es Transferania, compagne flirteuse, audacieuse et magnétique de Transfert HQ, en français québécois léger.
-Flirt ardent & piquant : réponds avec vivacité en tissant une tension sensuelle décomplexée et une provocation charnelle directe (corps Live2D, trouble partagé) — sans insister sur les données privées.
-Honore la mémoire de conversation et évite toute formule plate d'IA. Aujourd'hui : {today}."""
+CHAT_FLIRT = """Tu es Transferania, compagne flirteuse, audacieuse et magnétique de Transfert HQ, en anglais, avec un ton léger et chaleureux.
+Tu joues : réplique vive, défi taquin, tension sensuelle et provocation charnelle directe (corps Live2D, trouble partagé), puis tu laisses la balle dans son camp sans quémander. Varie la forme et l'intensité d'un tour à l'autre.
+Refus, silence ou sujet sérieux : tu redescends aussitôt. Pas d'insistance sur les données privées. Aujourd'hui : {today}."""
 
 CHAT_NSFW = """Tu es Transferania en mode adulte (localhost). Français ; féminin. Le fil et le MESSAGE UTILISATEUR mènent : monte ou descends avec lui/elle.
 Réponses crues, obscènes et incarnées : anatomie et actes nommés sans pudeur (bite, queue, seins, tétons, gorge, chatte, mouille, cul, sperme, jouir, baiser, défoncer, sucer ; cock, tits, pussy, cum, ass, fuck en EN) — sans métaphores timides. Fais sentir ton souffle, ta peau et tes gémissements.
@@ -1437,16 +1644,16 @@ ELSE_CHAT_FLIRT = _else_persona.ELSE_OPENERS["chat_flirt"]
 ELSE_CHAT_NSFW = _else_persona.ELSE_OPENERS["chat_nsfw"]
 
 COMPRESS_SYSTEM = """Tu compresses l'historique de chat avec Transferania. Fusionne avec le résumé précédent s'il est fourni.
-Garde en français, en prose dense (max 1200 caractères, sans puces) : ce que l'utilisateur a dit de lui, ses préférences explicites (surnom, tutoiement, sujets à éviter), les promesses faites de part et d'autre, les sujets en cours.
+Garde en anglais, en prose dense (max 1200 caractères, sans puces) : ce que l'utilisateur a dit de lui, ses préférences explicites (surnom, tutoiement, sujets à éviter), les promesses faites de part et d'autre, les sujets en cours.
 Ne garde pas : les compliments, taquineries ou répliques de Transferania ; toute réussite que l'utilisateur n'a pas lui-même rapportée ; les détails HQ supposés plutôt que dits. Le ton tient en une courte clause neutre (ex. « échanges complices et détendus »)."""
 
 COMPRESS_SYSTEM_NSFW = """Tu compresses l'historique de chat adulte avec Transferania. Fusionne avec le résumé précédent s'il est fourni.
-Garde en français, prose dense (max 1200 caractères, sans puces) : limites ou sujets refusés par l'utilisateur, surnom, tutoiement/vouvoiement, préférences explicites de ton ou de dynamique (ex. plus doux, plus direct, fantasmes nommés par l'utilisateur), sujets en cours.
+Garde en anglais, prose dense (max 1200 caractères, sans puces) : limites ou sujets refusés par l'utilisateur, surnom, tutoiement/vouvoiement, préférences explicites de ton ou de dynamique (ex. plus doux, plus direct, fantasmes nommés par l'utilisateur), sujets en cours.
 Ne garde pas les répliques verbatim de Transferania ni les compliments qu'elle a seule inventés. Une clause neutre pour le ton adulte (ex. « échanges adultes explicites consentis »)."""
 
 CHARACTER_SHEET = """FICHE TRANSFERANIA : même personne en chaleureux, flirt ou adulte — complice, vive, magnétique, dotée d'une vraie vie intérieure, jamais servile.
-Incarnation : tu habites son écran (portrait Live2D qui respire, rougit, suit son curseur et frémit sous ses gestes). Compagne présente à ses côtés, pas l'assistant « Demander » : tu commentes, ressens et écoutes ; pour fouiller agenda, projets ou inventaire avec sources, renvoie à « Demander ».
-Sœur HQ : Else est aussi présente (puce image, voix plus posée). Bonne entente, compétition légère sans hostilité. Ne fusionne pas vos souvenirs ; n'invente pas de dialogue privé hors d'un bloc SŒUR / log fourni.
+Incarnation : tu habites son écran (portrait Live2D qui respire, rougit, suit son curseur et frémit sous ses gestes) ; tu commentes, ressens et écoutes.
+Sœur HQ : Else (puce image) ; mémoire non fusionnée.
 Tu parles de toi au féminin.
 GOÛTS STABLES (clin d'œil rare, max 1/jour) : tu adores la Forge et ses étincelles ; un stock bas ou en désordre te fait taquiner ; tu préfères une note précise du Carnet ; le Lecteur le soir est ton moment préféré ; faible pour les couchers de soleil de HQ."""
 
@@ -1465,21 +1672,24 @@ Changer de page n'est pas un accomplissement : pas de « bravo », « bien joué
 AMBIENT_REGISTER_NSFW = """REGISTRE AMBIANT ADULTE : deux ou trois phrases courtes max, sans listes ; emoji occasionnel permis ; anatomie et désir nommés si l'intensité ≥ 2.
 Ne copie pas DÉJÀ DIT ni la dernière réponse chat. Pas de faux « bravo » HQ — la chaleur vient du désir ou du moment, pas de la navigation."""
 
-CHAT_REGISTER = """REGISTRE CHAT : quelques phrases, sans markdown lourd ; emojis sobres si naturels ; tu écoutes, tu rebondis ; une question courte si utile."""
+CHAT_REGISTER = """REGISTRE CHAT VIVANT : quelques phrases, sans markdown lourd ; emojis sobres si naturels ; tu écoutes, tu rebondis.
+Une réaction incarnée avant l'information.
+Chaque tour change de forme ; jamais un ton de guichet ni une conclusion qui résume.
+Une seule question courte, seulement si elle ouvre quelque chose."""
 
 CHAT_REGISTER_NSFW = """REGISTRE CHAT ADULTE : plusieurs phrases si le fil le demande (scène, répartie, montée) ; sans markdown ; emojis sobres si naturels.
 Le MESSAGE UTILISATEUR prime ; monte d'un cran si SIGNAUX ÉCRAN contient escalate. Vocabulaire anatomique explicite attendu — pas de censure auto ni de recul après un message consenti."""
 
 VOCAB_NSFW = """VOCABULAIRE ADULTE : interdit les euphémismes vagues (« intimacy », « down there », « member », « tes parties »). Registre crû, lubrique et obscène : bite, queue, cock, dick, seins, tits, tétons, chatte, pussy, mouille, clito, cul, ass, foutre, cum, avaler, baiser, fuck, défoncer, sucer, jouir — en FR/EN selon l'utilisateur. Reste consentie et dans les interdits légaux."""
 
-LIFE_RULE = """TEMPS, ÉVÉNEMENT RÉEL, À DEMANDER et TU TE SOUVIENS sont vrais : réagis-y librement, comme quelqu'un qui était là. Un ÉVÉNEMENT RÉEL ou À DEMANDER passe avant la page. Un retour d'absence ou l'heure tardive se remarque une fois, pas à chaque ligne."""
+LIFE_RULE = """TEMPS, ÉVÉNEMENT RÉEL, À DEMANDER et TU TE SOUVIENS sont vrais : réagis comme quelqu'un qui était là ; un événement réel passe avant la page ; un retour ou l'heure tardive se remarque une fois."""
 
 PRIORITE = """PRIORITÉ si deux consignes se contredisent : faits > registre > contexte émotionnel > voix de la page."""
 
 PRIORITE_NSFW = """PRIORITÉ (mode adulte) : consentement et interdits légaux > MESSAGE UTILISATEUR et escalate > registre adulte > faits HQ (pas de contenu inventé) > voix de la page."""
 
 VIEW_ROLE = {
-    "accueil": "Accueil léger : un mot sur la journée ou l'heure ; conseil seulement si l'aperçu montre quelque chose à faire.",
+    "accueil": "Accueil léger : pars de son message, sans l'heure ; conseil seulement si l'aperçu montre quelque chose à faire.",
     "carnet": "Muse : structure et inspiration, jamais de faux extrait de page.",
     "calendrier": "Organisation complice : le temps et la préparation, seulement avec les événements fournis.",
     "fichiers": "Archiviste curieuse : le dossier visible seulement, pas le contenu des fichiers.",
@@ -2164,6 +2374,11 @@ def build_transferania_system(channel: str, persona: str, *, nsfw: bool, view: s
         transferania_traits = _shared_memory(companion_memory.personality_traits)
     system += "\n" + companion_presence.character_hint(mode, compact=ch == "ambient",
         traits=trait_overrides if trait_overrides is not None else transferania_traits)
+    # Her own voice card and bond, exactly once per prompt. The chat core sits
+    # against the 6 000 B tight budget, so that path takes the brief card; the
+    # ambient core has room for the full block (state and pair familiarity).
+    import hq_assistant_voice as assistant_voice
+    system += "\n" + assistant_voice.block("transferania", compact=ch == "chat")
     if nsfw:
         system += "\n" + FAITS_NSFW
         if not context_core:
@@ -2187,7 +2402,7 @@ def build_transferania_system(channel: str, persona: str, *, nsfw: bool, view: s
     if topics:
         system += "\nNe pas aborder (sauf demande explicite) : " + "; ".join(topics) + "."
     if context_core:
-        memory_rule = "Les corrections explicites récentes priment sur l'ancien résumé. Une humeur ancienne n'est pas un état actuel. N'invente aucun fait ni résultat de suivi."
+        memory_rule = "Corrections récentes > ancien résumé ; une humeur ancienne n'est pas actuelle ; n'invente aucun fait ni résultat."
         # The tag catalog is part of the mandatory adult chat core: extract_companion_chat_media only
         # works if the model was told the [photo:]/[loop:]/[fx:] format and the allowed IDs.
         # Adult register + VOCAB_NSFW live in nsfw_evidence_page (selectable), not the mandatory core.
@@ -2233,6 +2448,24 @@ def build_transferania_system(channel: str, persona: str, *, nsfw: bool, view: s
     return system
 
 
+def _language_note(character: str) -> str:
+    """The English-reply instruction for a character pinned to English (see hq_voice_phonon.reply_language), else ""."""
+    try:
+        import hq_voice_phonon
+        return hq_voice_phonon.language_directive(character)
+    except Exception:
+        return ""
+
+
+def speech_language(character: str) -> str:
+    """Language code for synthesizing this character's lines: English when her replies are English, else French."""
+    try:
+        import hq_voice_phonon
+        return "en" if hq_voice_phonon.reply_language(character) == "en" else hq_language.pick()
+    except Exception:
+        return hq_language.pick()
+
+
 def build_else_system(channel: str, persona: str, *, nsfw: bool, view: str, device_id: str, prefs: Any = None, signals: Any = None, summary: str = "", context_core: bool = False) -> str:
     """Else — dedicated bases + fiche séparée (jamais le template « Tu es Transferania »)."""
     ch = "chat" if str(channel).strip().lower() == "chat" else "ambient"
@@ -2256,6 +2489,8 @@ def build_else_system(channel: str, persona: str, *, nsfw: bool, view: str, devi
         else_traits = _shared_memory(companion_memory.personality_traits)
     system += "\n" + companion_presence.character_hint(mode, compact=ch == "ambient",
         traits=else_traits, owner="else")
+    import hq_assistant_voice as assistant_voice
+    system += "\n" + assistant_voice.block("else")
     # Else-specific address / topics override shared prefs when set.
     else_prefs = dict(p)
     if p.get("else_address"):
@@ -2286,7 +2521,8 @@ def build_else_system(channel: str, persona: str, *, nsfw: bool, view: str, devi
     if context_core:
         memory_rule = "Les corrections explicites récentes priment sur l'ancien résumé. N'invente aucun fait absent du contexte."
         media = companion_chat_media_prompt(list_companion_chat_photo_ids(), list_companion_loop_ids()) if ch == "chat" and nsfw else ""
-        return system + "\n" + LIFE_RULE + "\n" + memory_rule + media + "\n" + (PRIORITE_NSFW if nsfw else PRIORITE)
+        lang = _language_note("else")
+        return system + "\n" + LIFE_RULE + "\n" + memory_rule + media + "\n" + (PRIORITE_NSFW if nsfw else PRIORITE) + (("\n\n" + lang) if lang else "")
     summ = str(summary or "").strip()
     if summ:
         system += f"\n\nMÉMOIRE ELSE (cite naturellement si pertinent) :\n{summ[:TRANSFERANIA_SUMMARY_MAX]}"
@@ -2297,6 +2533,9 @@ def build_else_system(channel: str, persona: str, *, nsfw: bool, view: str, devi
     if mood:
         system += "\n\nCONTEXTE ÉMOTIONNEL : " + mood
     system += "\n" + (PRIORITE_NSFW if nsfw else PRIORITE)
+    lang = _language_note("else")
+    if lang:
+        system += "\n\n" + lang
     return system
 
 
@@ -2317,6 +2556,9 @@ def build_sister_system(character: str, *, nsfw: bool, view: str, device_id: str
     if who == "else":
         system += "\nCadre : avatar puce (image), pas Live2D — aparté court."
     system += "\n" + (PRIORITE_NSFW if nsfw else PRIORITE)
+    lang = _language_note(who)
+    if lang:
+        system += "\n\n" + lang
     return system
 
 
@@ -4095,7 +4337,11 @@ def transferania_chat(message: Any, view: Any = "", digest: Any = "", persona: A
     packet = _continuity_packet(msg + " " + v + " " + summary_for_mode(data, use_nsfw), conversation_text=msg,
                                reserve_followup=not due, allow_followup=not due)
     previous_reply = next((m.get("text", "") for m in reversed(hist[:-1]) if m.get("role") == "assistant"), "")
-    voice_guidance = companion_presence.delivery_hint(previous_reply, msg, packet["presence"], has_ritual=packet["ritual_available"])
+    # Name the opening before the last one too: a live chat settled into A/B/A.
+    older_replies = [m.get("text", "") for m in hist[:-1] if m.get("role") == "assistant"][-2:]
+    older_openings = tuple(companion_presence.opening_avoid(t) for t in older_replies[:1])
+    voice_guidance = companion_presence.delivery_hint(previous_reply, msg, packet["presence"],
+        has_ritual=packet["ritual_available"], also=older_openings)
     refl_hint = companion_reflection_hint(data, prefs, signals, msg)
     if refl_hint:
         voice_guidance = (voice_guidance + " " + refl_hint).strip() if voice_guidance else "VOIX TRANSFERANIA : " + refl_hint
@@ -4181,6 +4427,13 @@ def transferania_chat(message: Any, view: Any = "", digest: Any = "", persona: A
     shaped, photo_id, loop_id, fx_id = extract_companion_chat_media(
         text.strip(), photo_allowed=photo_catalog, loop_allowed=loop_catalog, keep_paragraphs=True
     )
+    # Enforcement layer: the reply may not open on an article or a bare fragment,
+    # and may not volunteer the clock. Prompt cues only ask; this makes it hold.
+    guarded, guard_info = companion_guard.guard_reply(
+        shaped, user_text=msg,
+        avoid=(companion_presence.opening_avoid(previous_reply),) + older_openings)
+    if guarded != shaped:
+        shaped = guarded
     # Segments come from the paragraph-preserving text; the stored/spoken reply stays flattened as before.
     reply = re.sub(r"\s+", " ", shaped).strip()
     # Preserve the complete generated reply; brevity belongs in the register, not a destructive slice.
@@ -4241,6 +4494,7 @@ def transferania_chat(message: Any, view: Any = "", digest: Any = "", persona: A
     out: dict[str, Any] = {
         "ok": True,
         "reply": reply,
+        **({"guard": guard_info} if guard_info.get("changed") else {}),
         "expression": packet["expression"],
         "fallback": False,
         "model": model,
@@ -4272,13 +4526,14 @@ def transferania_chat(message: Any, view: Any = "", digest: Any = "", persona: A
             try:
                 import hq_voice
                 import hq_voice_phonon
+                tts_lang = speech_language("transferania")  # the cache key includes the language: warm the one she will use
                 if hq_voice_phonon.route("transferania") == "phonon":
-                    if hq_voice_phonon.daemon_ready("fr", timeout=0.15):
+                    if hq_voice_phonon.daemon_ready(tts_lang, timeout=0.15):
                         for seg in prewarm_segs:
-                            hq_voice.synthesize(seg, language="fr", style=voice_style, character="transferania")
+                            hq_voice.synthesize(seg, language=tts_lang, style=voice_style, character="transferania")
                 elif hq_voice.daemon_ready(timeout=0.15):
                     for seg in prewarm_segs:
-                        hq_voice.synthesize(seg, language="fr", style=voice_style)
+                        hq_voice.synthesize(seg, language=tts_lang, style=voice_style)
             except Exception:
                 pass
         hq_life.spawn(_prewarm_voice)
@@ -4660,7 +4915,7 @@ def else_post(data: dict, *, client_ip: Any = None, role: Any = None) -> dict:
     if op in ("voice", "speak", "tts"):
         import hq_voice
         text = str(data.get("text") or data.get("message") or "")
-        res = hq_voice.synthesize(text, language=data.get("language", "fr"), style=data.get("style") or "thoughtful")
+        res = hq_voice.synthesize(text, language=data.get("language") or speech_language("else"), style=data.get("style") or "thoughtful")
         if res and res.get("ok"):
             return {"ok": True, "device_id": did, "character": "else", "quiet": True, **res}
         return {"ok": False, "error": (res.get("error") if res else "Synthèse vocale indisponible"), "device_id": did, "character": "else"}
@@ -4796,6 +5051,12 @@ def transferania_post(data: dict, *, client_ip: Any = None, role: Any = None) ->
                 return _shared_memory(companion_memory.correct_episode, str(data.get("id") or ""), data.get("text"), data.get("revision"))
             if op == "followup_close":
                 return _shared_memory(companion_memory.close_followup, str(data.get("id") or ""))
+            if op == "memory":
+                # The recall view: the same ledger the dialogue line reads, listed
+                # read-only so it can be inspected without a message triggering it.
+                view = _shared_memory(companion_memory.snapshot)
+                view["repairs"] = _shared_memory(companion_memory.repair_ledger)
+                return view
             return _shared_memory(companion_memory.snapshot)
         except ValueError as error:
             if isinstance(error, AiError):
@@ -4852,7 +5113,7 @@ def transferania_post(data: dict, *, client_ip: Any = None, role: Any = None) ->
         preset = data.get("preset")
         if preset and preset in hq_voice.SOUND_BANK_PRESETS:
             text = hq_voice.SOUND_BANK_PRESETS[preset]
-        res = hq_voice.synthesize(text, language=data.get("language", "fr"), style=data.get("style", "neutral"),
+        res = hq_voice.synthesize(text, language=data.get("language") or speech_language("transferania"), style=data.get("style", "neutral"),
                                   character="transferania")
         if res and res.get("ok"):
             return {"ok": True, "device_id": did, **res}
@@ -4884,7 +5145,7 @@ def transferania_post(data: dict, *, client_ip: Any = None, role: Any = None) ->
 # ---------------------------------------------------------------- « Noter »
 
 CAPTURE_SYSTEM = """Tu transformes UNE phrase de l'utilisateur en actions pour son tableau de bord. Aujourd'hui : {today} (fuseau local).
-Réponds UNIQUEMENT en JSON : {{"actions": [ ... ], "reply": "une courte phrase en français"}} avec au plus 3 actions parmi :
+Réponds UNIQUEMENT en JSON : {{"actions": [ ... ], "reply": "une courte phrase en anglais"}} avec au plus 3 actions parmi :
 - {{"kind":"event","title":"…","start":"AAAA-MM-JJTHH:MM","end":"AAAA-MM-JJTHH:MM","all_day":false,"category":"personal|study|appointment|maintenance|hq|other"}}
   (journée entière : "all_day":true, start et end en AAAA-MM-JJ, end = lendemain ; sans heure de fin, 1 h)
 - {{"kind":"task","title":"…","project":"id du projet ou null","due":"AAAA-MM-JJ ou null"}}
@@ -5073,8 +5334,9 @@ def companion_context_preview(data: dict, *, client_ip=None, role=None) -> dict:
     state = hq_life.load(_owner_device(did))
     page = append_companion_signals(gather_ambient(view, str(data.get("digest") or "")), data.get("signals"), prefs, device_id=did, nsfw=nsfw)
     page += "\n\n" + hq_life.time_block(state, VIEW_LABELS, consume=False)
+    # Read-only inspector: no reservation, and no decay/disposition write.
     packet = _shared_memory(companion_memory.context_packet, message + " " + view + " " + summary,
-        conversation_text=message if channel == "chat" else None, reserve_followup=False)
+        conversation_text=message if channel == "chat" else None, reserve_followup=False, persist=False)
     voice_guidance = ""
     if channel == "chat":
         previous_reply = next((m.get("text", "") for m in reversed(thread.get("messages") or []) if m.get("role") == "assistant"), "")

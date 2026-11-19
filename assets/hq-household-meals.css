@@ -16,7 +16,7 @@
   flex-direction: column;
   gap: 14px;
   padding: 4px 2px 18px;
-  font: 16px/1.45 system-ui, "Segoe UI", sans-serif;
+  font: var(--text-md)/1.45 system-ui, "Segoe UI", sans-serif;
 }
 
 .hq-meals button,
@@ -58,7 +58,7 @@
   flex: 1;
   margin: 0;
   text-align: center;
-  font-size: 1.05rem;
+  font-size:var(--text-lg);
   font-weight: 800;
   letter-spacing: .01em;
   font-variant-numeric: tabular-nums;
@@ -84,13 +84,13 @@
 .hq-meals-hint {
   margin: 0;
   color: var(--hq-meals-muted);
-  font-size: .9rem;
+  font-size: var(--text-md);
 }
 
 .hq-meals-status.is-loading { font-weight: 700; color: var(--hq-meals-accent); }
 .hq-meals-section-title {
   margin: 0 0 2px;
-  font-size: .78rem;
+  font-size:var(--text-sm);
   font-weight: 800;
   letter-spacing: .06em;
   text-transform: uppercase;
@@ -170,7 +170,7 @@
 
 .hq-meals-dow,
 .hq-meals-meal {
-  font-size: .78rem;
+  font-size: var(--text-sm);
   font-weight: 700;
   color: var(--hq-meals-muted);
   align-self: end;
@@ -248,14 +248,14 @@
 
 .hq-meals-recipe-title {
   margin: 0;
-  font-size: 1.1rem;
+  font-size:var(--text-lg);
   font-weight: 800;
 }
 
 .hq-meals-meta,
 .hq-meals-servings-label {
   margin: 0;
-  font-size: .88rem;
+  font-size: var(--text-md);
   color: var(--hq-meals-muted);
   font-variant-numeric: tabular-nums;
 }
@@ -320,7 +320,7 @@
   flex-direction: column;
   gap: 6px;
   flex: 1 1 140px;
-  font-size: .82rem;
+  font-size: var(--text-sm);
   font-weight: 700;
   color: var(--hq-meals-muted);
 }
@@ -342,7 +342,7 @@
   border-radius: 999px;
   background: color-mix(in srgb, var(--hq-meals-warn) 22%, transparent);
   color: var(--hq-meals-warn);
-  font-size: .75rem;
+  font-size: var(--text-sm);
   font-weight: 800;
   letter-spacing: .03em;
   text-transform: uppercase;
@@ -355,8 +355,8 @@
     width: max-content;
     min-width: 100%;
   }
-  .hq-meals-slot { font-size: .8rem; min-height: 48px; padding: 7px; }
-  .hq-meals-title { font-size: .95rem; }
+  .hq-meals-slot { font-size: var(--text-sm); min-height: 48px; padding: 7px; }
+  .hq-meals-title { font-size:var(--text-md); }
   .hq-meals-servings { flex-direction: column; align-items: stretch; }
   .hq-meals-servings .hq-meals-btn { width: 100%; }
 }

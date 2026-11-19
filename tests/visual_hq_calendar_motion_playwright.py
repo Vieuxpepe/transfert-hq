@@ -5,6 +5,9 @@ once, the streak flame shows, a free day has a sky, the strip scrubs, pulling do
 and a long press peeks at a day. Throwaway loopback HQ, fake PINs.
 
 FORGE_BROWSER=chromium|webkit HQ_SHOTS=dir python tests/visual_hq_calendar_motion_playwright.py
+
+HQ_CAL_TEST_HOUR=14 pins both this suite's clock and the fixture server's calendar clock to 14:00
+today, so the timed block runs deterministically instead of being skipped late in the day.
 """
 
 from __future__ import annotations
@@ -119,6 +122,19 @@ def to_calendar(page):
     until(page, "() => !!document.querySelector('.hq-cal-day')")
 
 
+def test_now() -> datetime:
+    raw = os.environ.get("HQ_CAL_TEST_HOUR")
+    if raw is None:
+        return datetime.now()
+    try:
+        hour = int(raw)
+    except ValueError as exc:
+        raise SystemExit("HQ_CAL_TEST_HOUR must be an integer 0-23") from exc
+    if not 0 <= hour <= 23:
+        raise SystemExit("HQ_CAL_TEST_HOUR must be an integer 0-23")
+    return datetime.now().replace(hour=hour, minute=0, second=0, microsecond=0)
+
+
 def main() -> None:
     root = Path(tempfile.mkdtemp(prefix="hq-calmotion-"))
     proc = subprocess.Popen([sys.executable, str(HERE / "carnet_test_server.py"), str(root)],
@@ -127,9 +143,9 @@ def main() -> None:
     base = info["base"]
     assert base.startswith("http://127.0.0.1:") and not base.endswith(PROD_PORTS)
     browser_name = os.environ.get("FORGE_BROWSER", "chromium")
-    today = date.today()
+    now = test_now()
+    today = now.date()
     tomorrow = today + timedelta(days=1)
-    now = datetime.now()
     timed_today = 3 <= now.hour <= 21
     try:
         with sync_playwright() as p:
@@ -307,7 +323,84 @@ def main() -> None:
             ok, item = server_until(page, base, tomorrow, "Mobile", lambda e: bool(e) and e["start"].endswith("T09:05"))
             check(ok and item["end"].endswith("T10:05"), f"and is saved there ({item and item['start']}–{item and item['end']})")
             check(not errors, f"no page errors {errors[:3]}")
+
+            # A keyboard G jump slides the grid exactly once, then the cursor is already in the new day.
+            page.evaluate("""() => {
+                window.__calAnims = 0;
+                document.addEventListener("animationstart", (e) => {
+                    if (e.target && e.target.classList && e.target.classList.contains("hq-cal-stage")) window.__calAnims += 1;
+                }, true);
+            }""")
+            page.evaluate("""() => document.querySelector('.hq-cal-day .hq-cal-slot[data-hour=\"22\"]').focus({ preventScroll: true })""")
+            jump_day = (today + timedelta(days=9)).isoformat()
+            check(until(page, "() => !document.querySelector('#hq-cal-app').dataset.busy"), "the drag refresh settles")
+            page.wait_for_timeout(450)  # the drag's click suppression window: G must not race it
+            page.keyboard.press("g")
+            g_ok = until(page, "() => { const i = document.getElementById('hq-cal-jump-input'); return !!i && i.offsetParent !== null; }")
+            if not g_ok:
+                print("GFAIL", page.evaluate("""() => ({ view: document.body.dataset.view,
+                    sheets: [...document.querySelectorAll('.hq-sheet')].map((s) => [s.id, s.hidden, s.className]),
+                    input: document.getElementById('hq-cal-jump-input')?.offsetParent !== null,
+                    active: document.activeElement.tagName + '.' + String(document.activeElement.className),
+                    palette: document.getElementById('hq-palette')?.hidden })"""))
+            check(g_ok, "G opens the date jump over the grid")
+            page.locator("#hq-cal-jump-input").fill(jump_day)
+            page.locator('#hq-cal-date-jump button[type="submit"]').focus()
+            page.keyboard.press("Enter")
+            check(until(page, "() => !document.querySelector('#hq-cal-app').dataset.busy"), "the jump finishes")
+            until(page, "() => document.activeElement.classList?.contains('hq-cal-slot')")
+            page.wait_for_timeout(500)  # past the 0.28 s slide: a second transition would have started by now
+            anims = page.evaluate("() => window.__calAnims")
+            check(anims == 1, f"a keyboard G jump transitions the grid exactly once ({anims})")
+            landed = page.evaluate("""() => { const a = document.activeElement;
+                return [a.dataset.day, a.dataset.hour, a.tabIndex]; }""")
+            check(landed == [jump_day, "22", 0], f"and leaves the cursor on the carried hour ({landed})")
+            check(until(page, """() => { const a = document.activeElement, s = a.closest('.hq-cal-scroll');
+                if (!s) return false; const r = a.getBoundingClientRect(), sr = s.getBoundingClientRect();
+                return r.top >= sr.top && r.bottom <= sr.bottom; }"""), "with the new cell scrolled into view")
+            page.keyboard.press("ArrowDown")
+            check(page.evaluate("() => [document.activeElement.dataset.day, document.activeElement.dataset.hour]") == [jump_day, "23"],
+                  "the arrow key already moves inside the jumped-to day")
             ctx.close()
+
+            # Reduced motion: the same jump lands and scrolls at once, but the slide is suppressed.
+            rctx, page = login(browser, base, info, viewport={"width": 375, "height": 812}, reduced_motion="reduce")
+            errors = []
+            page.on("pageerror", lambda e: errors.append(str(e)))
+            enter(page, base)
+            to_calendar(page)
+            page.evaluate("""() => {
+                window.__calAnims = 0;
+                document.addEventListener("animationstart", (e) => {
+                    if (e.target && e.target.classList && e.target.classList.contains("hq-cal-stage")) window.__calAnims += 1;
+                }, true);
+            }""")
+            page.evaluate("""() => document.querySelector('.hq-cal-day .hq-cal-slot[data-hour=\"22\"]').focus({ preventScroll: true })""")
+            rjump = (today + timedelta(days=9)).isoformat()
+            page.keyboard.press("g")
+            check(until(page, "() => { const i = document.getElementById('hq-cal-jump-input'); return !!i && i.offsetParent !== null; }"),
+                  "reduced motion: G still opens the date jump")
+            page.locator("#hq-cal-jump-input").fill(rjump)
+            page.locator('#hq-cal-date-jump button[type="submit"]').focus()
+            page.keyboard.press("Enter")
+            check(until(page, "() => !document.querySelector('#hq-cal-app').dataset.busy"), "reduced motion: the jump finishes")
+            until(page, "() => document.activeElement.classList?.contains('hq-cal-slot')")
+            rlanded = page.evaluate("""() => { const a = document.activeElement;
+                return [a.dataset.day, a.dataset.hour, a.tabIndex]; }""")
+            check(rlanded == [rjump, "22", 0], f"reduced motion still lands on the carried hour ({rlanded})")
+            ring = page.evaluate("() => { const s = getComputedStyle(document.activeElement); return [s.outlineStyle, s.outlineWidth]; }")
+            check(ring[0] == "solid" and ring[1] == "2px", f"with the focus ring ({ring})")
+            check(page.evaluate("""() => { const a = document.activeElement, s = a.closest('.hq-cal-scroll');
+                if (!s) return false; const r = a.getBoundingClientRect(), sr = s.getBoundingClientRect();
+                return r.top >= sr.top && r.bottom <= sr.bottom; }"""), "and the cell in view at once, no smooth scroll")
+            style = page.evaluate("""() => { const s = document.querySelector('.hq-cal-stage'), c = getComputedStyle(s);
+                return [c.animationDuration, c.transitionDuration, s.className]; }""")
+            check("is-next" in style[2].split(), f"the switch still builds the forward slide ({style[2]})")
+            durations = [float(x.strip().rstrip("s")) for x in style[0].split(",")]
+            check(all(v <= 0.002 for v in durations), f"but reduced motion suppresses it ({style[0]})")
+            check(page.evaluate("() => window.__calAnims") == 1, "with a single transition, never two")
+            check(not errors, f"no page errors {errors[:3]}")
+            rctx.close()
             browser.close()
     finally:
         proc.stdin.close()

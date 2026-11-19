@@ -97,7 +97,7 @@ class DjEngineChoiceTests(unittest.TestCase):
             self.assertEqual(dj.voice_engine_for("musica", "en"), "phonon")  # warming up: this line uses Phonon
             start.assert_called_once()
         with self.assertRaises(dj.DjError):
-            dj.update_settings({"voice_engine": "elevenlabs"})
+            dj.update_settings({"voice_engine": "bogus"})
 
     def test_chatterbox_failure_falls_back_to_phonon(self):
         with mock.patch.object(cb, "synthesize", return_value=None), \

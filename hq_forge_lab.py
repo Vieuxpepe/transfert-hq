@@ -14,8 +14,10 @@ from pathlib import Path
 import hq_forge_gallery as gallery
 import hq_forge_stats as stats
 
-MIN_SAMPLES = 20
-PLAN_MIN = 5  # planner: fewer measurements than this for a device -> "Pas assez de donn\u00e9es"
+# Enough to compare without pretending to precision: a setting is ranked from 8 images,
+# the planner from 3. Below that the view says "pas assez de donn\u00e9es" and guesses nothing.
+MIN_SAMPLES = 8
+PLAN_MIN = 3  # planner: fewer measurements than this for a device -> "Pas assez de donn\u00e9es"
 
 
 def _quantile(values: list, q: float) -> float | None:

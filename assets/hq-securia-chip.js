@@ -8,6 +8,7 @@
   var LS_POS = "hq_securia_chip_pos_v1";
   var LS_SCALE = "hq_securia_chip_scale_v1";
   var LS_NSFW = "hq_companion_nsfw";
+  var LS_PIN = "hq_securia_chip_pinned_v1";
   var PORTRAIT_SFW = "/assets/companion/securia-chip-sfw.webp";
   var PORTRAIT_NSFW = "/assets/companion/securia-chip-nsfw.webp";
   var BODY_SFW = "/assets/companion/securia-body-sfw.webp";
@@ -21,6 +22,8 @@
   var button = document.createElement("button");
   button.type = "button";
   button.id = ID;
+  function sfx(kind) { try { if (window.HqAssistantSfx) window.HqAssistantSfx.play("securia", kind); } catch (_) {} }
+  try { if (window.HqAssistantSfx) window.HqAssistantSfx.register("securia", function () { return button; }); } catch (_) {}
   button.className = "hq-securia-chip";
   button.setAttribute("aria-label", "Securia — ouvrir la sentinelle sécurité");
   button.title = "Securia — Sentinelle IA · glisser pour déplacer";
@@ -75,8 +78,10 @@
         '</div>' +
       '</div>' +
       '<div class="hq-securia-drawer-controls">' +
+        '<button type="button" class="hq-securia-icon-btn" id="hq-securia-pin-toggle" title="Garder la sentinelle visible sur tous les onglets">Épingler</button>' +
         '<button type="button" class="hq-securia-icon-btn" id="hq-securia-body-toggle" title="Vue corps entier">Corps</button>' +
         '<button type="button" class="hq-securia-icon-btn" id="hq-securia-goto-tab" title="Ouvrir l\'onglet Sécurité">Onglet</button>' +
+        '<button type="button" class="hq-securia-icon-btn" id="hq-securia-stop" title="Arrêter la réponse en cours" hidden>Arrêter</button>' +
         '<button type="button" class="hq-securia-icon-btn" id="hq-securia-clear" title="Effacer la conversation">Effacer</button>' +
         '<button type="button" class="hq-securia-icon-btn" id="hq-securia-close" aria-label="Fermer">✕</button>' +
       '</div>' +
@@ -102,13 +107,26 @@
   var inputEl = document.getElementById("hq-securia-input");
   var sendEl = document.getElementById("hq-securia-send");
   var formEl = document.getElementById("hq-securia-form");
+  var stopEl = document.getElementById("hq-securia-stop");
 
   var state = {
     open: false,
     busy: false,
     messages: [],
     pos: { x: 0, y: 0 },
+    job: "",
   };
+
+  // The turn is stoppable server-side: the cancel route makes it drop at its next
+  // round or tool call and store nothing (a stopped answer never comes back later).
+  function newJob() {
+    try {
+      if (window.crypto && typeof crypto.randomUUID === "function") {
+        return "sc-" + crypto.randomUUID().replace(/-/g, "").slice(0, 20);
+      }
+    } catch (_) {}
+    return "sc-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  }
 
   function clamp(v, min, max) {
     var n = Number(v);
@@ -224,6 +242,57 @@
     return data;
   }
 
+  function resolveProposal(id, action) {
+    return api("/api/securia/" + action, {
+      method: "POST", headers: csrfHeaders(), body: JSON.stringify({ id: id }),
+    }).then(function (res) {
+      if (Array.isArray(res.messages)) state.messages = res.messages;
+      renderMessages();
+      if (typeof window.toast === "function") {
+        var msg = action === "dismiss" ? "Proposition annulée"
+          : res.ok ? "Action appliquée" : "Action refusée" + (res.error ? " : " + res.error : "");
+        window.toast(msg, res.ok === false ? "err" : "ok");
+      }
+    }).catch(function (e) {
+      if (typeof window.toast === "function") window.toast(e.message, "err");
+    });
+  }
+
+  // A destructive tool never runs from the model's turn: it arrives here as a card
+  // and only "Confirmer" reaches POST /api/securia/confirm.
+  function proposalCard(prop) {
+    var card = document.createElement("div");
+    card.className = "hq-securia-proposal" + (prop.status && prop.status !== "pending" ? " is-" + prop.status : "");
+    var line = document.createElement("div");
+    line.className = "hq-securia-proposal-summary";
+    line.textContent = String(prop.summary || prop.name || "Action");
+    card.appendChild(line);
+    if (prop.status === "pending") {
+      var row = document.createElement("div");
+      row.className = "hq-securia-proposal-actions";
+      var ok = document.createElement("button");
+      ok.type = "button";
+      ok.className = "hq-securia-proposal-btn is-apply";
+      ok.textContent = "Confirmer";
+      ok.addEventListener("click", function () { ok.disabled = true; resolveProposal(prop.id, "confirm"); });
+      var no = document.createElement("button");
+      no.type = "button";
+      no.className = "hq-securia-proposal-btn";
+      no.textContent = "Annuler";
+      no.addEventListener("click", function () { no.disabled = true; resolveProposal(prop.id, "dismiss"); });
+      row.append(ok, no);
+      card.appendChild(row);
+    } else {
+      var note = document.createElement("div");
+      note.className = "hq-securia-proposal-note";
+      note.textContent = prop.status === "done" ? "Appliquée · " + (prop.result || "")
+        : prop.status === "failed" ? "Échouée · " + (prop.result || "")
+        : prop.status === "dismissed" ? "Annulée" : "En cours…";
+      card.appendChild(note);
+    }
+    return card;
+  }
+
   function renderMessages() {
     messagesEl.innerHTML = "";
     if (!state.messages.length) {
@@ -251,6 +320,9 @@
       var body = document.createElement("div");
       body.textContent = m.text || "";
       div.appendChild(body);
+      if (m.role !== "user" && Array.isArray(m.proposals) && m.proposals.length) {
+        m.proposals.forEach(function (prop) { div.appendChild(proposalCard(prop)); });
+      }
       messagesEl.appendChild(div);
     });
     messagesEl.scrollTop = messagesEl.scrollHeight;
@@ -259,6 +331,33 @@
   var SS_ALERT_ID = "hq_securia_last_alert_id";
   var lastWhisperAt = 0;
   var whisperTimer = null;
+
+  function isPinned() {
+    try {
+      return localStorage.getItem(LS_PIN) === "1";
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function setPinned(val) {
+    try {
+      localStorage.setItem(LS_PIN, val ? "1" : "0");
+    } catch (_) {}
+    updatePinnedVisuals();
+  }
+
+  function updatePinnedVisuals() {
+    var pinned = isPinned();
+    dock.classList.toggle("is-pinned", pinned);
+    drawer.classList.toggle("is-pinned", pinned);
+    var pinBtn = document.getElementById("hq-securia-pin-toggle");
+    if (pinBtn) {
+      pinBtn.classList.toggle("is-active", pinned);
+      pinBtn.textContent = pinned ? "Détacher" : "Épingler";
+      pinBtn.title = pinned ? "Détacher (Securia n'apparaîtra hors de Sécurité qu'en cas d'alerte)" : "Épingler (Garder Securia visible en permanence sur tous les onglets)";
+    }
+  }
 
   function showWhisper(alertObj) {
     if (!alertObj || !alertObj.message || state.open) return;
@@ -274,10 +373,11 @@
     if (old) old.remove();
     if (whisperTimer) clearTimeout(whisperTimer);
 
+    var isDanger = alertObj.level === "danger";
     var box = document.createElement("div");
-    box.className = "hq-securia-whisper";
+    box.className = "hq-securia-whisper" + (isDanger ? " is-danger" : "");
     var title = document.createElement("strong");
-    title.textContent = "Securia · Alerte";
+    title.textContent = isDanger ? "Securia · Alerte Rouge" : "Securia · Alerte";
     var txt = document.createElement("div");
     txt.textContent = alertObj.message;
     box.append(title, txt);
@@ -286,9 +386,10 @@
       openDrawer();
     });
     dock.appendChild(box);
+    sfx(isDanger ? "error" : "open");
     whisperTimer = setTimeout(function () {
       if (box.parentNode) box.remove();
-    }, 8500);
+    }, 12000);
   }
 
   async function refreshStatus() {
@@ -299,13 +400,36 @@
         subEl.textContent = "Sentinelle HQ · " + data.headline;
       }
       var fails = data.failures_recent || 0;
-      if (fails > 0 || data.alert_level === "warning") {
+      var threats = (typeof data.threat_count === "number" ? data.threat_count : (data.honeypot_count ? data.honeypot_count + fails : fails));
+      var isDanger = data.alert_level === "danger";
+      var isWarning = data.alert_level === "warning" || threats > 0;
+      var hasAlert = isDanger || isWarning || !!data.proactive_alert;
+      var hadAlert = dock.classList.contains("has-alert");
+
+      if (hasAlert) {
+        dock.classList.add("has-alert");
+        drawer.classList.add("has-alert");
         button.classList.add("is-alert");
-        badge.textContent = fails > 0 ? String(fails) : "!";
+        if (isDanger) {
+          button.classList.add("is-danger");
+          dock.classList.add("is-danger");
+        } else {
+          button.classList.remove("is-danger");
+          dock.classList.remove("is-danger");
+        }
+        badge.textContent = threats > 0 ? String(threats) : "!";
         badge.hidden = false;
       } else {
-        button.classList.remove("is-alert");
+        dock.classList.remove("has-alert", "is-danger");
+        drawer.classList.remove("has-alert", "is-danger");
+        button.classList.remove("is-alert", "is-danger");
         badge.hidden = true;
+      }
+      // The chips sharing the right rail re-park when this dock appears or clears.
+      if (hasAlert !== hadAlert) {
+        try {
+          window.dispatchEvent(new CustomEvent("hq:securia-dock", { detail: { alert: hasAlert } }));
+        } catch (_) {}
       }
       if (data.proactive_alert) {
         showWhisper(data.proactive_alert);
@@ -319,6 +443,7 @@
 
   function openDrawer() {
     state.open = true;
+    sfx("open");
     drawer.hidden = false;
     renderMessages();
     refreshStatus();
@@ -346,6 +471,18 @@
     closeDrawer();
   });
 
+  if (stopEl) stopEl.addEventListener("click", async function () {
+    if (!state.busy || !state.job) return;
+    stopEl.disabled = true;
+    try {
+      await api("/api/securia/cancel", { method: "POST", headers: csrfHeaders(), body: JSON.stringify({ job: state.job }) });
+      if (typeof window.toast === "function") window.toast("Arrêt demandé", "ok");
+    } catch (e) {
+      if (typeof window.toast === "function") window.toast(e.message, "err");
+      stopEl.disabled = false;
+    }
+  });
+
   document.getElementById("hq-securia-clear").addEventListener("click", async function () {
     try {
       await api("/api/securia/clear", { method: "POST", headers: csrfHeaders(), body: "{}" });
@@ -360,7 +497,10 @@
     var msg = (text || "").trim();
     if (!msg || state.busy) return;
     state.busy = true;
+    state.job = newJob();
+    sfx("think");
     sendEl.disabled = true;
+    if (stopEl) { stopEl.hidden = false; stopEl.disabled = false; }
     inputEl.value = "";
 
     state.messages.push({ role: "user", text: msg });
@@ -372,8 +512,15 @@
       var res = await api("/api/securia/chat", {
         method: "POST",
         headers: csrfHeaders(),
-        body: JSON.stringify({ message: msg }),
+        body: JSON.stringify({ message: msg, job: state.job }),
       });
+      if (res.cancelled) {
+        // Stopped (or the conversation was cleared): nothing was stored server-side.
+        state.messages = Array.isArray(res.messages) ? res.messages : [];
+        renderMessages();
+        if (typeof window.toast === "function") window.toast("Réponse arrêtée", "ok");
+        return;
+      }
       if (Array.isArray(res.messages)) {
         state.messages = res.messages;
       } else {
@@ -384,7 +531,9 @@
         };
       }
       renderMessages();
+      sfx("reply");
     } catch (e) {
+      sfx("error");
       state.messages[state.messages.length - 1] = {
         role: "assistant",
         text: "Erreur Securia : " + e.message,
@@ -392,7 +541,9 @@
       renderMessages();
     } finally {
       state.busy = false;
+      state.job = "";
       sendEl.disabled = false;
+      if (stopEl) stopEl.hidden = true;
       inputEl.focus();
     }
   }
@@ -434,11 +585,23 @@
     if (bodyImg) bodyImg.src = adult ? BODY_NSFW : BODY_SFW;
   }
 
+  var pinBtn = document.getElementById("hq-securia-pin-toggle");
+  if (pinBtn) {
+    pinBtn.addEventListener("click", function () {
+      setPinned(!isPinned());
+    });
+  }
+  updatePinnedVisuals();
+
   applyMode();
   window.addEventListener("hq:companion-nsfw", applyMode);
   window.addEventListener("storage", function (ev) {
     if (!ev.key || ev.key === LS_NSFW) applyMode();
+    if (!ev.key || ev.key === LS_PIN) updatePinnedVisuals();
   });
+
+  window.hqSecuriaRefresh = refreshStatus;
+  window.addEventListener("hq:security-alert", refreshStatus);
 
   // Poll gently every 12s when visible
   setInterval(function () {

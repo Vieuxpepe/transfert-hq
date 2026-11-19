@@ -28,14 +28,37 @@
 .home-hero.weather-cloudy .home-clouds{opacity:.85}
 .home-hero.weather-partly_cloudy .home-clouds{opacity:.5}
 .home-hero.weather-rain .home-clouds,.home-hero.weather-snow .home-clouds{opacity:.75}
-.home-hero.weather-fog .home-sky{background:radial-gradient(100% 100% at 50% 50%,rgba(200,215,230,.22),transparent 75%)}
+.home-hero.weather-fog .home-sky{background:radial-gradient(120% 120% at 50% 55%,rgba(196,212,228,.4),rgba(210,222,236,.18) 55%,transparent 88%)}
 .home-hero.weather-storm .home-sky{background:radial-gradient(100% 100% at 70% 30%,rgba(160,140,220,.25),transparent 70%)}
+.home-hero.weather-storm .home-clouds{opacity:.95}
+.home-hero.weather-storm .home-orb{opacity:.4}
+.home-hero.weather-fog .home-clouds{opacity:.9}
+.home-hero.weather-fog .home-orb{opacity:.55}
 .home-precip{position:absolute;inset:0;pointer-events:none;overflow:hidden;opacity:0;transition:opacity 1.2s ease}
-.home-hero.weather-rain .home-precip,.home-hero.weather-snow .home-precip{opacity:1}
-.home-drop-item{position:absolute;top:-20px;opacity:0}
-.home-hero.weather-snow .home-drop-item{width:var(--drop-size,3px);height:var(--drop-size,3px);border-radius:50%;background:#ffffff;box-shadow:0 0 4px rgba(255,255,255,.9)}
-.home-hero.weather-rain .home-drop-item{width:1px;height:14px;border-radius:1px;background:linear-gradient(180deg,transparent,rgba(180,215,255,.75));transform:rotate(15deg)}
-.home-weather{display:inline-flex;align-items:center;gap:6px;font-size:.82rem;font-weight:600;letter-spacing:.02em;color:var(--text);margin:0 0 2px 0}
+.home-hero.weather-rain .home-precip,.home-hero.weather-snow .home-precip,
+.home-hero.weather-storm .home-precip,.home-hero.weather-fog .home-precip{opacity:1}
+/* Precipitation is one tiled sheet per kind, drawn in front of the sun so it veils it by occlusion
+   (never a per-frame filter), moved by a single composited animation per depth
+   layer (near/far) instead of one element + one animation per drop. The sheet is a repeating
+   200x130 SVG and the layer travels exactly one tile height per loop, so the loop is seamless and
+   the whole effect costs 2 animations -- 24 drops used to spend 24 of the home's motion budget on
+   1px streaks the pale sky barely showed. Two layers keep the parallax the drops had. */
+.home-hero.weather-rain .home-precip{--precip-tile:url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='200'%20height='130'%3E%3Cg%20fill='none'%20stroke='%23789bbf'%20stroke-width='1.15'%20stroke-linecap='round'%20opacity='.55'%3E%3Cpath%20d='M4%20129l-7%2021'/%3E%3Cpath%20d='M4%20-1l-7%2021'/%3E%3Cpath%20d='M22%206l-7%2021'/%3E%3Cpath%20d='M31%2039l-7%2021'/%3E%3Cpath%20d='M40%20101l-7%2028'/%3E%3Cpath%20d='M57%2061l-5%2024'/%3E%3Cpath%20d='M67%2094l-5%2021'/%3E%3Cpath%20d='M82%20123l-7%2021'/%3E%3Cpath%20d='M82%20-7l-7%2021'/%3E%3Cpath%20d='M90%2091l-5%2018'/%3E%3Cpath%20d='M106%20107l-7%2021'/%3E%3Cpath%20d='M117%2056l-4%2021'/%3E%3Cpath%20d='M125%2045l-6%2018'/%3E%3Cpath%20d='M141%20112l-5%2024'/%3E%3Cpath%20d='M141%20-18l-5%2024'/%3E%3Cpath%20d='M150%2096l-5%2021'/%3E%3Cpath%20d='M165%2057l-5%2024'/%3E%3Cpath%20d='M173%20108l-5%2018'/%3E%3Cpath%20d='M187%2091l-7%2031'/%3E%3C/g%3E%3C/svg%3E")}
+.home-hero.weather-snow .home-precip{--precip-tile:url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='200'%20height='130'%3E%3Cg%20fill='%237e9dbf'%20opacity='.22'%3E%3Ccircle%20cx='62'%20cy='34'%20r='5.0'/%3E%3Ccircle%20cx='44'%20cy='87'%20r='6.3'/%3E%3Ccircle%20cx='150'%20cy='31'%20r='4.0'/%3E%3Ccircle%20cx='55'%20cy='54'%20r='5.0'/%3E%3Ccircle%20cx='80'%20cy='103'%20r='7.4'/%3E%3Ccircle%20cx='37'%20cy='85'%20r='3.4'/%3E%3Ccircle%20cx='150'%20cy='120'%20r='4.0'/%3E%3Ccircle%20cx='51'%20cy='62'%20r='7.4'/%3E%3Ccircle%20cx='113'%20cy='85'%20r='7.4'/%3E%3Ccircle%20cx='42'%20cy='82'%20r='2.5'/%3E%3C/g%3E%3Cg%20fill='%23ffffff'%20opacity='.9'%3E%3Ccircle%20cx='62'%20cy='34'%20r='2.4'/%3E%3Ccircle%20cx='44'%20cy='87'%20r='3.0'/%3E%3Ccircle%20cx='150'%20cy='31'%20r='1.9'/%3E%3Ccircle%20cx='55'%20cy='54'%20r='2.4'/%3E%3Ccircle%20cx='80'%20cy='103'%20r='3.5'/%3E%3Ccircle%20cx='37'%20cy='85'%20r='1.6'/%3E%3Ccircle%20cx='150'%20cy='120'%20r='1.9'/%3E%3Ccircle%20cx='51'%20cy='62'%20r='3.5'/%3E%3Ccircle%20cx='113'%20cy='85'%20r='3.5'/%3E%3Ccircle%20cx='42'%20cy='82'%20r='1.2'/%3E%3C/g%3E%3C/svg%3E")}
+.home-hero.weather-storm .home-precip{--precip-tile:url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='200'%20height='130'%3E%3Cg%20fill='none'%20stroke='%234e6f95'%20stroke-width='1.3'%20stroke-linecap='round'%20opacity='.72'%3E%3Cpath%20d='M7%2090l-6%2031'/%3E%3Cpath%20d='M16%2052l-8%2036'/%3E%3Cpath%20d='M24%2082l-5%2041'/%3E%3Cpath%20d='M33%20117l-9%2026'/%3E%3Cpath%20d='M33%20-13l-9%2026'/%3E%3Cpath%20d='M39%2094l-8%2041'/%3E%3Cpath%20d='M39%20-36l-8%2041'/%3E%3Cpath%20d='M49%20126l-8%2031'/%3E%3Cpath%20d='M49%20-4l-8%2031'/%3E%3Cpath%20d='M59%207l-9%2031'/%3E%3Cpath%20d='M71%2048l-6%2041'/%3E%3Cpath%20d='M76%20128l-5%2041'/%3E%3Cpath%20d='M76%20-2l-5%2041'/%3E%3Cpath%20d='M84%2044l-6%2036'/%3E%3Cpath%20d='M97%20103l-4%2026'/%3E%3Cpath%20d='M106%20112l-9%2031'/%3E%3Cpath%20d='M106%20-18l-9%2031'/%3E%3Cpath%20d='M111%2060l-4%2026'/%3E%3Cpath%20d='M120%2052l-8%2031'/%3E%3Cpath%20d='M131%2071l-8%2031'/%3E%3Cpath%20d='M139%2018l-7%2036'/%3E%3Cpath%20d='M148%2075l-4%2026'/%3E%3Cpath%20d='M154%2082l-7%2026'/%3E%3Cpath%20d='M162%2036l-9%2026'/%3E%3Cpath%20d='M175%2026l-4%2036'/%3E%3Cpath%20d='M184%2078l-7%2041'/%3E%3Cpath%20d='M192%2074l-9%2041'/%3E%3C/g%3E%3C/svg%3E")}
+.home-hero.weather-fog .home-precip{--precip-tile:url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='200'%20height='130'%3E%3Cfilter%20id='s'%20x='-1'%20y='-1'%20width='3'%20height='3'%3E%3CfeGaussianBlur%20stdDeviation='12'/%3E%3C/filter%3E%3Cg%20filter='url(%23s)'%20fill='%23a9bfd4'%20opacity='.55'%3E%3Cellipse%20cx='-142'%20cy='-80'%20rx='90'%20ry='40'/%3E%3Cellipse%20cx='-142'%20cy='50'%20rx='90'%20ry='40'/%3E%3Cellipse%20cx='-142'%20cy='180'%20rx='90'%20ry='40'/%3E%3Cellipse%20cx='58'%20cy='50'%20rx='90'%20ry='40'/%3E%3Cellipse%20cx='111'%20cy='84'%20rx='63'%20ry='37'/%3E%3Cellipse%20cx='-147'%20cy='-54'%20rx='70'%20ry='35'/%3E%3Cellipse%20cx='-147'%20cy='76'%20rx='70'%20ry='35'/%3E%3Cellipse%20cx='-147'%20cy='206'%20rx='70'%20ry='35'/%3E%3Cellipse%20cx='53'%20cy='76'%20rx='70'%20ry='35'/%3E%3Cellipse%20cx='-56'%20cy='-91'%20rx='56'%20ry='35'/%3E%3Cellipse%20cx='144'%20cy='-91'%20rx='56'%20ry='35'/%3E%3Cellipse%20cx='144'%20cy='39'%20rx='56'%20ry='35'/%3E%3Cellipse%20cx='344'%20cy='-91'%20rx='56'%20ry='35'/%3E%3Cellipse%20cx='344'%20cy='39'%20rx='56'%20ry='35'/%3E%3Cellipse%20cx='344'%20cy='169'%20rx='56'%20ry='35'/%3E%3Cellipse%20cx='-72'%20cy='233'%20rx='89'%20ry='34'/%3E%3Cellipse%20cx='128'%20cy='103'%20rx='89'%20ry='34'/%3E%3Cellipse%20cx='128'%20cy='233'%20rx='89'%20ry='34'/%3E%3Cellipse%20cx='328'%20cy='233'%20rx='89'%20ry='34'/%3E%3Cellipse%20cx='-100'%20cy='239'%20rx='72'%20ry='29'/%3E%3Cellipse%20cx='100'%20cy='109'%20rx='72'%20ry='29'/%3E%3Cellipse%20cx='100'%20cy='239'%20rx='72'%20ry='29'/%3E%3Cellipse%20cx='300'%20cy='239'%20rx='72'%20ry='29'/%3E%3Cellipse%20cx='80'%20cy='78'%20rx='64'%20ry='38'/%3E%3C/g%3E%3Cg%20filter='url(%23s)'%20fill='%23ffffff'%20opacity='.42'%3E%3Cellipse%20cx='-142'%20cy='-80'%20rx='55'%20ry='24'/%3E%3Cellipse%20cx='-142'%20cy='50'%20rx='55'%20ry='24'/%3E%3Cellipse%20cx='-142'%20cy='180'%20rx='55'%20ry='24'/%3E%3Cellipse%20cx='58'%20cy='50'%20rx='55'%20ry='24'/%3E%3Cellipse%20cx='111'%20cy='84'%20rx='39'%20ry='22'/%3E%3Cellipse%20cx='-147'%20cy='-54'%20rx='43'%20ry='21'/%3E%3Cellipse%20cx='-147'%20cy='76'%20rx='43'%20ry='21'/%3E%3Cellipse%20cx='-147'%20cy='206'%20rx='43'%20ry='21'/%3E%3Cellipse%20cx='53'%20cy='76'%20rx='43'%20ry='21'/%3E%3Cellipse%20cx='-56'%20cy='-91'%20rx='34'%20ry='21'/%3E%3Cellipse%20cx='144'%20cy='-91'%20rx='34'%20ry='21'/%3E%3Cellipse%20cx='144'%20cy='39'%20rx='34'%20ry='21'/%3E%3Cellipse%20cx='344'%20cy='-91'%20rx='34'%20ry='21'/%3E%3Cellipse%20cx='344'%20cy='39'%20rx='34'%20ry='21'/%3E%3Cellipse%20cx='344'%20cy='169'%20rx='34'%20ry='21'/%3E%3Cellipse%20cx='-72'%20cy='233'%20rx='55'%20ry='21'/%3E%3Cellipse%20cx='128'%20cy='103'%20rx='55'%20ry='21'/%3E%3Cellipse%20cx='128'%20cy='233'%20rx='55'%20ry='21'/%3E%3Cellipse%20cx='328'%20cy='233'%20rx='55'%20ry='21'/%3E%3Cellipse%20cx='-100'%20cy='239'%20rx='44'%20ry='17'/%3E%3Cellipse%20cx='100'%20cy='109'%20rx='44'%20ry='17'/%3E%3Cellipse%20cx='100'%20cy='239'%20rx='44'%20ry='17'/%3E%3Cellipse%20cx='300'%20cy='239'%20rx='44'%20ry='17'/%3E%3Cellipse%20cx='80'%20cy='78'%20rx='39'%20ry='23'/%3E%3C/g%3E%3C/svg%3E")}
+.home-hero.weather-rain .home-precip{--precip-speed:2.2s}
+.home-hero.weather-snow .home-precip{--precip-speed:5.8s}
+.home-hero.weather-storm .home-precip{--precip-speed:1.35s}
+.home-hero.weather-fog .home-precip{--precip-speed:44s}
+.home-precip-layer{position:absolute;left:0;right:0;top:-130px;height:calc(100% + 130px);
+  background-image:var(--precip-tile);background-repeat:repeat;background-size:200px 130px;pointer-events:none;
+  will-change:transform}
+.home-hero.weather-fog .home-precip-layer{left:-200px;right:-200px}
+.home-hero.weather-fog .home-precip-layer.is-far{background-position:60px 40px;animation-direction:reverse}
+.home-precip-layer.is-near{opacity:.9;animation-duration:calc(var(--precip-speed,2.2s) * .76)}
+.home-precip-layer.is-far{opacity:.42;background-position:100px 130px;animation-duration:var(--precip-speed,2.2s)}
+.home-weather{display:inline-flex;align-items:center;gap:6px;font-size:var(--text-sm);font-weight:600;letter-spacing:.02em;color:var(--text);margin:0 0 2px 0}
 .home-weather b{font-weight:800;font-variant-numeric:tabular-nums}
 .home-weather .home-weather-city{color:var(--muted);font-weight:600}
 .home-weather .home-weather-city::before{content:"·";margin-right:6px}
@@ -138,7 +161,7 @@
 .home-fx .home-pc .icon-btn .ico{position:relative}
 .home-fx #btn-lock:hover .ico svg{transform:translateY(1px) scale(1.06)}
 .home-fx #btn-sleep:hover .ico svg{transform:rotate(-18deg)}
-.home-fx #btn-sleep .ico::after{content:"z";position:absolute;right:-8px;top:-6px;font-size:.7rem;font-weight:900;color:var(--accent);opacity:0}
+.home-fx #btn-sleep .ico::after{content:"z";position:absolute;right:-8px;top:-6px;font-size:var(--text-xs);font-weight:900;color:var(--accent);opacity:0}
 .home-fx #btn-shot:hover .ico svg{transform:scale(.86)}
 .home-fx #btn-explore:hover .ico svg{transform:rotate(-8deg) translateY(-1px)}
 
@@ -284,7 +307,10 @@ body.hq-bg-off .home-bg{display:none}
 .bg-waves{position:absolute;left:0;bottom:0;width:200%;height:min(16vh,150px)}
 .bg-waves .w1{fill:color-mix(in srgb,var(--bg-d) 55%,transparent)}
 .bg-waves .w2{fill:color-mix(in srgb,var(--bg-d) 75%,transparent)}
-.bg-grain{position:absolute;inset:0;opacity:.05;mix-blend-mode:overlay;
+/* Composited, not blended: a mix-blend-mode layer makes the browser re-blend the whole
+   viewport every frame that anything beneath it animates (~20 fps in software raster).
+   At 3.5-5% the noise reads the same composited normally; the pixel diff is < 1 level. */
+.bg-grain{position:absolute;inset:0;opacity:.05;mix-blend-mode:normal;
   background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 .5  0 0 0 0 .5  0 0 0 0 .5  0 0 0 .9 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>")}
 .bg-vignette{position:absolute;inset:0;background:radial-gradient(130% 100% at 50% 60%,transparent 55%,color-mix(in srgb,var(--bg) 60%,transparent) 100%)}
 @media (prefers-color-scheme: light){
@@ -292,7 +318,7 @@ body.hq-bg-off .home-bg{display:none}
   .bg-mesh .m2{opacity:.6}
   .bg-mesh .m3{opacity:.35}
   .bg-stars{display:none}
-  .bg-grain{opacity:.035;mix-blend-mode:multiply}
+  .bg-grain{opacity:.035}
   .bg-waves .w1{fill:color-mix(in srgb,var(--bg-c) 40%,transparent)}
   .bg-waves .w2{fill:color-mix(in srgb,var(--bg-c) 60%,transparent)}
   .bg-vignette{background:radial-gradient(130% 100% at 50% 60%,transparent 60%,color-mix(in srgb,#fff 40%,transparent) 100%)}
@@ -348,21 +374,25 @@ body[data-view="accueil"] .home-fx section.home-hero{background-image:radial-gra
 @keyframes hf-sway{0%,100%{translate:0 0}50%{translate:var(--sway,40px) 0}}
 @keyframes hf-wave-slide{from{transform:translateX(0)}to{transform:translateX(-50%)}}
 @keyframes hf-bgtwinkle{0%,100%{opacity:.2}50%{opacity:.6}}
-@keyframes hf-snow-fall{0%{transform:translate3d(0,-20px,0);opacity:0}20%{opacity:.85}85%{opacity:.7}100%{transform:translate3d(40px,260px,0);opacity:0}}
-@keyframes hf-rain-fall{0%{transform:translate3d(0,-20px,0);opacity:0}15%{opacity:.75}90%{opacity:.6}100%{transform:translate3d(-20px,260px,0);opacity:0}}
+/* one tile height of travel = one seamless loop of the precipitation sheet */
+@keyframes hf-snow-fall{from{transform:translate3d(0,0,0)}to{transform:translate3d(0,130px,0)}}
+@keyframes hf-rain-fall{from{transform:translate3d(0,0,0)}to{transform:translate3d(0,130px,0)}}
+@keyframes hf-fog-drift{from{transform:translate3d(0,0,0)}to{transform:translate3d(200px,0,0)}}
 @media (prefers-reduced-motion:no-preference){
   .bg-mesh .m2{animation:hf-sun 24s ease-in-out infinite}
   .bg-lights span{animation-name:hf-rise,hf-sway;animation-timing-function:linear,ease-in-out;animation-iteration-count:infinite,infinite}
   .bg-waves{animation:hf-wave-slide 180s linear infinite}
   .bg-stars span.is-moving{animation:hf-bgtwinkle 6s ease-in-out infinite}
-  .home-hero.weather-snow .home-drop-item{animation:hf-snow-fall linear infinite}
-  .home-hero.weather-rain .home-drop-item{animation:hf-rain-fall linear infinite}
+  .home-hero.weather-snow .home-precip-layer{animation-name:hf-snow-fall;animation-timing-function:linear;animation-iteration-count:infinite}
+  .home-hero.weather-rain .home-precip-layer{animation-name:hf-rain-fall;animation-timing-function:linear;animation-iteration-count:infinite}
+  .home-hero.weather-storm .home-precip-layer{animation-name:hf-rain-fall;animation-timing-function:linear;animation-iteration-count:infinite}
+  .home-hero.weather-fog .home-precip-layer{animation-name:hf-fog-drift;animation-timing-function:linear;animation-iteration-count:infinite}
 }
 /* Explicit Accueil budgets: full = 8 star accents + 4 lights; lite = 4 star accents; parked/off-view = 0. */
 html[data-hq-motion-tier="lite"] .home-star.is-moving:not(.is-lite),
 html[data-hq-motion-tier="lite"] .bg-stars span.is-moving:not(.is-lite){animation:none!important}
 html[data-hq-motion-tier="lite"] .home-cloud,
-html[data-hq-motion-tier="lite"] .home-drop-item,
+html[data-hq-motion-tier="lite"] .home-precip-layer,
 html[data-hq-motion-tier="lite"] .home-aurora span,
 html[data-hq-motion-tier="lite"] .home-orb-rays,
 html[data-hq-motion-tier="lite"] .home-orb-core,
@@ -391,7 +421,7 @@ html[data-hq-motion-tier="parked"] .home-bg *::after{animation-play-state:paused
 @keyframes hq-restart-spin{to{transform:rotate(360deg)}}
 @keyframes hq-restart-due{50%{transform:scale(1.5);opacity:.6}}
 .home-v2 .home-pc-row:has(#btn-restart-bridge:not([hidden])){grid-template-columns:repeat(5,minmax(0,1fr))}
-@media (max-width:420px){.home-v2 .home-pc-row:has(#btn-restart-bridge:not([hidden])) .lbl{font-size:.68rem;letter-spacing:-.01em}}
+@media (max-width:420px){.home-v2 .home-pc-row:has(#btn-restart-bridge:not([hidden])) .lbl{font-size:var(--text-xs);letter-spacing:-.01em}}
 
 /* Forge runs an indigo accent; the warm amber/rose bloom behind it made the two
    vibrate against each other. The sky cools for that view only, so the accent

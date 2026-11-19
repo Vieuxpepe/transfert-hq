@@ -15,7 +15,7 @@ const ctx={currentTime:100,state:'running',destination:{},
  createBufferSource(){const s={playbackRate:{},connect(){},disconnect(){},start(){sources.push(this);},stop(t){this.stopAt=t;}};return s;},
  createOscillator(){const o={frequency:param(),connect(){},start(){oscillators.push(this);},stop(){}};return o;}};
 state.audioCtx=ctx;state.nsfwOn=true;
-const win={document:{hidden:false},AudioContext:class{},matchMedia:()=>({matches:false}),clearTimeout(){},clearInterval(){},
+const win={document:{hidden:false},AudioContext:class{},matchMedia:()=>({matches:false}),setTimeout:()=>0,clearTimeout(){},clearInterval(){},
  localStorage:{getItem:k=>k==='hq_companion_forge_sound'||k==='hq_companion_voice'?'1':null},
  speechSynthesis:{cancel(){}},fetch:async()=>({ok:true,arrayBuffer:async()=>new ArrayBuffer(1)}),
  Audio:class{constructor(url){this.url=url;audios.push(this);}play(){return Promise.resolve();}pause(){this.paused=true;}}};
@@ -37,10 +37,12 @@ assert.equal(audios.length,1,'a repeated spoken phase cannot restart itself in a
 now+=1000;api.playLewdPhaseWav(win,'deepthroat');assert.equal(audios.length,1,'different phases share a two-second gap');
 now+=8000;api.playLewdPhaseWav(win,'climax_fever');assert.equal(audios.length,2,'phase can play again after cooldown');
 api.stopSpeech(win);state.reactionAudio=null;now+=1000;
+// Impact tails are synthesised with oscillators too; count only what the synth phase adds.
+const synthStart=oscillators.length;
 for(let i=0;i<100;i++)api.playVocalSynthFx(win,'mwah');
-assert.equal(oscillators.length,1,'legacy synth fallback is also rate-limited');
-now+=200;api.playVocalSynthFx(win,'mwah');assert.equal(oscillators.length,1,'per-kind cooldown prevents a fallback drone');
-state.currentAudio={};now+=1000;api.playVocalSynthFx(win,'mwah');assert.equal(oscillators.length,1,'legacy effects do not play under speech');
+assert.equal(oscillators.length-synthStart,1,'legacy synth fallback is also rate-limited');
+now+=200;api.playVocalSynthFx(win,'mwah');assert.equal(oscillators.length-synthStart,1,'per-kind cooldown prevents a fallback drone');
+state.currentAudio={};now+=1000;api.playVocalSynthFx(win,'mwah');assert.equal(oscillators.length-synthStart,1,'legacy effects do not play under speech');
 const audioBox={module:{exports:{}},Date:Clock};
 vm.runInNewContext(readFileSync(new URL('../assets/hq-companion-reaction-audio.js',import.meta.url),'utf8'),audioBox);
 const sample={url:'/assets/companion/chat/reactions/test.deadbee1.ogg',duration_ms:1000};

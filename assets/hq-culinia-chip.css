@@ -146,8 +146,8 @@ body:not([data-view="repas"]) .hq-culinia-drawer { display: none !important; }
   box-shadow: 0 0 12px rgba(249, 115, 22, 0.45);
 }
 
-.hq-culinia-drawer-title { font-weight: 800; font-size: 0.95rem; letter-spacing: 0.02em; }
-.hq-culinia-drawer-sub { font-size: 0.72rem; color: #fdba74; }
+.hq-culinia-drawer-title { font-weight: 800; font-size:var(--text-md); letter-spacing: 0.02em; }
+.hq-culinia-drawer-sub { font-size: var(--text-xs); color: #fdba74; }
 .hq-culinia-drawer-controls { display: flex; gap: 6px; }
 
 .hq-culinia-icon-btn {
@@ -156,7 +156,7 @@ body:not([data-view="repas"]) .hq-culinia-drawer { display: none !important; }
   color: #fed7aa;
   border-radius: 7px;
   padding: 4px 8px;
-  font-size: 0.75rem;
+  font-size: var(--text-sm);
   cursor: pointer;
 }
 .hq-culinia-icon-btn:hover { background: rgba(249, 115, 22, 0.2); border-color: rgba(249, 115, 22, 0.5); }
@@ -175,7 +175,7 @@ body:not([data-view="repas"]) .hq-culinia-drawer { display: none !important; }
   max-width: 88%;
   padding: 9px 12px;
   border-radius: 12px;
-  font-size: 0.84rem;
+  font-size: var(--text-sm);
   line-height: 1.45;
   white-space: pre-wrap;
   word-break: break-word;
@@ -195,7 +195,7 @@ body:not([data-view="repas"]) .hq-culinia-drawer { display: none !important; }
 }
 .hq-culinia-msg-tools { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 5px; }
 .hq-culinia-tool-tag {
-  font-size: 0.68rem;
+  font-size: var(--text-xs);
   padding: 1px 6px;
   border-radius: 999px;
   background: rgba(249, 115, 22, 0.16);
@@ -206,7 +206,7 @@ body:not([data-view="repas"]) .hq-culinia-drawer { display: none !important; }
 
 .hq-culinia-quick { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 12px 8px; border-top: 1px solid rgba(249, 115, 22, 0.12); }
 .hq-culinia-quick-btn {
-  font-size: 0.72rem;
+  font-size: var(--text-xs);
   padding: 4px 9px;
   border-radius: 999px;
   background: rgba(249, 115, 22, 0.12);
@@ -230,7 +230,7 @@ body:not([data-view="repas"]) .hq-culinia-drawer { display: none !important; }
   border-radius: 9px;
   padding: 8px 11px;
   color: #fff7ed;
-  font-size: 16px;
+  font-size: var(--text-md);
   outline: none;
 }
 .hq-culinia-input:focus { border-color: #f97316; }
@@ -242,7 +242,7 @@ body:not([data-view="repas"]) .hq-culinia-drawer { display: none !important; }
   border: none;
   border-radius: 9px;
   padding: 0 14px;
-  font-size: 0.82rem;
+  font-size: var(--text-sm);
   cursor: pointer;
 }
 .hq-culinia-send:disabled { opacity: 0.5; cursor: default; }
@@ -264,7 +264,7 @@ body:not([data-view="repas"]) .hq-culinia-drawer { display: none !important; }
   background: rgba(28, 16, 11, 0.95);
   border: 1px solid rgba(249, 115, 22, 0.58);
   color: #ffedd5;
-  font-size: 12.5px;
+  font-size: var(--text-sm);
   line-height: 1.42;
   box-shadow: 0 10px 24px rgba(0, 0, 0, 0.48), 0 0 16px rgba(249, 115, 22, 0.2);
   cursor: pointer;
@@ -305,7 +305,7 @@ body:not([data-view="repas"]) .hq-culinia-drawer { display: none !important; }
   background: rgba(249, 115, 22, 0.16);
   padding: 1px 4px;
   border-radius: 4px;
-  font-size: 0.8em;
+  font-size: var(--text-xs);
 }
 
 .hq-culinia-msg-images {
@@ -334,7 +334,7 @@ body:not([data-view="repas"]) .hq-culinia-drawer { display: none !important; }
 }
 
 .hq-culinia-img-cap {
-  font-size: 0.7rem;
+  font-size: var(--text-xs);
   padding: 5px 8px;
   color: #fed7aa;
   white-space: nowrap;

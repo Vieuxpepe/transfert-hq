@@ -8,23 +8,56 @@
   if (document.getElementById(ID)) return;
 
   var ART = "/assets/companion/musica-chip-nsfw-notail-noears.webp?v=3";
+  var BODY_PLATE = "/assets/companion/musica-chip-body-plate.webp";
   var ART_2X = "/assets/companion/musica-chip-nsfw-notail-noears@2x.webp?v=3";
   var TAIL_ART = "/assets/companion/musica-tail-overlay.webp?v=2";
   var TAIL_ART_2X = "/assets/companion/musica-tail-overlay@2x.webp?v=2";
   var LS_NSFW = "hq_companion_nsfw";
   var LS_POS = "hq_musica_chip_pos_v1";
   var LS_SCALE = "hq_musica_chip_scale_v1";
+  var LS_MEM = "hq_musica_chip_mem_v1";
   var DRAG_THRESHOLD = 7;
+
+  var chipMem = (function loadChipMemory() {
+    var d = new Date();
+    var dayKey = d.getFullYear() + "-" + (d.getMonth() + 1) + "-" + d.getDate();
+    var base = { dayKey: dayKey, hits: 0, pets: 0, milestone: 0, greetedDay: "" };
+    try {
+      var raw = window.localStorage.getItem(LS_MEM);
+      if (raw) {
+        var parsed = JSON.parse(raw);
+        if (parsed && parsed.dayKey === dayKey) {
+          base.hits = Number(parsed.hits) || 0;
+          base.pets = Number(parsed.pets) || 0;
+          base.milestone = Number(parsed.milestone) || 0;
+          base.greetedDay = String(parsed.greetedDay || "");
+        }
+      }
+    } catch (_) {}
+    return base;
+  })();
+
+  function saveChipMemory() {
+    try { window.localStorage.setItem(LS_MEM, JSON.stringify(chipMem)); } catch (_) {}
+  }
+
+  function lateNightHour() {
+    var h = new Date().getHours();
+    return h >= 22 || h < 5;
+  }
 
   var dock = document.createElement("div");
   dock.id = "hq-musica-chip-dock";
   dock.className = "hq-musica-chip-dock";
   dock.hidden = true;
+  function sfx(kind) { try { if (window.HqAssistantSfx) window.HqAssistantSfx.play("musica", kind); } catch (_) {} }
+  try { if (window.HqAssistantSfx) window.HqAssistantSfx.register("musica", function () { return dock; }); } catch (_) {}
 
   var button = document.createElement("button");
   button.type = "button";
   button.id = ID;
   button.className = "hq-musica-chip";
+  if (beatMissing) button.setAttribute("data-beat", "off"); // the degraded chip is visible to CSS and tests
   button.setAttribute("aria-label", "Musica — open the music steward");
   button.title = "Musica — drag · pinch or Ctrl+wheel = size · +/− on the keyboard";
 
@@ -117,9 +150,10 @@
   };
   // Fed by stepBooty each frame: the back's displacement (UV fractions), the twerk drive and the moods, so the
   // tail rides on her back and answers the booty without ever matching its amplitude.
-  var tailLink = { rx: 0, ry: 0, rootAngle: 0, dx: 0, dy: 0, twerk: 0, phase: 0, ripple: 0, stretch: 0, blinking: false, beat: 0, music: 0, hx: 0, hy: 0, talk: 0, flush: 0,
+  var tailLink = { rx: 0, ry: 0, rootAngle: 0, dx: 0, dy: 0, twerk: 0, phase: 0, ripple: 0, stretch: 0, blinking: false, beat: 0, music: 0, talk: 0, flush: 0,
     effort: 0, shy: 0, happy: 0, vx: 0, vy: 0, pdx: 0, pnear: 0, accent: 0, holding: false,
-    headAngle: 0, curlPose: 0 };
+    curlPose: 0, heartPulse: 0, watchDir: 0, carryPull: 0,
+    tailState: "idle", talkBurst: 0, cupTiltL: 0, cupTiltR: 0, humBeat: 0 };
 
   function tailResetPhys() {
     var A = tailAnim;
@@ -220,18 +254,23 @@
     A.prevBlink = L.blinking;
     if (A.perk > 0) A.perk = Math.max(0, A.perk - dt);
 
-    // Mood curl: tightens when excited / spanked, relaxes and straightens on a stretch or when she perks up.
-    var moodDrift = L.holding ? 0 : 0.10 * Math.sin(T * 0.05 + 1.0) + 0.06 * Math.sin(T * 0.13);
+    // Expressive multi-state tail physics: lazy idle curl, perked question-mark on start/skip,
+    // wrapped/tucked curl during squeeze, and a sharp upward snap on spank or tail tug.
+    var moodDrift = L.holding ? 0 : 0.14 * Math.sin(T * 0.35) + 0.06 * Math.sin(T * 0.13);
     if (lively && T >= A.nextTwirl) {   // a playful curl-uncurl of the tip
       A.vcurl += (Math.random() < 0.5 ? -1 : 1) * 3.2;
       A.nextTwirl = T + 6 + Math.random() * 8;
     }
-    var curlT = moodDrift + L.twerk * 0.2 + Math.min(1, L.ripple) * 0.8 - L.stretch * 0.55 -
+    var stateCurl = L.tailState === "squeeze" ? 0.78 : (L.tailState === "perk" ? -0.58 : (L.tailState === "snap" ? -0.35 : 0));
+    var stateHook = L.tailState === "squeeze" ? 0.55 : (L.tailState === "perk" ? -0.52 : (L.tailState === "snap" ? 0.85 : 0));
+    if (L.tailState === "snap" && L.ripple > 0.35) A.v[0] += (L.strikeSide >= 0 ? -1 : 1) * 1.4;
+    if (L.humBeat > 0.02) A.v[3] += Math.sin(T * 11) * 0.45 * L.humBeat;
+    var curlT = moodDrift + stateCurl + L.twerk * 0.2 + Math.min(1, L.ripple) * 0.8 - L.stretch * 0.55 -
       0.45 * Math.min(1, A.perk / 0.5) - (hovered ? 0.35 : 0) + 0.65 * A.shy - 0.15 * A.droop - 0.25 * L.happy;
     A.vcurl += (-9 * (A.curl - curlT) - 4.2 * A.vcurl) * dt;
     A.curl += A.vcurl * dt;
     // Loose hook at the tip (spank / stretch / shy) and a gentle S through the body of the tail.
-    var hookT = 0.55 * Math.min(1, L.ripple) + 0.45 * A.shy + 0.30 * L.stretch;
+    var hookT = 0.55 * Math.min(1, L.ripple) + 0.45 * A.shy + 0.30 * L.stretch + stateHook;
     A.vhook += (-30 * (A.hook - hookT) - 5.5 * A.vhook) * dt;
     A.hook += A.vhook * dt;
     A.sc += ((0.7 * L.stretch + 0.3 * Math.min(1, L.ripple)) - A.sc) * Math.min(1, dt * 4);
@@ -279,9 +318,12 @@
 
   function earStep(T, dt, hovered) {
     var E = earAnim, L = tailLink, i;
-    if (L.ripple - E.prevRipple > 0.3) {   // spank: ears flatten back, flash, small outward kick
+    if (L.ripple - E.prevRipple > 0.3) {   // spank: ears flatten back, flash, asymmetric kick on struck side
       E.flat = 1; E.flash = 1;
-      EARS.forEach(function (ear, k) { E.v[k] += ear.side * 1.2; });
+      var sDir = L.strikeSide || 0;
+      EARS.forEach(function (ear, k) {
+        E.v[k] += ear.side * (ear.side === sDir ? 1.65 : 0.95);
+      });
     }
     E.prevRipple = L.ripple;
     if (L.beat !== E.prevBeat) {   // wag: a tiny inward bob on every beat
@@ -299,12 +341,16 @@
     E.flat = Math.max(0, E.flat - dt / 0.8);
     E.flash *= Math.exp(-dt * 3);
     var perk = Math.min(1, tailAnim.perk / 0.6);
-    var flatAmt = E.flat * 0.16 + L.stretch * 0.08;
-    var sway = -L.dx * 1.0;
+    var flatAmt = E.flat * 0.16 + L.stretch * 0.08 + (L.pout || 0) * 0.14;
+    var sway = -L.dx * 1.0 + (L.watchDir || 0) * 0.08;
+    var petLean = (L.pet || 0) * 0.07;
     var age = T - gesture.at;
     for (i = 0; i < 2; i++) {
       var side = EARS[i].side;
-      var target = side * flatAmt - side * (0.05 * perk + (hovered ? 0.04 : 0)) + sway;
+      var watchPerk = L.watchDir ? Math.abs(L.watchDir) * 0.08 : 0;
+      var cupTilt = i === 0 ? (L.cupTiltL || 0) : (L.cupTiltR || 0);
+      var talkFlick = (L.talkBurst || 0) * 0.09 * side;
+      var target = side * flatAmt - side * (0.05 * perk + (hovered ? 0.04 : 0) + petLean + watchPerk) + sway + side * cupTilt * 0.24 + talkFlick;
       var delay = side === gesture.side ? 0 : 0.11;
       if (gesture.kind === "listen") {
         target += gesture.side * (delay === 0 ? 0.23 : 0.10) *
@@ -318,15 +364,13 @@
     }
     var g = hovered ? 0.2 : 0;
     g = Math.max(g, L.music * (0.3 + 0.45 * (0.5 + 0.5 * Math.sin(L.phase))) * Math.min(1, L.twerk * 2));
-    g = Math.max(g, L.talk * 0.7, E.flash);
+    g = Math.max(g, L.talk * 0.7, E.flash, (L.arousal || 0) * 0.62, (L.pet || 0) * 0.35, (L.heartPulse || 0) * 0.32);
     if (gesture.kind === "listen") g = Math.max(g, 0.32 * motionHold(age, 0, 0.18, 0.95, 1.6));
     E.glow += (g - E.glow) * Math.min(1, dt * 10);
   }
 
   function earDraw(ctx, s) {
     var E = earAnim;
-    var offX = tailLink.hx * 1024 * s, offY = tailLink.hy * 1024 * s;
-    var c = Math.cos(tailLink.headAngle), sn = Math.sin(tailLink.headAngle);
     for (var i = 0; i < 2; i++) {
       var ear = EARS[i];
       if (!ear.src.naturalWidth) continue;
@@ -358,10 +402,9 @@
       }
       ctx.save();
       ctx.setTransform(1, 0, 0, 1, 0, 0);
-      var px = ear.piv[0] - HEAD_PIVOT[0] * 1024, py = ear.piv[1] - HEAD_PIVOT[1] * 1024;
-      ctx.translate((ear.piv[0] + (c - 1) * px - sn * py) * s + offX,
-        (ear.piv[1] + sn * px + (c - 1) * py) * s + offY);
-      ctx.rotate(tailLink.headAngle + E.th[i]);
+      var anchor = earAnchors[i];
+      ctx.translate((ear.piv[0] + anchor.x * 1024) * s, (ear.piv[1] + anchor.y * 1024) * s);
+      ctx.rotate(anchor.angle + E.th[i]);
       ctx.drawImage(oc, (bx - ear.piv[0]) * s, (by - ear.piv[1]) * s);
       ctx.restore();
     }
@@ -635,6 +678,22 @@
   danceWrap.className = "hq-musica-chip-dance";
   danceWrap.appendChild(button);
   dock.appendChild(danceWrap);
+  var tapButton = document.createElement("button");
+  tapButton.type = "button";
+  tapButton.className = "hq-musica-beat-tap";
+  tapButton.textContent = "\u266a tempo";
+  tapButton.title = "Tape le tempo (4 coups ou plus) pour caler sa danse";
+  tapButton.setAttribute("aria-label", "Taper le tempo de la musique");
+  tapButton.addEventListener("pointerdown", function (event) {
+    if (event.button && event.button !== 0) return;
+    event.stopPropagation();
+    beatTapNow();   // on press, not release: release timing wobbles
+  });
+  tapButton.addEventListener("click", function (event) {
+    event.stopPropagation();
+    if (event.detail === 0) beatTapNow();   // keyboard activation
+  });
+  dock.appendChild(tapButton);
   document.body.appendChild(dock);
 
   function clampNum(value, min, max) {
@@ -676,6 +735,7 @@
   var playback = {
     playing: false,
     trackId: "",
+    album: "",
     intensity: 0.78,
     volume: 1.0,
     progressMs: 0,
@@ -687,10 +747,345 @@
   var pollFailures = 0;
   var lastPlaybackEventAt = 0;
   var beatCount = 0;
-  var nextDanceBeat = 8;
+  var nextDanceBeat = 16;
   var danceStopTimer = 0;
   var entranceTimer = 0;
   var exitTimer = 0;
+
+  // ---- Beat: one clock (hq-musica-beat.js) drives the twerk, the halo bars, the full-chip dance and the orbit.
+  // Its tempo comes from his taps, a stored grid, or what she hears from local audio; a hash guess is the last resort.
+  // The chip must still show, drag and resize without hq-musica-beat.js: same shapes, no beat.
+  // Every call below keeps its return shape so the frame, the drag and the scale work, while the
+  // beat-driven layers (halo bars, twerk, full-chip dance, orbit) read zero crossed beats and stay off.
+  function beatlessEngine() {
+    function idleClock() {
+      return { beats: 0, beatSec: 0.55, targetSec: 0.55, offset: null, locked: false, source: "off", snapped: false, bpm: 60 / 0.55 };
+    }
+    function idleTracker(opts) {
+      return { rate: (opts && opts.sampleRate) || 44100, fftSize: (opts && opts.fftSize) || 1024,
+        bassMean: 0.45, meanN: 0, level: 0, onset: 0, flux: 0, drop: false,
+        bpm: 0, offset: 0, confidence: 0, period: 0, energyStep: 0.5, drops: [], stableSince: -1 };
+    }
+    var noBeat = function () { return false; };
+    return {
+      foldBeat: function (sec) {
+        if (!(sec > 0) || !isFinite(sec)) return 0.5;
+        while (sec > 0.82) sec /= 2;
+        while (sec < 0.32) sec *= 2;
+        return sec;
+      },
+      createClock: idleClock,
+      createTap: function () { return { times: [], songs: [] }; },
+      setGuess: noBeat,
+      setTempo: noBeat,
+      stepClock: function () { return 0; },
+      nextBar: function (beats, minBeats) { return (beats || 0) + (minBeats || 4) * 1e6; },
+      toBar: function (beats) { return beats; },
+      phaseError: function () { return 0; },
+      tap: function () { return { bpm: 0, offset: 0 }; },
+      createTracker: idleTracker,
+      resetTracker: function () {},
+      pushSpectrum: function () { return { onset: 0, flux: 0, bass: 0, level: 0, drop: false }; },
+      estimate: function () { return { bpm: 0, offset: 0, confidence: 0, period: 0 }; },
+      track: function () { return { bpm: 0, offset: 0, confidence: 0, period: 0, onset: 0, level: 0, drop: false, drops: [], energyStep: 0.5 }; },
+      energyCurve: function () { return []; },
+      curveRel: function () { return 1; },
+      liveIntensity: function () { return 0.78; }
+    };
+  }
+
+  // One identity for the beat grid and for what she says: hq-now-playing.js must load before this script.
+  var SongUnit = window.HqNowPlaying;
+  var songUnitMissing = !SongUnit;
+  if (songUnitMissing) {
+    console.error("hq-musica-chip: window.HqNowPlaying is missing — /assets/hq-now-playing.js must load before this script. She keeps quiet about the song.");
+  } else {
+    SongUnit.loadOverride();
+  }
+
+  var beatMissing = false;
+  var Beat = window.HqMusicaBeat;
+  if (!Beat) {
+    console.error("hq-musica-chip: window.HqMusicaBeat is missing — /assets/hq-musica-beat.js must load before this script. The chip's dance layers stay off.");
+    Beat = beatlessEngine();
+    beatMissing = true;
+  }
+  var beatClock = Beat.createClock(0.55);
+  var beatTap = Beat.createTap();
+  var beatGrid = null;          // stored grid for this track: {bpm, offset, source, energy, energy_step, drops}
+  var beatKey = "";
+  var beatCssSec = 0;
+  var boundAudio = {};          // view -> the <audio> the chip can hear (Lecteur, Studio)
+  var hear = { ctx: null, el: null, an: null, buf: null, tracker: null,
+    sources: typeof WeakMap === "function" ? new WeakMap() : null,
+    intensity: 0.78, rel: 1, onset: 0, drop: false, savedAt: 0 };
+  var BOUNCE_LEAD = 2.2;        // radians: the spring lags its push, so the push leads the beat to land the dip on it
+
+  function localAudio() {
+    var el = boundAudio[document.body.dataset.view];
+    return el && el.isConnected && !el.hidden && !el.paused && !el.ended && el.currentSrc ? el : null;
+  }
+
+  function musicPlaying() {
+    return !!((onMusiquePage() && playback.playing) || localAudio());
+  }
+
+  function songTime(el) {
+    if (el) return el.currentTime;
+    if (!playback.playing || !playback.progressAt) return NaN;
+    return (playback.progressMs + (Date.now() - playback.progressAt)) / 1000;
+  }
+
+  function hashHex(text) {
+    var hash = 2166136261;
+    for (var i = 0; i < text.length; i += 1) {
+      hash ^= text.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
+    }
+    return (hash >>> 0).toString(16);
+  }
+
+  // The key lives in hq-now-playing.js: the beat grid and the spoken identity must be the same value, and it
+  // must exist before the dance loop's first frame.
+  // A blind match hides the song everywhere; the shared module owns that flag (hq-music.js sets it).
+  function concealedNow() {
+    if (SongUnit) return SongUnit.isConcealed();
+    return !!window.__hqBlindMatch;
+  }
+
+  // A blind duel hides the song on every view: poll the station flag so the chip stays quiet even when the Musique page
+  // was never opened. Throttled; the module keeps the local (quiz) and server reasons separate.
+  var concealAt = 0;
+  function refreshConceal(force) {
+    if (!SongUnit || typeof window.api !== "function") return;
+    var now = Date.now();
+    if (!force && now - concealAt < 15000) return;
+    concealAt = now;
+    window.api("/api/musica/conceal", { timeoutMs: 5000 }).then(function (data) {
+      if (SongUnit) SongUnit.concealFromServer(data && data.concealed);
+    }).catch(function () {});
+  }
+
+  // The owner's title is stored server-side (.hq-music/musica_song_titles.json): fetch it once per song so every device
+  // shows the same title, and the prompt written on the server uses it too.
+  var serverTitleFor = "";
+  function syncServerTitle(key) {
+    if (!key || key === serverTitleFor || !SongUnit || typeof window.api !== "function") return;
+    serverTitleFor = key;
+    window.api("/api/musica/song-titles/" + encodeURIComponent(key), { timeoutMs: 6000 }).then(function (data) {
+      if (!SongUnit) return;
+      SongUnit.setServerOverride(key, data && data.item);
+      if (serverTitleFor === key && data && data.item && data.item.title) currentSong();
+    }).catch(function () { serverTitleFor = ""; });
+  }
+
+  function postSongTitle(key, title, artist) {
+    var headers = { "Content-Type": "application/json" };
+    if (typeof window.hqCsrfToken === "function") {
+      var tok = window.hqCsrfToken();
+      if (tok) headers["X-CSRF-Token"] = tok;
+    }
+    return fetch("/api/musica/song-titles", {
+      method: "POST", credentials: "same-origin", cache: "no-store", headers: headers,
+      body: JSON.stringify({ key: key, title: title, artist: artist })
+    }).then(function (res) {
+      if (!res.ok) throw new Error("title save failed");
+      return res.json();
+    }).then(function (data) {
+      if (SongUnit) SongUnit.setServerOverride(key, data && data.item);
+      return data;
+    });
+  }
+
+  function musicKey(el) {
+    if (!SongUnit) return "";
+    return el ? SongUnit.localKey(el.currentSrc) : SongUnit.spotifyKey(playback.trackId);
+  }
+
+  function guessBeatSec() {
+    var speed = playback.trackId ? parseFloat(trackSpeed(playback.trackId)) : 1.25;
+    var intensity = Number.isFinite(playback.intensity) ? playback.intensity : 0.78;
+    var tempoScale = intensity >= 0.95 ? 0.72 : (intensity < 0.60 ? 1.25 : 1.0);
+    return Math.max(0.32, Math.min(0.82, speed * 0.5 * tempoScale));
+  }
+
+  function postBeat(body) {
+    var headers = { "Content-Type": "application/json" };
+    if (typeof window.hqCsrfToken === "function") {
+      var tok = window.hqCsrfToken();
+      if (tok) headers["X-CSRF-Token"] = tok;
+    }
+    fetch("/api/musica/beats", {
+      method: "POST", credentials: "same-origin", cache: "no-store", headers: headers, body: JSON.stringify(body)
+    }).catch(function () {});
+  }
+
+  function fetchBeatGrid(key) {
+    if (typeof window.api !== "function") return;
+    window.api("/api/musica/beats/" + encodeURIComponent(key), { timeoutMs: 6000 }).then(function (data) {
+      if (key !== beatKey || !data || !data.grid) return;
+      beatGrid = data.grid;
+      if (beatClock.source === "tap") return;   // he tapped while it loaded
+      if (Beat.setTempo(beatClock, Number(beatGrid.bpm), Number(beatGrid.offset), beatGrid.source === "tap" ? "tap" : "grid")) {
+        updateBeatCss(true);
+      }
+    }).catch(function () {});
+  }
+
+  // Keep what she heard (tempo, loudness curve, drops) so the next play of this file starts on the beat.
+  function beatSaveLive(force) {
+    var tr = hear.tracker;
+    if (!tr || beatKey.indexOf("l-") !== 0 || !tr.bpm || tr.stableSince < 0 || !(tr.offset >= 0)) return;
+    var now = Date.now();
+    if (!force && now - hear.savedAt < 30000) return;
+    hear.savedAt = now;
+    postBeat({
+      key: beatKey, source: "live",
+      bpm: Math.round(tr.bpm * 100) / 100,
+      offset: Math.round(Math.min(3600, tr.offset) * 1000) / 1000,
+      confidence: Math.round(Math.min(1, Math.max(0, tr.confidence)) * 1000) / 1000,
+      energy: Beat.energyCurve(tr), energy_step: tr.energyStep, drops: tr.drops.slice(0, 24)
+    });
+  }
+
+  function syncBeatKey(el) {
+    var key = musicKey(el);
+    if (key === beatKey) return;
+    beatSaveLive(true);
+    beatKey = key;
+    beatGrid = null;
+    beatTap = Beat.createTap();
+    if (hear.tracker) Beat.resetTracker(hear.tracker);
+    hear.intensity = 0.78; hear.rel = 1; hear.onset = 0; hear.drop = false; hear.savedAt = 0;
+    bootyPhys.progWinDone = 0;
+    bootyPhys.lastGridDrop = -1;
+    beatCount = 0;
+    nextDanceBeat = 16;
+    Beat.setGuess(beatClock, el ? 0.5 : guessBeatSec());
+    updateBeatCss(true);
+    if (key) fetchBeatGrid(key);
+  }
+
+  // The halo bars and the full-chip dance run on CSS: give them the clock's tempo and start them on its beat.
+  function updateBeatCss(force) {
+    var sec = beatClock.beatSec;
+    if (!force && Math.abs(sec - beatCssSec) / sec < 0.02) return;
+    beatCssSec = sec;
+    wave.style.setProperty("--wave-speed", (sec * 2).toFixed(3) + "s");
+    danceWrap.style.setProperty("--dance-duration", (sec * 4).toFixed(3) + "s");
+    var into = ((beatClock.beats % 2) + 2) % 2;
+    wave.style.setProperty("--wave-sync", (-(into * sec)).toFixed(3) + "s");
+    dock.classList.toggle("is-beat-guess", beatClock.source === "guess");
+  }
+
+  // Live hearing: only for same-origin local audio on a desktop. On iPhone, routing the player through Web Audio
+  // would silence it when the screen locks, so there she uses taps and stored grids.
+  function canHear() {
+    try {
+      if (!window.matchMedia || !window.matchMedia("(hover: hover) and (pointer: fine)").matches) return false;
+    } catch (_) { return false; }
+    return !!hear.sources && !/iP(hone|ad|od)/.test(navigator.userAgent || "") &&
+      !!(window.AudioContext || window.webkitAudioContext);
+  }
+
+  function hearAttach(el) {
+    if (!canHear() || (hear.el === el && hear.an)) return;
+    try {
+      if (new URL(el.currentSrc || el.src, window.location.href).origin !== window.location.origin) return;
+    } catch (_) { return; }
+    try {
+      if (!hear.ctx) hear.ctx = new (window.AudioContext || window.webkitAudioContext)();
+      var ctx = hear.ctx;
+      var connect = function () {
+        // Never route the element through a context that is not running: it would play silence.
+        if (ctx.state !== "running" || el.paused) return;
+        var src = hear.sources.get(el);
+        if (!src) {
+          src = ctx.createMediaElementSource(el);
+          src.connect(ctx.destination);
+          hear.sources.set(el, src);
+        }
+        if (!hear.an) {
+          hear.an = ctx.createAnalyser();
+          hear.an.fftSize = 1024;
+          hear.an.smoothingTimeConstant = 0;
+          hear.buf = new Uint8Array(hear.an.frequencyBinCount);
+        }
+        if (hear.el && hear.el !== el) {
+          var old = hear.sources.get(hear.el);
+          try { if (old) old.disconnect(hear.an); } catch (_) {}
+        }
+        src.connect(hear.an);
+        hear.el = el;
+        hear.tracker = Beat.createTracker({ sampleRate: ctx.sampleRate, fftSize: hear.an.fftSize });
+      };
+      if (ctx.state === "running") connect();
+      else ctx.resume().then(connect).catch(function () {});
+    } catch (_) { /* playback stays as it was; she falls back to taps and grids */ }
+  }
+
+  // One frame of listening. Returns true when she really hears this element.
+  function hearStep(el, t) {
+    hear.onset = 0;
+    hear.drop = false;
+    if (!hear.an || hear.el !== el || !hear.tracker) return false;
+    hear.an.getByteFrequencyData(hear.buf);
+    var r = Beat.pushSpectrum(hear.tracker, hear.buf, t);
+    if (!r) return false;
+    hear.onset = r.onset;
+    hear.drop = r.drop;
+    hear.rel += (r.rel - hear.rel) * 0.1;
+    var e = Beat.track(hear.tracker, t);
+    if (e) {
+      hear.intensity = Beat.liveIntensity(e.bpm, hear.tracker.bassMean);
+      if (beatClock.source !== "tap" && Beat.setTempo(beatClock, e.bpm, e.offset, "live")) updateBeatCss(false);
+      beatSaveLive(false);
+    }
+    return true;
+  }
+
+  function onLocalAudio(el, kind) {
+    if (kind === "playing") hearAttach(el);
+    else beatSaveLive(true);
+    // The Lecteur announces local playback globally: the DJ show steps aside, and the chip already prefers the file.
+    if (el && el.id === "player-audio") {
+      try {
+        window.dispatchEvent(new CustomEvent("hq:local-play", {
+          detail: { playing: kind === "playing" && !el.paused && !el.ended, src: el.currentSrc || "" }
+        }));
+      } catch (_) {}
+    }
+    if (!available) return;
+    setWaveLive(playback.playing);
+    if (localAudio()) ensureBootyRaf();
+  }
+
+  // Tap tempo: four or more steady taps on the little pill (or "t" on the focused chip) set the beat and its
+  // downbeat for this track, and the grid is kept for next time.
+  var tapIdleTimer = 0;
+  function beatTapNow() {
+    if (!musicPlaying()) return;
+    var el = localAudio();
+    syncBeatKey(el);
+    var t = (window.performance && performance.now ? performance.now() : Date.now()) / 1000;
+    var res = Beat.tap(beatTap, t, songTime(el));
+    tapButton.classList.add("is-tapping");
+    if (tapIdleTimer) window.clearTimeout(tapIdleTimer);
+    tapIdleTimer = window.setTimeout(function () {
+      tapButton.classList.remove("is-tapping");
+      tapButton.textContent = "\u266a tempo";
+    }, 2600);
+    if (!res) {
+      tapButton.textContent = "\u266a " + beatTap.times.length + "\u2026";
+      return;
+    }
+    Beat.setTempo(beatClock, res.bpm, res.offset, "tap");
+    updateBeatCss(true);
+    tapButton.textContent = "\u266a " + Math.round(res.bpm) + " BPM \u2713";
+    if (beatKey && res.offset != null) {
+      postBeat({ key: beatKey, source: "tap", bpm: res.bpm, offset: Math.round(Math.min(3600, res.offset) * 1000) / 1000, confidence: 1 });
+    }
+  }
 
   function applyPosition(save) {
     var pad = 10;
@@ -704,8 +1099,13 @@
       if (!Number.isFinite(bottom)) bottom = 0;
       var baseLeft = vw - right - dock.offsetWidth;
       var baseTop = vh - bottom - dock.offsetHeight;
+      var maxY = vh - pad - dock.offsetHeight - baseTop;
       pos.x = clampNum(pos.x, pad - baseLeft, vw - pad - dock.offsetWidth - baseLeft);
-      pos.y = clampNum(pos.y, pad - baseTop, vh - pad - dock.offsetHeight - baseTop);
+      pos.y = clampNum(pos.y, pad - baseTop, maxY);
+      var edgeL = (baseLeft + pos.x) <= 38 ? -1 : 0;
+      var edgeR = (baseLeft + pos.x + dock.offsetWidth) >= vw - 38 ? 1 : 0;
+      fxSt.edgeBiasX = edgeL + edgeR;
+      fxSt.edgeBiasY = (baseTop + pos.y + dock.offsetHeight) >= vh - 38 ? 1 : 0;
     }
     dock.style.transform = "translate3d(" + pos.x.toFixed(1) + "px," + pos.y.toFixed(1) + "px,0)";
     dock.classList.toggle("is-floated", Math.hypot(pos.x, pos.y) > 2);
@@ -734,14 +1134,27 @@
     var moved = drag.moved;
     drag = null;
     dock.classList.remove("is-dragging");
+    fxSt.carryPull = 0;
     if (!moved) return;
     applyPosition(true);
+    bootyPhys.vy += 32;
+    if (fxSt.dizzy >= 0.65 && button.classList.contains("is-nsfw") && !reduceMotion) {
+      var nowEd = performance.now() / 1000;
+      fxSt.dizzyUntil = nowEd + 2.6;
+      fxSt.dizzy = 0;
+      fxSt.flush = Math.min(1, fxSt.flush + 0.35);
+      mouthSt.flustered = Math.max(mouthSt.flustered, 1.8);
+      showReaction("dizzy", NSFW_DIZZY_LINES, true, { type: true, voice: true });
+    }
+    fxSt.dizzy *= 0.4;
+    ensureBootyRaf();
     suppressClick = true;
     window.setTimeout(function () { suppressClick = false; }, 0);
   }
 
   var bootyPhys = {
     x: 0, y: 0, vx: 0, vy: 0,
+    dragX: 0, dragY: 0, dragVX: 0, dragVY: 0, dragDX: 0, dragDY: 0,
     twerkGain: 0, twerkPhase: 0,
     orbitGain: 0, fig8Gain: 0, fig8Beat: 0, fig8Direction: 1,
     dropGain: 0, dropTimer: 0, dropAge: -1, comboKind: "", comboGap: 0, comboSide: 1,
@@ -750,16 +1163,26 @@
     blink: 0, blinkPhase: 0, blinking: false,
     // Soft-tissue jiggle: each cheek chases the body spring with its own stiffer, lightly damped spring.
     jlx: 0, jly: 0, jlvx: 0, jlvy: 0, jrx: 0, jry: 0, jrvx: 0, jrvy: 0, prevX: 0, prevY: 0,
+    crestLag: new Float32Array(4), crestLagV: new Float32Array(4),
+    cheekDrive: new Float32Array(4), cheekPress: new Float32Array(2), cheekLoad: 0,
     jLx: 0, jLy: 0, jRx: 0, jRy: 0,
     // Hips lag the body a little; the cheeks chase the hips (travelling wave). mL/mR: per-spank mass drift.
     hlx: 0, hly: 0, hlvx: 0, hlvy: 0, phx: 0, phy: 0, mL: 1, mR: 1,
     // Outward ripple from the cheeks to the thighs (amplitude + time since the hit).
     wave: 0, waveT: 0,
-    // Choreography: anticipation coil, idle weight shifts, dance phrases (normal / half / double time / pause).
+    // Choreography: anticipation coil, idle weight shifts, dance phrases (normal / half / double time / look / fig8 / iso).
     coilT: 0, coil: 0, prevPlaying: false, prevDrop: false, settleUntil: 0,
+    freezeT: 0, freezeEnv: 0, lastFreezeAt: -10, lastDoubleBar: -1, depthPush: 0,
+    spankHeatL: 0, spankHeatR: 0, spankPressL: 0, spankPressR: 0, spankTilt: 0, spankSwipeSide: 1,
+    dent: 0, dentV: 0, dentU: 0.62, dentVpos: 0.25, dentDirX: 0, dentDirY: 0, dentSide: 1,
+    thLx: 0, thLy: 0, thLvx: 0, thLvy: 0, thRx: 0, thRy: 0, thRvx: 0, thRvy: 0,
     phKind: 0, phUntil: 0, phRate: 1, phAmp: 1, phCount: 0, blinkDur: 0.28, bAs: 0, coilKind: "start", danceSince: 0,
-    rollSide: 1, rollLead: 1, slowRoll: 0, holdSide: 0, hipWeight: 0, cameraStill: 0,
-    raf: 0, lastTs: 0
+    rollSide: 1, rollLead: 1, slowRoll: 0, holdSide: 0, hipWeight: 0, isoWeight: 0, cameraStill: 0,
+    raf: 0, lastTs: 0,
+    // Beat-aware extras: loudness against the track average, which drop window already fired, the last grid drop.
+    energyMul: 1, progWinDone: 0, lastGridDrop: -1, lastGridDropPending: -1, lastPopBeat: -1,
+    // Supple back: lower-back arch velocity, mid-back arch (+velocity), mid-back lag behind the pelvis (+velocity).
+    bAv: 0, mAs: 0, mAv: 0, spx: 0, spy: 0, spvx: 0, spvy: 0
   };
   var NSFW_SPANK_LINES = [
     "Hii~! Master, warn me before you smack like that… ♡",
@@ -785,6 +1208,103 @@
     "Shall we go backstage? Pick your track~",
     "Just the two of us now… what shall we play, Master? ♡"
   ];
+  var NSFW_THIGH_LINES = [
+    "Ahn~! Not the thighs, Master… they jiggle too easily ♡",
+    "Mmh~ careful there, my legs are going to give out…",
+    "Hehe, right on the thigh~ leaving a warm mark, Master?"
+  ];
+  var NSFW_ALT_CHEEK_LINES = [
+    "The other cheek was starting to get jealous, Master~ ♡",
+    "Left, then right… are you keeping rhythm on me?",
+    "Match the pair, Master~ both are tingling now ♡"
+  ];
+  var NSFW_HIGH_COMBO_LINES = [
+    "Haaah~ Master… s-slow down, I can't catch my breath ♡",
+    "Mmh—again?! My whole body's buzzing now~",
+    "Ahn~! You're completely spoiling the beat, Master… ♡"
+  ];
+  var NSFW_PET_LINES = [
+    "Mmh… right between the ears~ don't stop, Master ♡",
+    "Purr~ that's unfair when you pet me so gently…",
+    "Hehe, you found my weak spot, Master~"
+  ];
+  var NSFW_TAIL_LINES = [
+    "Eep—! Hands off the tail, it's sensitive~! ♡",
+    "Mmh~ when you stroke there, it curls by itself…",
+    "Hey~ Master, stop teasing my tail!"
+  ];
+  var NSFW_SQUEEZE_LINES = [
+    "Mmh—! Holding right there feels so warm, Master… ♡",
+    "Ahn~ when you let go like that it bounces right back…",
+    "Hehe, checking how soft I am, Master? ♡"
+  ];
+  var NSFW_TEASE_HOVER_LINES = [
+    "Just hovering there, Master…? Go on if you want to touch ♡",
+    "Your cursor's teasing me… I can feel you circling~",
+    "Mmm, stop staring so close unless you mean it, Master…"
+  ];
+  var NSFW_PAUSE_LINES = [
+    "Eh?! You paused right in the middle of my groove, Master…",
+    "Aww… no fair cutting the music like that~",
+    "Quiet already? Look at my ears drooping, Master…"
+  ];
+  var NSFW_LOUD_LINES = [
+    "Kyaa~! That volume rattled my headphones, Master! ♡",
+    "Whoa—cranking it up?! My whole stage is shaking~!",
+    "Ohhh yes, feel that bass punch straight through~!"
+  ];
+  var NSFW_DROP_SPANK_LINES = [
+    "Ahn—right on the drop, Master!! ♡",
+    "Timing that slap with the bass drop is SO unfair~!",
+    "Double hit!! Beat plus Master's hand… mh~ ♡"
+  ];
+  var NSFW_AFTERGLOW_LINES = [
+    "Mmh… still catching my breath after that, Master~ ♡",
+    "My skin's still warm where you left your mark…",
+    "Gentle right now, Master… I'm still shivering a little~"
+  ];
+  var NSFW_NEEDY_LINES = [
+    "You warmed me up and just stopped, Master…? No fair ♡",
+    "Don't leave me hanging like this… I can still feel it~",
+    "Hey~ look back over here already, Master…"
+  ];
+  var NSFW_SKIP_STREAK_LINES = [
+    "Three skips already?! Make up your mind, Master~!",
+    "Stop teasing the queue and pick a real track already~ ♡",
+    "You're skipping faster than I can catch the beat, Master…"
+  ];
+  var NSFW_DIZZY_LINES = [
+    "Whoa—easy, Master… my head's spinning! ♡",
+    "Did you just shake me on purpose…? Everything's tilting~",
+    "Mmh—set me down gently next time, Master…"
+  ];
+  var NSFW_LATE_NIGHT_LINES = [
+    "Still awake at this hour, Master…? Play something soft for us ♡",
+    "Late-night private session with you feels extra quiet…",
+    "Just the bass and you tonight, Master~ ♡"
+  ];
+  var NSFW_MILESTONE_LINES = [
+    "Keeping count, Master…? That's {n} times tonight already ♡",
+    "Mmh… {n} hits tonight—you really don't hold back on me~ ♡"
+  ];
+  var NSFW_ARC_CHAINS = [
+    "Don't start something you won't finish, Master~",
+    "N-no, wait—you're really keeping that pace up?!",
+    "Okay, okay—you win, Master… keep going ♡"
+  ];
+  var NSFW_TRACK_VIBE_LINES = [
+    "Ohh, « {t} »?! Now we're talking, Master~ ♡",
+    "I love moving to « {t} » with you… keep watching me~"
+  ];
+  var NSFW_IDLE_TALK_LINES = [
+    "It's awfully quiet right now… gonna pick a song for me, Master? ♡",
+    "Mmm~ headphones are resting, just waiting for your next track~",
+    "So quiet in here… come keep me company if you're not playing music ♡"
+  ];
+
+  function pickReactionLine(pool) {
+    return pool[bubbleIdx++ % pool.length];
+  }
   var lastBubbleAt = 0;
   var bubbleTimer = 0;
   var bubbleIdx = 0;
@@ -796,14 +1316,15 @@
       var vw = document.documentElement.clientWidth || window.innerWidth || 390;
       var dr = dockEl.getBoundingClientRect();
       var w = b.offsetWidth;
-      if (dr.left - 12 - w >= 8) return;
+      var lane = window.HQSpeechLane && window.HQSpeechLane();
+      var laneLeft = lane ? lane.contentRight : 8;
+      if (dr.left - 12 - w >= laneLeft) return;
       if (dr.right + 10 + w <= vw - 8) {
         b.style.right = "auto";
         b.style.left = "calc(100% + 10px)";
         b.classList.add("is-right");
         return;
       }
-      b.style.maxWidth = Math.max(180, vw - 24) + "px";
       b.style.left = "auto";
       b.style.right = "0";
       b.style.top = "auto";
@@ -821,6 +1342,7 @@
     if (!onMusiquePage()) return false;
     var now = Date.now();
     if (!force && now - lastBubbleAt < 8500) return false;  // a forced bubble (her live reaction) is never swallowed by the throttle
+    sfx("reply");
     var shakeGen = "";
     if (!text && button.classList.contains("is-nsfw")) {
       shakeGen = danceGenPeek("shake");
@@ -853,6 +1375,9 @@
           bubbleTypeTimer = 0;
           return;
         }
+        var ch = full.charAt(ci - 1);
+        mouthSt.talkBurst = /[aeiouy]/i.test(ch) ? 0.95 : (/[,.!?—~\s]/.test(ch) ? 0.14 : 0.55);
+        if (/[!?—~]/.test(ch) || ci % 7 === 0) mouthSt.talkAccent = 0.85;
         typed.nodeValue = full.slice(0, ci);
         ghost.textContent = full.slice(ci);
       }, 30);
@@ -865,14 +1390,177 @@
     });
     dock.appendChild(b);
     keepBubbleOnScreen(b, dock);
-    var bubbleMs = force ? Math.max(4500, Math.min(11000, 3500 + String(b.textContent).length * 55)) : 5500;
+    var bubbleMs = (force || (opts && opts.dance)) ? Math.max(5500, Math.min(11000, 3500 + String(b.textContent).length * 50)) : 5500;
     bubbleTimer = window.setTimeout(function () {
       if (b.parentNode) b.remove();
     }, bubbleMs);
+    if (opts && opts.voice) chipVoice.say(b.textContent);
     if (force && !gesture.kind && !listening && !(opts && opts.quietFace)) startGesture("smile");
     if (shakeGen) danceGenUse("shake");
+    traceSpeech(b.textContent, opts);
     return true;
   }
+
+  // The title editor lives in the chip's own bubble, so it reads like the rest of the chip and works on any view.
+  function openSongTitleEditor() {
+    if (!SongUnit) return;
+    var song = currentSong();
+    var old = dock.querySelector(".hq-musica-chip-bubble");
+    if (old) old.remove();
+    if (bubbleTimer) { window.clearTimeout(bubbleTimer); bubbleTimer = 0; }
+    if (bubbleTypeTimer) { window.clearInterval(bubbleTypeTimer); bubbleTypeTimer = 0; }
+
+    var b = document.createElement("div");
+    b.className = "hq-musica-chip-bubble is-edit" + (button.classList.contains("is-nsfw") ? "" : " is-sfw");
+    b.addEventListener("click", function (ev) { ev.stopPropagation(); });
+
+    var label = document.createElement("div");
+    label.className = "hq-musica-chip-bubble-label";
+    label.textContent = song.title ? "Titre qu'elle utilise pour cette chanson" : "Titre de cette chanson";
+    var field = document.createElement("input");
+    field.type = "text";
+    field.maxLength = 120;
+    field.className = "hq-musica-chip-bubble-input";
+    field.value = song.title || "";
+    field.placeholder = "Automatique (fichier ou LRC)";
+    field.setAttribute("aria-label", "Titre utilisé par Musica");
+
+    var row = document.createElement("div");
+    row.className = "hq-musica-chip-bubble-actions";
+    var ok = document.createElement("button");
+    ok.type = "button";
+    ok.className = "hq-musica-chip-bubble-btn is-primary";
+    ok.textContent = "OK";
+    var auto = document.createElement("button");
+    auto.type = "button";
+    auto.className = "hq-musica-chip-bubble-btn";
+    auto.textContent = "Auto";
+    auto.title = "Revenir au titre détecté";
+    var close = document.createElement("button");
+    close.type = "button";
+    close.className = "hq-musica-chip-bubble-btn is-quiet";
+    close.textContent = "\u2715";
+    close.setAttribute("aria-label", "Fermer");
+    row.append(ok, auto, close);
+    b.append(label, field, row);
+    dock.appendChild(b);
+    keepBubbleOnScreen(b, dock);
+
+    function dismiss() {
+      if (bubbleTimer) { window.clearTimeout(bubbleTimer); bubbleTimer = 0; }
+      if (b.parentNode) b.remove();
+    }
+
+    function feedback(text) {
+      b.textContent = text;
+      b.classList.remove("is-edit");
+      b.classList.add("is-ok");
+      b.addEventListener("click", dismiss);
+      bubbleTimer = window.setTimeout(function () { if (b.parentNode) b.remove(); }, 4200);
+    }
+
+    function save(value) {
+      var typed = String(value || "").trim();
+      if (song.key) SongUnit.setServerOverride(song.key, typed ? { title: typed, artist: song.artist || "" } : null);
+      SongUnit.setOverride(typed ? { key: song.key, title: typed, artist: song.artist || "" } : null);
+      var now = currentSong();  // refreshes the visible "elle écoute" label on Lecteur as well
+      dancePackFor();
+      feedback(typed ? "D'accord, pour toi c'est \u00ab " + (now.title || typed) + " \u00bb \u2661" : "D'accord, je reprends le titre détecté \u2661");
+      if (!song.key) return;  // no identified song: nothing to key the server copy on
+      postSongTitle(song.key, typed, song.artist || "").catch(function () {
+        if (b.isConnected && b.classList.contains("is-ok")) {
+          b.textContent = typed ? "Titre gardé pour cet appareil — le serveur ne l'a pas pris." : "Titre détecté rétabli sur cet appareil.";
+        }
+      });
+    }
+
+    ok.addEventListener("click", function () { save(field.value); });
+    auto.addEventListener("click", function () { save(""); });
+    close.addEventListener("click", dismiss);
+    field.addEventListener("keydown", function (ev) {
+      if (ev.key === "Enter") { ev.preventDefault(); save(field.value); }
+      else if (ev.key === "Escape") { ev.preventDefault(); dismiss(); }
+    });
+    window.setTimeout(function () { try { field.focus(); field.select(); } catch (_) {} }, 30);
+  }
+
+  // Soft spoken voice lines via HQ's /api/musica/speak (only after user interaction, cached, silent fallback).
+  var chipVoice = {
+    unlocked: false,
+    unavailable: false,
+    lastAt: 0,
+    epoch: 0,        // bumped when the song changes: a synthesis started for the old one must not speak
+    audio: null,
+    cache: Object.create(null),
+    keys: [],
+    unlock: function () { this.unlocked = true; },
+    stop: function () {
+      if (this.audio) {
+        try { this.audio.pause(); this.audio.src = ""; } catch (_) {}
+        this.audio = null;
+      }
+    },
+    canSpeak: function () {
+      return !!(this.unlocked && !this.unavailable && button.classList.contains("is-nsfw") &&
+        !reduceMotion && !document.hidden && bodySfx.on());
+    },
+    playUrl: function (url) {
+      if (!url || !this.canSpeak()) return;
+      try {
+        if (this.audio) { this.audio.pause(); this.audio = null; }
+        var a = new Audio(url);
+        a.volume = Math.min(0.85, Math.max(0.25, playback.volume * 0.72));
+        this.audio = a;
+        a.addEventListener("loadedmetadata", function () {
+          if (Number.isFinite(a.duration) && a.duration > 0.2) {
+            mouthSt.talkUntil = Math.max(mouthSt.talkUntil, performance.now() / 1000 + Math.min(8, a.duration));
+          }
+        });
+        a.addEventListener("timeupdate", function () {
+          if (!a.paused && !a.ended) {
+            mouthSt.talkBurst = Math.max(mouthSt.talkBurst, 0.45 + 0.45 * Math.abs(Math.sin(a.currentTime * 11)));
+          }
+        });
+        a.play().catch(function () {});
+      } catch (_) {}
+    },
+    say: function (rawText) {
+      if (!this.canSpeak() || !rawText) return;
+      var now = Date.now();
+      if (now - this.lastAt < 14000) return;
+      var cleaned = String(rawText).replace(/[♡♪~…]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 140);
+      if (cleaned.length < 4) return;
+      this.lastAt = now;
+      var epoch = this.epoch;
+      if (this.cache[cleaned]) { this.playUrl(this.cache[cleaned]); return; }
+      var self = this;
+      var headers = { "Content-Type": "application/json" };
+      if (typeof window.hqCsrfToken === "function") {
+        var tok = window.hqCsrfToken();
+        if (tok) headers["X-CSRF-Token"] = tok;
+      }
+      fetch("/api/musica/speak", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: headers,
+        body: JSON.stringify({ text: cleaned, language: "en" })
+      }).then(function (res) {
+        if (self.epoch !== epoch) return null;
+        if (!res.ok) {
+          if (res.status === 401 || res.status === 403 || res.status === 404 || res.status === 503) self.unavailable = true;
+          return null;
+        }
+        return res.json();
+      }).then(function (data) {
+        if (self.epoch !== epoch) return;
+        if (!data || !data.ok || typeof data.audio_url !== "string" || !data.audio_url) return;
+        if (self.keys.length >= 16) { delete self.cache[self.keys.shift()]; }
+        self.keys.push(cleaned);
+        self.cache[cleaned] = data.audio_url;
+        self.playUrl(data.audio_url);
+      }).catch(function () {});
+    }
+  };
 
   // Dance commentary: short written remarks next to her while she moves to the music. They follow what she is
   // doing (start, drop, slow rolls, burst, look back, out of breath, end), come every ~10-15 s at most, never while
@@ -1058,8 +1746,111 @@
   // Generated lines: one small request writes a pack of fresh comments for every moment (fast lite model, see
   // hq_musica.dance_lines). They are fetched ahead of time (music start, new track, running low), so the bubble never
   // waits for the model; the lines above are the fallback when nothing has arrived or the request fails.
-  var DANCE_KINDS = ["start", "drop", "slow", "fast", "look", "tired", "end", "spank", "shake"];
-  var danceGen = { lines: {}, inflight: false, at: 0 };
+  var DANCE_KINDS = [
+    "start", "drop", "slow", "fast", "look", "tired", "end", "spank", "shake",
+    "pet", "pause", "loud", "skip", "dizzy", "thigh", "squeeze", "combo", "afterglow", "needy", "tail", "tease", "idle"
+  ];
+  var danceGen = { lines: {}, inflight: false, at: 0, for: "" };
+
+  // The song she is actually hearing: the local file playing in Lecteur when there is one, otherwise what the
+  // Spotify player reports. Asking about playback.track while a local track plays named the previous song.
+  function currentSong() {
+    if (!SongUnit) return { key: "", title: "", artist: "", local: false, stableMs: 0 };
+    var view = document.body ? document.body.dataset.view : "";
+    // The identity survives a pause (the song is still the song); only the speech gate cares about playback.
+    var el = view === "lecteur" ? boundAudio[view] : null;
+    if (el && (!el.isConnected || el.hidden || !el.currentSrc)) el = null;
+    var song = SongUnit.identity({ view: view, src: el ? el.currentSrc : "", playback: playback });
+    if (song.local) {
+      var lyrics = activeLyricTrack();   // a loaded .lrc knows the real title and artist
+      if (lyrics && lyrics.audio === el && lyrics.title) {
+        song.title = lyrics.title;
+        song.artist = lyrics.artist || "";
+      }
+      if (!song.title) {
+        var label = document.getElementById("player-name");
+        if (label && label.textContent) {
+          song.title = String(label.textContent).replace(/\.[a-z0-9]{1,5}$/i, "").replace(/\s+/g, " ").trim();
+        }
+      }
+    }
+    syncServerTitle(song.key);
+    var pinned = SongUnit.overrideFor(song.key);
+    if (pinned) { song.title = pinned.title; song.artist = pinned.artist || ""; }
+    song = SongUnit.remember(song, Date.now());
+    // What she believes she is hearing, visible on hover and in the console (HqNowPlaying.current()).
+    try {
+      dock.dataset.song = song.title ? song.title + (song.artist ? " \u2014 " + song.artist : "") : "";
+      dock.title = song.title ? "Elle \u00e9coute : " + dock.dataset.song : "";
+    } catch (_) {}
+    return song;
+  }
+
+  // A pack written for the previous track must never be spoken over the new one.
+  function dancePackFor() {
+    var song = currentSong(), key = song.key;
+    if (danceGen.for === key) return;
+    danceGen.for = key;
+    danceGen.lines = {};
+    speechPending = null;                       // a queued line was written for the other song
+    if (chipVoice) chipVoice.epoch += 1;         // and a synthesis in flight must not speak it
+  }
+
+  // She only talks about a song she has actually known for a moment: two seconds of stable identity and a
+  // track that has moved off its first frame. A start line after the intro would be wrong even if the song is right.
+  function speechReady(song, kind) {
+    if (!song || !song.key || concealedNow()) return false;
+    if ((song.stableMs || 0) < 2000) return false;
+    var el = song.local ? localAudio() : null;
+    var at = el ? el.currentTime : (onMusiquePage() && playback.playing ? (playback.progressMs || 0) / 1000 : NaN);
+    if (!Number.isFinite(at)) return false;
+    if (at < 1) return false;
+    if (kind === "start" && Number.isFinite(el && el.duration) && el.duration > 0 && at > Math.min(45, el.duration * 0.2)) return false;
+    return true;
+  }
+
+  var speechPending = null;
+  var songSeenAt = 0;
+
+  // One slot, and it dies with the song: the freshest queued line wins, an older one is simply dropped.
+  function flushSpeech() {
+    if (!speechPending) return;
+    var song = currentSong();
+    if (!song.key || song.key !== speechPending.key) { speechPending = null; return; }
+    if (!speechReady(song, speechPending.kind)) return;
+    var pending = speechPending;
+    speechPending = null;
+    showNsfwBubble(pending.text, false, false, { type: true, dance: true, kind: pending.kind, model: pending.model || "fallback" });
+  }
+
+  // Every spoken line is traced with the song she believed it was about, so a wrong-song report is one grep.
+  var speechTracedAt = 0;
+  function traceSpeech(text, opts) {
+    var now = Date.now();
+    if (now - speechTracedAt < 1500) return;
+    speechTracedAt = now;
+    var song = currentSong();
+    var headers = { "Content-Type": "application/json" };
+    if (typeof window.hqCsrfToken === "function") {
+      var tok = window.hqCsrfToken();
+      if (tok) headers["X-CSRF-Token"] = tok;
+    }
+    fetch("/api/musica/speech", {
+      method: "POST",
+      credentials: "same-origin",
+      cache: "no-store",
+      headers: headers,
+      body: JSON.stringify({
+        key: song.key,
+        title: song.title,
+        artist: song.artist,
+        source: song.local ? "local" : "spotify",
+        kind: (opts && opts.kind) || "",
+        model: (opts && opts.model) || "chip",
+        text: String(text || "").slice(0, 240)
+      })
+    }).catch(function () {});
+  }
 
   function danceGenLeft() {
     var n = 0;
@@ -1067,26 +1858,48 @@
     return n;
   }
 
-  // Generated lines for the spank / shake reactions: peek, show, then consume (so a throttled bubble loses nothing).
+  // Generated lines for the spank / shake / zone reactions: peek, show, then consume (so a throttled bubble loses nothing).
   function danceGenPeek(kind) {
-    var a = danceGen.lines[kind];
-    return !window.__hqBlindMatch && danceTalkOn() && a && a.length ? a[0] : "";
+    dancePackFor();
+    var a = kind ? danceGen.lines[kind] : null;
+    return !concealedNow() && danceTalkOn() && a && a.length ? a[0] : "";
   }
   function danceGenUse(kind) {
-    var a = danceGen.lines[kind];
+    dancePackFor();
+    var a = kind ? danceGen.lines[kind] : null;
     if (a && a.length) a.shift();
     if (!a || !a.length) danceGenFetch(false);
   }
 
+  function showReaction(kind, fallbackPool, force, opts, transformFn) {
+    var gen = kind ? danceGenPeek(kind) : "";
+    var text = gen || pickReactionLine(fallbackPool);
+    if (transformFn) text = transformFn(text, !!gen);
+    if (showNsfwBubble(text, false, force, Object.assign({}, opts, { kind: kind, model: gen ? "pack" : "fallback" }))) {
+      if (gen) danceGenUse(kind);
+      return true;
+    }
+    return false;
+  }
+
   async function danceGenFetch(force) {
-    if (danceGen.inflight || document.hidden || !available || !danceTalkOn() || window.__hqBlindMatch) return;
+    if (danceGen.inflight || document.hidden || !available || !danceTalkOn() || concealedNow()) return;
     var now = Date.now();
     if (!force && now - danceGen.at < 90000) return;
     danceGen.inflight = true;
     danceGen.at = now;
-    var askTrack = playback.track || "", askAdult = adultOn();
-    var ctl =window.AbortController ? new AbortController() : null;
-    var abortTimer = ctl ? window.setTimeout(function () { ctl.abort(); }, 22000) : 0;
+    var song = currentSong(), askTrack = song.title, askArtist = song.artist, askKey = song.key, askAdult = adultOn();
+    var localEl = localAudio();
+    var nowSong = songTime(localEl);
+    var lrcTrack = activeLyricTrack(), lrcHint = "";
+    if (lrcTrack && lrcTrack.lines && lrcTrack.lines.length) {
+      var lrcCur = lrcTrack.lines.find(function (ln) {
+        return Math.abs(ln.time - lrcTrack.audio.currentTime) < 12;
+      }) || lrcTrack.lines[0];
+      if (lrcCur && lrcCur.text) lrcHint = String(lrcCur.text).slice(0, 120);
+    }
+    var ctl = window.AbortController ? new AbortController() : null;
+    var abortTimer = ctl ? window.setTimeout(function () { ctl.abort(); }, 36000) : 0;
     try {
       var headers = { "Content-Type": "application/json" };
       if (typeof window.hqCsrfToken === "function") {
@@ -1102,23 +1915,33 @@
         body: JSON.stringify({
           nsfw: askAdult,
           track: askTrack,
-          artist: playback.artist || "",
-          intensity: playback.intensity
+          artist: askArtist,
+          album: song.local ? "" : (playback.album || ""),
+          // Where the play really came from, so the history never guesses Spotify for a local file.
+          source: song.local ? "local" : "spotify",
+          intensity: localEl ? hear.intensity : (Number.isFinite(playback.intensity) ? playback.intensity : 0.78),
+          // A guessed tempo (0.5 s beat) is worse than saying nothing: the beat engine reports once it is locked.
+          bpm: beatClock && beatClock.source !== "guess" && beatClock.bpm >= 40 ? Math.round(beatClock.bpm) : 0,
+          lyric_hint: lrcHint,
+          song_sec: Number.isFinite(nowSong) ? Math.max(0, Math.round(nowSong)) : 0,
+          duration_sec: Math.max(0, Math.round((localEl && Number.isFinite(localEl.duration) ? localEl.duration * 1000 : (playback.durationMs || 0)) / 1000)),
+          late_night: lateNightHour(),
+          hits: chipMem.hits,
+          key: askKey
         })
       });
       if (!res.ok) return;
       var data = await res.json();
       var got = data && data.lines && typeof data.lines === "object" ? data.lines : null;
       // Stale answer (track changed, adult mode flipped, commentary off, blind match started): drop it.
-      if (!got || window.__hqBlindMatch || !danceTalkOn() || adultOn() !== askAdult || (playback.track || "") !== askTrack) return;
-      var next = {};
+      if (!got || concealedNow() || !danceTalkOn() || adultOn() !== askAdult || currentSong().key !== askKey) return;
+      danceGen.for = askKey;
       DANCE_KINDS.forEach(function (k) {
         var arr = Array.isArray(got[k]) ? got[k] : [];
-        next[k] = arr.filter(function (t) { return typeof t === "string" && t.length >= 6 && t.length <= 120; }).slice(0, 3);
+        var clean = (SongUnit ? SongUnit.filterLines(arr, song.title) : arr)
+          .filter(function (t) { return typeof t === "string" && t.length <= 200; }).slice(0, 3);
+        if (clean.length) danceGen.lines[k] = clean;
       });
-      var total = 0;
-      DANCE_KINDS.forEach(function (k) { total += next[k].length; });
-      if (total) danceGen.lines = next;   // an empty answer (cooldown, failure) keeps what we have
     } catch (_) {
     } finally {
       if (abortTimer) window.clearTimeout(abortTimer);
@@ -1134,14 +1957,16 @@
     if (!danceTalkOn() || !button.classList.contains("is-nsfw") || document.hidden || !available || drag) return;
     var now = Date.now();
     if (now < danceTalkAt || Math.random() > chance) return;
-    var generated = !window.__hqBlindMatch && danceTalkOn() && danceGen.lines[kind] && danceGen.lines[kind].length ? danceGen.lines[kind] : null;
+    dancePackFor();
+    var song = currentSong();
+    var generated = !concealedNow() && danceTalkOn() && danceGen.lines[kind] && danceGen.lines[kind].length ? danceGen.lines[kind] : null;
     var pick;
     if (generated) {
       pick = generated[0];
     } else {
       var pool = (DANCE_LINES[kind] || []).slice();
-      if (!window.__hqBlindMatch && (playback.track || playback.artist) && DANCE_TRACK_LINES[kind]) {
-        var tt = String(playback.track || "").slice(0, 40), aa = String(playback.artist || "").split(",")[0].slice(0, 40);
+      if (!concealedNow() && (song.title || song.artist) && DANCE_TRACK_LINES[kind]) {
+        var tt = String(song.title || "").slice(0, 40), aa = String(song.artist || "").split(",")[0].slice(0, 40);
         DANCE_TRACK_LINES[kind].forEach(function (tpl) {
           if ((tpl.indexOf("{t}") >= 0 && !tt) || (tpl.indexOf("{a}") >= 0 && !aa)) return;
           pool.push(tpl.replace(/\{t\}/g, tt).replace(/\{a\}/g, aa));
@@ -1163,11 +1988,17 @@
       pick = bag[bag.length - 1];
       danceBag[kind] = bag;
     }
-    if (showNsfwBubble(pick, false, false, { type: true, dance: true })) {
+    danceTalkAt = now + 9000 + Math.random() * 6000;
+    var ready = speechReady(song, kind);
+    var shown = ready && showNsfwBubble(pick, false, false, { type: true, dance: true, kind: kind, model: generated ? "pack" : "fallback" });
+    if (shown) {
       danceTalkLast[kind] = pick;
-      danceTalkAt = now + 9000 + Math.random() * 6000;
       if (generated) generated.shift(); else if (danceBag[kind]) danceBag[kind].pop();
       if (danceGenLeft() < 6) danceGenFetch(false);
+    } else if (!ready && song.key) {
+      // Too early in the song (or the pack is still arriving): hold one line, drop it if the song changes.
+      speechPending = { text: pick, kind: kind, key: song.key, model: generated ? "pack" : "fallback" };
+      if (generated) generated.shift(); else if (danceBag[kind]) danceBag[kind].pop();
     }
   }
 
@@ -1188,9 +2019,20 @@
     }
   });
 
+  function currentMoodTag() {
+    var nowM = performance.now() / 1000;
+    if (nowM < fxSt.dizzyUntil) return "dizzy";
+    if (fxSt.needy > 0.45) return "needy";
+    if (fxSt.sulk > 0.35 || fxSt.pout > 0.35) return "sulk";
+    if (fxSt.afterglow > 0.35) return "afterglow";
+    if (fxSt.pet > 0.25) return "petted";
+    return "calm";
+  }
+
+  var activeMusicTab = "";
   var ambientInFlight = false;
   async function fetchAmbientWhisper() {
-    if (window.__hqBlindMatch) return;  // blind match: no whisper may name the song that is playing
+    if (concealedNow()) return;  // blind match: no whisper may name the song that is playing
     if (ambientInFlight || drag || document.hidden || !onMusiquePage() || !available) return;
     ambientInFlight = true;
     try {
@@ -1199,6 +2041,8 @@
         var tok = window.hqCsrfToken();
         if (tok) headers["X-CSRF-Token"] = tok;
       }
+      var idleSec = fxSt.lastInteractAt > 0 ? Math.max(0, Math.round(performance.now() / 1000 - fxSt.lastInteractAt)) : 0;
+      var song = currentSong();
       var res = await fetch("/api/musica/ambient", {
         method: "POST",
         credentials: "same-origin",
@@ -1206,15 +2050,21 @@
         headers: headers,
         body: JSON.stringify({
           nsfw: adultOn(),
-          track: playback.track || "",
-          artist: playback.artist || "",
-          playing: !!playback.playing
+          track: song.title,
+          artist: song.artist,
+          playing: !!(song.local || playback.playing),
+          mood: currentMoodTag(),
+          late_night: lateNightHour(),
+          idle_sec: idleSec,
+          tab: activeMusicTab
         })
       });
       if (!res.ok) return;
       var data = await res.json();
-      if (data && data.line && !window.__hqBlindMatch) {
-        showNsfwBubble(data.line, true);
+      // The track may have changed while the model wrote its line: drop a whisper about the previous song.
+      if (data && data.line && !concealedNow() && currentSong().key === song.key) {
+        var whisper = SongUnit ? SongUnit.filterLines([data.line], song.title)[0] : data.line;
+        if (whisper && showNsfwBubble(whisper, true, false, { type: true, kind: "ambient", model: "ambient" })) ensureBootyRaf();
       }
     } catch (_) {
     } finally {
@@ -1222,22 +2072,288 @@
     }
   }
 
-  window.setTimeout(fetchAmbientWhisper, 18000);
-  window.setInterval(fetchAmbientWhisper, 65000);
+  window.setTimeout(fetchAmbientWhisper, 10000);
+  window.setInterval(fetchAmbientWhisper, 52000);
 
+  // Traced on the 512 px portrait. The torso and legs overlap at the hip seams;
+  // the open gaps below those seams are part of the bed, including the inner thighs.
+  var BODY_CONTOURS = [
+    [204,179, 205,163, 213,153, 228,136, 254,125, 270,135, 289,123, 309,131, 322,149,
+      334,163, 341,182, 334,200, 336,216, 331,234, 328,248, 330,265, 328,283, 322,300,
+      318,321, 309,326, 290,316, 258,294, 217,279, 222,269, 231,257, 232,249, 226,233,
+      219,221, 214,209, 211,193],
+    [65,365, 64,355, 70,339, 71,329, 79,313, 89,293, 98,278, 112,265, 132,252, 144,240,
+      164,211, 182,185, 201,164, 213,147, 227,133, 239,125, 249,121, 257,124, 255,139,
+      241,163, 226,182, 220,211, 218,222, 210,233, 191,245, 170,259, 152,275, 139,285,
+      122,298, 110,312, 101,327, 97,338, 97,353, 99,364, 83,369],
+    [284,131, 296,121, 309,118, 323,119, 337,125, 355,135, 373,151, 388,169, 402,190,
+      416,219, 427,240, 436,251, 451,266, 460,281, 465,296, 469,321, 471,339, 476,355,
+      475,369, 478,383, 475,391, 460,396, 442,395, 438,390, 442,380, 449,368, 449,357,
+      443,343, 432,327, 418,309, 407,289, 398,280, 387,268, 378,258, 360,245, 346,233,
+      338,223, 332,202, 329,181, 313,163, 298,152],
+    [30,391, 42,382, 50,380, 50,373, 64,366, 88,362, 95,362, 103,351, 110,330, 117,310,
+      124,301, 134,300, 141,307, 149,318, 164,299, 177,287, 191,279, 205,271, 230,269,
+      246,271, 260,276, 277,289, 293,302, 310,318, 315,309, 322,302, 331,303, 340,311,
+      350,333, 357,352, 366,370, 378,363, 394,360, 411,363, 431,373, 442,384, 443,393,
+      452,400, 435,405, 405,406, 383,403, 367,396, 357,383, 359,403, 345,416, 320,419,
+      301,423, 264,429, 232,431, 193,428, 162,424, 136,421, 116,413, 107,404, 107,397,
+      93,400, 66,401, 46,398]
+  ];
+  var BODY_RIG = {
+    grid: 64,
+    partBlend: 19,      // px in the 512 px artwork; softness where body parts meet
+    effectsInset: 9,    // keep small sample offsets inside the silhouette
+    crestFalloff: [0.25, 0.60],
+    crestTravel: [0.10, 0.15],
+    crestJiggle: 1.68,
+    crestSquash: 2.10, // vertical compression, with volume carried into width and depth
+    cheekRoll: 11.0, // angular response to the difference between the two spring layers
+    cheekSplay: 0.20, // outward roll as each cheek compresses and rebounds
+    cheekHipShare: 0.38, // part of the hips' lag behind the body that the cheeks carry
+    cheekGain: 0.145,    // keeps normal beats supple inside the soft limit
+    cheekReach: 0.0205,  // soft limit of the cheek recoil, UVs
+    cheekShift: 0.44,    // blend between fast inner mass and trailing crown wave
+    cheekLagSec: [0.005, 0.026],
+    cheekLoadAngle: 0.050,
+    cheekLoadSpeed: 28,
+    cheekLanding: [0.004, 0.025], // pelvis height in UVs, positive down
+    cheekPressMax: 0.082,
+    cheekGlintShift: [15, 25], // artwork pixels per unit of roll tangent
+    cheekGlintStrength: 0.21,
+    crestMax: 0.029, // soft limit in UVs
+    crestLagSpring: [[195, 11.2], [165, 9.8]],
+    cheekDetailBlend: [0.228, 0.310],
+    cheekDetailFollow: 0.42,
+    cheekDetailMax: 0.010, // max texture offset in UVs
+    laceFollow: 0.35,
+    waist: [0.535, 0.345],
+    mid: [0.522, 0.465],
+    shoulder: [0.552, 0.565],
+    lowerBlend: [0.325, 0.449],
+    upperBlend: [0.433, 0.562],
+    headBlend: [0.524, 0.641],
+    spineTurn: 0.62,    // keep cross-sections from over-rotating in a deep bend
+    hipBlend: [0.51, 0.93],  // along the leg, ankle = 0 and hip = 1
+    ankleBlend: [0.10, 0.32],
+    footContact: [0.057, 0.112], // UV radius around each planted sole
+    feet: [[80 / 512, 359 / 512], [456 / 512, 389 / 512]],
+    lowerLag: 0.58,
+    upperLag: 0.33,
+    lowerArch: [0.08, 0.18], // UV displacement per unit of spring arch
+    upperArch: [0.05, 0.14],
+    lowerSpring: [160, 13], // stiffness, damping
+    upperSpring: [60, 7],
+    lagSpring: [70, 7.5],
+    lagTarget: 0.6,
+    dragSpring: [190, 13],
+    dragTravel: [0.026, 0.024], // max lag target, UVs
+    dragSpeed: [155, 150] // CSS pixels/sec for the lag response
+  };
+  // Two rows of each affine transform, in pelvis, lower/upper spine, head, left/right thigh order.
+  var bodyBones = new Float32Array(36);
+  var bodyMesh;
+
+  function skinSmooth(range, value) {
+    var t = Math.max(0, Math.min(1, (value - range[0]) / (range[1] - range[0])));
+    return t * t * (3 - 2 * t);
+  }
+
+  function stepCrestLag(channel, target, h, steps) {
+    var spring = BODY_RIG.crestLagSpring[channel >> 1];
+    var position = bootyPhys.crestLag[channel], speed = bootyPhys.crestLagV[channel];
+    for (var i = 0; i < steps; i++) {
+      speed += (spring[0] * (target - position) - spring[1] * speed) * h;
+      position += speed * h;
+    }
+    bootyPhys.crestLag[channel] = position;
+    bootyPhys.crestLagV[channel] = speed;
+  }
+
+  function contourDistance(points, x, y) {
+    var inside = false, best = Infinity;
+    for (var i = 0, j = points.length - 2; i < points.length; j = i, i += 2) {
+      var ax = points[j], ay = points[j + 1], bx = points[i], by = points[i + 1];
+      var dx = bx - ax, dy = by - ay, px = x - ax, py = y - ay;
+      if ((ay > y) !== (by > y) && px < dx * py / dy) inside = !inside;
+      var t = Math.max(0, Math.min(1, (px * dx + py * dy) / (dx * dx + dy * dy)));
+      px -= t * dx;
+      py -= t * dy;
+      best = Math.min(best, px * px + py * py);
+    }
+    return (inside ? 1 : -1) * Math.sqrt(best);
+  }
+
+  function weightBodyVertex(vertices, at, x, y) {
+    var rig = BODY_RIG;
+    vertices[at] = x;
+    vertices[at + 1] = y;
+    var distances = BODY_CONTOURS.map(function (points) { return contourDistance(points, x * 512, y * 512); });
+    var nearest = Math.max.apply(null, distances);
+    // Continue the same weights past the painted edge so the mesh can carry
+    // antialiased pixels. The matte clips this extension in the fragment shader.
+    var shares = distances.map(function (d) { return Math.exp((d - nearest) / rig.partBlend); });
+    var total = shares[0] + shares[1] + shares[2] + shares[3];
+    var torso = shares[0] / total;
+    var lower = skinSmooth(rig.lowerBlend, y);
+    var upper = skinSmooth(rig.upperBlend, y);
+    var neck = skinSmooth(rig.headBlend, y);
+    vertices[at + 2] = torso * (1 - lower);
+    vertices[at + 3] = torso * lower * (1 - upper);
+    vertices[at + 4] = torso * lower * upper * (1 - neck);
+    vertices[at + 5] = torso * lower * upper * neck + shares[3] / total;
+    for (var leg = 0; leg < 2; leg++) {
+      var foot = rig.feet[leg], hip = leg === 0 ? HIP_LEFT : HIP_RIGHT;
+      var dx = hip[0] - foot[0], dy = hip[1] - foot[1];
+      var along = ((x - foot[0]) * dx + (y - foot[1]) * dy) / (dx * dx + dy * dy);
+      var legWeight = shares[leg + 1] / total;
+      var hipWeight = skinSmooth(rig.hipBlend, along);
+      vertices[at + 2] += legWeight * hipWeight;
+      vertices[at + 6 + leg] = legWeight * (1 - hipWeight) * skinSmooth(rig.ankleBlend, along);
+    }
+    // The hair next to a planted foot can share its mask seam. Pin that seam
+    // with the sole so no secondary bone shifts the foot's contact.
+    var contact = Math.min(Math.hypot(x - rig.feet[0][0], y - rig.feet[0][1]),
+      Math.hypot(x - rig.feet[1][0], y - rig.feet[1][1]));
+    var unpin = skinSmooth(rig.footContact, contact);
+    for (var bone = 0; bone < 6; bone++) vertices[at + 2 + bone] *= unpin;
+    vertices[at + 8] = 1 + skinSmooth([0, rig.effectsInset], nearest);
+  }
+
+  function makeBodyMesh() {
+    var cells = BODY_RIG.grid, side = cells + 1;
+    // A stationary quad comes first. Zero in its last attribute selects the plate.
+    var vertices = new Float32Array((4 + side * side) * 9);
+    vertices.set([0, 1], 9);
+    vertices.set([1, 0], 18);
+    vertices.set([1, 1], 27);
+    var indices = new Uint16Array(6 + cells * cells * 6);
+    indices.set([0, 1, 2, 2, 1, 3]);
+    var n = 6;
+    for (var row = 0; row < side; row++) {
+      for (var col = 0; col < side; col++) {
+        var vertex = 4 + row * side + col;
+        weightBodyVertex(vertices, vertex * 9, col / cells, row / cells);
+        if (col === cells || row === cells) continue;
+        indices[n++] = vertex;
+        indices[n++] = vertex + side;
+        indices[n++] = vertex + 1;
+        indices[n++] = vertex + 1;
+        indices[n++] = vertex + side;
+        indices[n++] = vertex + side + 1;
+      }
+    }
+    return { vertices: vertices, indices: indices };
+  }
+
+  function setBodyBone(bone, root, x, y, a, b, c, d) {
+    var at = bone * 6;
+    bodyBones[at] = a;
+    bodyBones[at + 1] = b;
+    bodyBones[at + 2] = x - a * root[0] - b * root[1];
+    bodyBones[at + 3] = c;
+    bodyBones[at + 4] = d;
+    bodyBones[at + 5] = y - c * root[0] - d * root[1];
+  }
+
+  function aimBodyBone(bone, root, tip, x, y, targetX, targetY, crossFollow) {
+    // Scale along the segment to reach the joint and keep unit width.
+    // The spine turns its cross-section less than a straight leg.
+    var dx = tip[0] - root[0], dy = tip[1] - root[1];
+    var vx = targetX - x, vy = targetY - y;
+    var length = Math.hypot(dx, dy), posedLength = Math.hypot(vx, vy);
+    var ux = dx / length, uy = dy / length;
+    var wx = vx / posedLength, wy = vy / posedLength;
+    var stretch = posedLength / length;
+    var turn = Math.atan2(ux * wy - uy * wx, ux * wx + uy * wy) * crossFollow;
+    var c = Math.cos(turn), s = Math.sin(turn);
+    var nx = c * uy + s * ux, ny = s * uy - c * ux;
+    setBodyBone(bone, root, x, y, wx * ux * stretch + nx * uy, wx * uy * stretch - nx * ux,
+      wy * ux * stretch + ny * uy, wy * uy * stretch - ny * ux);
+  }
+
+  function boneCoord(at, point) {
+    return bodyBones[at] * point[0] + bodyBones[at + 1] * point[1] + bodyBones[at + 2];
+  }
+
+  function poseBody(x, y, cos, sin, hx, hy, headAngle, arch) {
+    var rig = BODY_RIG;
+    setBodyBone(0, PELVIS_PIVOT, PELVIS_PIVOT[0] + x, PELVIS_PIVOT[1] + y, cos, -sin, sin, cos);
+    var hc = Math.cos(headAngle), hs = Math.sin(headAngle);
+    setBodyBone(3, HEAD_PIVOT, HEAD_PIVOT[0] + hx, HEAD_PIVOT[1] + hy, hc, -hs, hs, hc);
+    var waistX = boneCoord(0, rig.waist), waistY = boneCoord(3, rig.waist);
+    var midX = rig.mid[0] + (waistX - rig.waist[0]) * (1 - rig.lowerLag) + bootyPhys.spx * rig.lowerLag + arch * rig.lowerArch[0];
+    var midY = rig.mid[1] + (waistY - rig.waist[1]) * (1 - rig.lowerLag) + bootyPhys.spy * rig.lowerLag + arch * rig.lowerArch[1];
+    var shoulderX = boneCoord(18, rig.shoulder) * (1 - rig.upperLag) +
+      (rig.shoulder[0] + bootyPhys.spx) * rig.upperLag + bootyPhys.mAs * rig.upperArch[0];
+    var shoulderY = boneCoord(21, rig.shoulder) * (1 - rig.upperLag) +
+      (rig.shoulder[1] + bootyPhys.spy) * rig.upperLag + bootyPhys.mAs * rig.upperArch[1];
+    aimBodyBone(1, rig.waist, rig.mid, waistX, waistY, midX, midY, rig.spineTurn);
+    aimBodyBone(2, rig.mid, rig.shoulder, midX, midY, shoulderX, shoulderY, rig.spineTurn);
+    aimBodyBone(4, rig.feet[0], HIP_LEFT, rig.feet[0][0], rig.feet[0][1], boneCoord(0, HIP_LEFT), boneCoord(3, HIP_LEFT), 1);
+    aimBodyBone(5, rig.feet[1], HIP_RIGHT, rig.feet[1][0], rig.feet[1][1], boneCoord(0, HIP_RIGHT), boneCoord(3, HIP_RIGHT), 1);
+  }
+
+  // Cache the rest triangle for each overlay contact. Its barycentric
+  // coordinates are the same ones used to interpolate UVs in the shader.
+  function makeBodyAnchor(point) {
+    var cells = BODY_RIG.grid, side = cells + 1;
+    var tx = point[0] * cells, ty = point[1] * cells;
+    var ix = Math.floor(tx), iy = Math.floor(ty);
+    var fx = tx - ix, fy = ty - iy;
+    var at = (4 + iy * side + ix) * 9;
+    var dx = 9, dy = side * 9;
+    return {
+      point: point,
+      corners: fx + fy <= 1 ? [at, at + dx, at + dy] : [at + dy, at + dy + dx, at + dx],
+      bary: fx + fy <= 1 ? [1 - fx - fy, fx, fy] : [1 - fx, fx + fy - 1, 1 - fy],
+      x: 0, y: 0, angle: 0
+    };
+  }
+
+  function poseBodyAnchor(anchor) {
+    var v = bodyMesh.vertices, leftX, leftY;
+    anchor.x = anchor.y = 0;
+    for (var corner = 0; corner < 3; corner++) {
+      var index = anchor.corners[corner], u = v[index], t = v[index + 1];
+      var x = u, y = t;
+      for (var bone = 0; bone < 6; bone++) {
+        var w = v[index + 2 + bone], a = 6 * bone;
+        x += w * (bodyBones[a] * u + bodyBones[a + 1] * t + bodyBones[a + 2] - u);
+        y += w * (bodyBones[a + 3] * u + bodyBones[a + 4] * t + bodyBones[a + 5] - t);
+      }
+      anchor.x += x * anchor.bary[corner];
+      anchor.y += y * anchor.bary[corner];
+      if (corner === 0) { leftX = x; leftY = y; }
+      if (corner === 1) anchor.angle = Math.atan2(y - leftY, x - leftX);
+    }
+    anchor.x -= anchor.point[0];
+    anchor.y -= anchor.point[1];
+  }
+
+  function resetBodyAnchor(anchor) {
+    anchor.x = anchor.y = anchor.angle = 0;
+  }
+
+  var tailAnchor = makeBodyAnchor(TAIL_ROOT);
+  var earAnchors = EARS.map(function (ear) { return makeBodyAnchor([ear.piv[0] / 1024, ear.piv[1] / 1024]); });
+
+  var bodyPlate = new Image();
+  bodyPlate.decoding = "async";
   var warpState = {
     gl: null,
     failed: false,
-    uPelvis: null,
+    uBones: null,
     uScale: null,
     uBlink: null,
-    uHead: null,
-    uBackFlex: null,
     uJigL: null,
     uJigR: null,
+    uCrestLag: null,
+    uCheekPress: null,
     uWave: null,
     uMouth: null,
     uMouthB: null,
+    plate: null,
+    plateReady: false,
     tex: null,
     texReady: false
   };
@@ -1262,10 +2378,21 @@
   function uploadWarpTexture() {
     var gl = warpState.gl;
     if (!gl || gl.isContextLost() || !warpState.tex || !art.complete || !art.naturalWidth) return false;
+    gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, warpState.tex);
     gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, art);
     warpState.texReady = true;
+    return true;
+  }
+
+  function uploadWarpPlate() {
+    var gl = warpState.gl;
+    if (!bodyPlate.complete || !bodyPlate.naturalWidth) return false;
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, warpState.plate);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, bodyPlate);
+    warpState.plateReady = true;
     return true;
   }
 
@@ -1278,6 +2405,8 @@
     event.preventDefault();
     warpState.gl = null;
     warpState.tex = null;
+    warpState.plate = null;
+    warpState.plateReady = false;
     warpState.texReady = false;
     warpState.failed = false;
     hideWarpCanvas();
@@ -1285,6 +2414,7 @@
   warpCanvas.addEventListener("webglcontextrestored", function () {
     warpState.gl = null;
     warpState.texReady = false;
+    warpState.plateReady = false;
     warpState.failed = false;
     if (button.classList.contains("is-nsfw")) ensureBootyRaf();
   });
@@ -1305,27 +2435,152 @@
       }
       if (gl.isContextLost()) return null;
       sizeWarpCanvas();
-      var vsSrc =
-        "attribute vec2 a_pos;" +
-        "varying vec2 v_uv;" +
-        "void main(){" +
-        "  v_uv = vec2(a_pos.x * 0.5 + 0.5, 0.5 - a_pos.y * 0.5);" +
-        "  gl_Position = vec4(a_pos, 0.0, 1.0);" +
-        "}";
-      var fsSrc =
+      var precision =
         "#ifdef GL_FRAGMENT_PRECISION_HIGH\n" +
         "precision highp float;\n" +
         "#else\n" +
         "precision mediump float;\n" +
-        "#endif\n" +
+        "#endif\n";
+      var vsSrc = precision +
+        "attribute highp vec2 a_uv;" +
+        "attribute vec4 a_core;" +
+        "attribute vec3 a_legsFx;" +
+        "uniform highp vec3 u_bones[12];" +
+        "uniform vec2 u_scale;" +
+        "uniform vec2 u_jigL;" +
+        "uniform vec2 u_jigR;" +
+        "uniform vec4 u_crestLag;" +
+        "uniform vec2 u_cheekPress;" +
+        "uniform float u_depthPush;" +
+        "uniform vec4 u_spankDent;" +
+        "uniform vec2 u_spankDir;" +
+        "uniform vec2 u_wave;" +
+        "uniform vec4 u_thighJig;" +
+        "varying vec2 v_uv;" +
+        "varying float v_effects;" +
+        "varying vec4 v_cheekTurn;" +
+        "highp vec2 move(highp vec3 p, highp vec3 rowX, highp vec3 rowY){" +
+        "  return vec2(dot(rowX, p), dot(rowY, p)) - p.xy;" +
+        "}" +
+        // Full weight over the whole sphere (core = its rim, squared, in these radii) so the outline travels
+        // with the mass; the falloff only blends the skin around it.
+        "float s5(float a, float b, float x){" +
+        "  float t = clamp((x - a) / (b - a), 0.0, 1.0);" +
+        "  return t * t * t * (t * (t * 6.0 - 15.0) + 10.0);" +
+        "}" +
+        "float cheekWeight(vec2 uv, vec2 center, vec2 radius){" +
+        "  vec2 q = (uv - center) / radius;" +
+        "  float r2 = dot(q, q);" +
+        "  return exp(-r2 * 1.25) * (1.0 - s5(1.10, 2.80, r2));" +
+        "}" +
+        "float cheekLimit(vec2 shift){" +
+        "  return inversesqrt(1.0 + dot(shift, shift) / " + (BODY_RIG.crestMax * BODY_RIG.crestMax) + ");" +
+        "}" +
+        "vec2 cheekFlex(vec2 uv, vec2 center, vec2 radius, vec2 recoil, vec2 tangent, float press){" +
+        // Project the front half of an ellipsoid. Compression pushes volume outward from
+        // the cleft while tilting smoothly across the upper crown into the thigh.
+        "  vec2 q = (uv - center) / radius;" +
+        "  float r2 = dot(q, q);" +
+        "  float rollWeight = exp(-r2 * 0.85) * (1.0 - s5(0.95, 2.20, r2));" +
+        "  float sagCompress = max(0.0, recoil.y) * 2.1 - max(0.0, -recoil.y) * 0.9;" +
+        "  float height = clamp(1.0 + (1.0 - u_scale.y) * " + BODY_RIG.crestSquash.toFixed(2) + " - recoil.y * 3.8 - sagCompress * 0.16 - press, 0.74, 1.24);" +
+        "  vec2 axes = vec2(inversesqrt(height), height);" +
+        "  vec2 surface = q * axes;" +
+        "  float depth = sqrt(max(0.0, 1.0 - r2)) * axes.x;" +
+        "  vec2 cs = inversesqrt(1.0 + tangent * tangent), sn = tangent * cs;" +
+        "  float rollX = surface.x * cs.x + depth * sn.x;" +
+        "  float turnedDepth = depth * cs.x - surface.x * sn.x;" +
+        "  float rollY = surface.y * cs.y + turnedDepth * sn.y;" +
+        "  vec2 roll = (vec2(rollX, rollY) - surface) * radius * rollWeight;" +
+        "  float widen = clamp((axes.x - 1.0) * 3.5, 0.0, 1.0);" +
+        "  vec2 rel = vec2(uv.x - mix(center.x, 0.548, 0.38 * widen), uv.y - 0.336);" +
+        "  vec2 bulge = rel * (axes - 1.0);" +
+        "  float crown = 0.88 + 0.20 * (1.0 - s5(0.20, 0.48, uv.y));" +
+        "  return recoil * (" + BODY_RIG.crestJiggle + " * crown) + bulge + roll;" +
+        "}" +
+        "void main(){" +
+        "  highp vec3 p = vec3(a_uv, 1.0);" +
+        "  highp vec2 posed = a_uv +" +
+        "    a_core.x * move(p, u_bones[0], u_bones[1]) +" +
+        "    a_core.y * move(p, u_bones[2], u_bones[3]) +" +
+        "    a_core.z * move(p, u_bones[4], u_bones[5]) +" +
+        "    a_core.w * move(p, u_bones[6], u_bones[7]) +" +
+        "    a_legsFx.x * move(p, u_bones[8], u_bones[9]) +" +
+        "    a_legsFx.y * move(p, u_bones[10], u_bones[11]);" +
+        "  v_cheekTurn = vec4(0.0);" +
+        // Each cheek shifts smoothly within its curved lobe; wide core falloff + smooth pelvis mask prevent any horizontal seam across the thigh junction.
+        "  if (a_legsFx.z > 0.5) {" +
+        "    vec2 centerL = vec2(0.468, 0.268), centerR = vec2(0.622, 0.272);" +
+        "    vec2 sphereL = vec2(0.120, 0.132), sphereR = vec2(0.142, 0.140);" +
+        "    float left = cheekWeight(a_uv, centerL, vec2(0.151, 0.169));" +
+        "    float right = cheekWeight(a_uv, centerR, vec2(0.172, 0.178));" +
+        "    float pelvisFollow = s5(0.20, 0.92, a_core.x);" +
+        "    float crest = (1.0 - s5(" + BODY_RIG.crestFalloff.join(",") + ", a_uv.y)) * pelvisFollow;" +
+        "    vec2 recoilL = mix(u_jigL, u_crestLag.xy, " + BODY_RIG.cheekShift.toFixed(2) + ");" +
+        "    vec2 recoilR = mix(u_jigR, u_crestLag.zw, " + BODY_RIG.cheekShift.toFixed(2) + ");" +
+        "    vec2 rollL = u_jigL - u_crestLag.xy, rollR = u_jigR - u_crestLag.zw;" +
+        "    rollL.x += rollL.y * " + BODY_RIG.cheekSplay.toFixed(2) + ";" +
+        "    rollR.x -= rollR.y * " + BODY_RIG.cheekSplay.toFixed(2) + ";" +
+        "    vec4 turn = clamp(vec4(rollL, rollR) * " + BODY_RIG.cheekRoll.toFixed(2) + ", -0.24, 0.24);" +
+        "    v_cheekTurn = turn;" +
+        // One soft limit per cheek, from how far its centre moves, so a big hit
+        // scales the whole cheek's travel instead of flattening its middle.
+        "    float limL = cheekLimit(cheekFlex(centerL, centerL, sphereL, recoilL, turn.xy, u_cheekPress.x));" +
+        "    float limR = cheekLimit(cheekFlex(centerR, centerR, sphereR, recoilR, turn.zw, u_cheekPress.y));" +
+        "    vec2 local = (left * limL * cheekFlex(a_uv, centerL, sphereL, recoilL, turn.xy, u_cheekPress.x) +" +
+        "      right * limR * cheekFlex(a_uv, centerR, sphereR, recoilR, turn.zw, u_cheekPress.y)) / max(1.0, left + right);" +
+        "    local *= crest;" +
+        "    float bothCheeks = 1.0 - (1.0 - left) * (1.0 - right);" +
+        "    vec2 travel = move(vec3(" + PELVIS_PIVOT.join(",") + ",1.0), u_bones[0], u_bones[1]);" +
+        "    vec2 radialPush = (a_uv - vec2(0.548, 0.282)) * (u_depthPush * crest * bothCheeks);" +
+        "    vec2 dentVec = a_uv - u_spankDent.xy;" +
+        "    vec2 dentQ = dentVec / vec2(0.052, 0.048);" +
+        "    float dentR2 = dot(dentQ, dentQ);" +
+        "    float dentCore = exp(-dentR2 * 2.10);" +
+        "    float dentRim = dentR2 * exp(-dentR2 * 1.15) * (1.0 - s5(1.5, 4.0, dentR2));" +
+        "    float legT = clamp((u_spankDent.y - 0.305) / 0.265, 0.0, 1.0);" +
+        "    vec2 thighAxis = vec2(u_spankDent.w < 0.0 ? (0.440 - 0.210 * legT) : (0.695 + 0.155 * legT), u_spankDent.y + 0.015);" +
+        "    vec2 cheekCore = vec2(u_spankDent.w < 0.0 ? 0.525 : 0.575, 0.345);" +
+        "    vec2 dentCoreTarget = mix(cheekCore, thighAxis, s5(0.285, 0.335, u_spankDent.y));" +
+        "    vec2 inward = normalize(dentCoreTarget - u_spankDent.xy + u_spankDir * 0.18 + vec2(1e-4));" +
+        "    vec2 dentPerp = vec2(-inward.y, inward.x);" +
+        "    vec2 rimDir = normalize(dentPerp * dot(dentVec, dentPerp) - inward * (0.45 * length(dentVec)) + vec2(1e-4));" +
+        "    float dentMass = a_core.x + a_legsFx.x + a_legsFx.y;" +
+        "    float dentMask = (1.0 - s5(0.46, 0.58, a_uv.y)) * s5(0.10, 0.45, dentMass);" +
+        "    float dentDepth = u_spankDent.z * mix(1.0, 0.68, s5(0.285, 0.345, u_spankDent.y));" +
+        "    vec2 dentDisp = (inward * (dentDepth * 0.068 * dentCore) + rimDir * (dentDepth * 0.030 * dentRim)) * dentMask;" +
+        "    vec2 waveVec = a_uv - u_spankDent.xy;" +
+        "    float waveR = length(waveVec * vec2(0.95, 1.15));" +
+        "    float waveTrain = sin(waveR * 18.0 - u_wave.y * 14.0) * exp(-waveR * waveR * 42.0) * smoothstep(0.015, 0.070, waveR);" +
+        "    float waveSide = mix(0.22, 1.0, smoothstep(-0.08, 0.08, (u_spankDent.w < 0.0 ? 0.548 - a_uv.x : a_uv.x - 0.548)));" +
+        "    vec2 ripDir = normalize(waveVec + vec2(1e-4));" +
+        "    vec2 ripDisp = (inward * (waveTrain * 0.0042) + ripDir * (waveTrain * 0.0028)) * (u_wave.x * waveSide * dentMask);" +
+        "    float wThighL = cheekWeight(a_uv, vec2(0.320, 0.430), vec2(0.115, 0.145));" +
+        "    float wThighR = cheekWeight(a_uv, vec2(0.750, 0.430), vec2(0.125, 0.150));" +
+        "    vec2 thighDisp = (wThighL * u_thighJig.xy + wThighR * u_thighJig.zw) * dentMask;" +
+        "    vec2 totalLocal = dentDisp + ripDisp + thighDisp;" +
+        "    vec2 dRowX = u_bones[0].xy * a_core.x + u_bones[8].xy * a_legsFx.x + u_bones[10].xy * a_legsFx.y;" +
+        "    vec2 dRowY = u_bones[1].xy * a_core.x + u_bones[9].xy * a_legsFx.x + u_bones[11].xy * a_legsFx.y;" +
+        "    posed += vec2(dot(u_bones[0].xy, local), dot(u_bones[1].xy, local)) +" +
+        "      crest * bothCheeks * travel * vec2(" + BODY_RIG.crestTravel.join(",") + ") + radialPush +" +
+        "      vec2(dot(dRowX, totalLocal), dot(dRowY, totalLocal));" +
+        "  }" +
+        "  v_uv = a_uv;" +
+        "  v_effects = a_legsFx.z;" +
+        "  gl_Position = vec4(2.0 * posed.x - 1.0, 1.0 - 2.0 * posed.y, 0.0, 1.0);" +
+        "}";
+      var fsSrc = precision +
         "uniform sampler2D u_tex;" +
-        "uniform vec4 u_pelvis;" +  // translation xy, cos and sin of the forward rotation
+        "uniform sampler2D u_plate;" +
+        // The left half packs the moving matte (red) and static holdout (green),
+        // and the right half supplies the background behind the moving parts.
+        "vec2 plateUV(vec2 uv, float right){" +
+        "  return vec2(clamp(uv.x, 0.5/512.0, 1.0-0.5/512.0) * 0.5 + right, uv.y);" +
+        "}" +
         "uniform vec2 u_scale;" +
         "uniform float u_blink;" +
-        "uniform vec4 u_head;" +  // translation xy, cos and sin of the head tilt
         "uniform float u_shoulders;" +
         "uniform float u_smirk;" +
-        "uniform float u_backFlex;" +
         "uniform vec2 u_jigL;" +
         "uniform vec2 u_jigR;" +
         "uniform vec2 u_wave;" +
@@ -1336,7 +2591,14 @@
         "uniform vec4 u_eye;" +    // pupil offset xy, pupil scale, toe curl
         "uniform vec4 u_hair;" +
         "uniform vec2 u_lace;" +   // extra hair sway: left xy, right xy
+        "uniform float u_depthPush;" +
+        "uniform vec2 u_spankHeat;" +
+        "uniform vec4 u_spankDent;" +
+        "uniform vec2 u_mood;" +
+        "uniform vec3 u_life;" +
         "varying vec2 v_uv;" +
+        "varying float v_effects;" +
+        "varying vec4 v_cheekTurn;" +
         "float lobe(vec2 uv, vec2 c, vec2 r){" +
         "  float d = clamp(length((uv - c) / r), 0.0, 1.0);" +
         "  float t = 1.0 - d;" +
@@ -1359,7 +2621,7 @@
         "  float inEye = 1.0 - smoothstep(soft, 1.02, length(q));" +
         "  if (inEye <= 0.001) return col;" +
         "  float curve = 0.22 * (p.x * p.x) - 0.08;" +
-        "  float yLid = (-1.08 - ext) + blink * (1.96 + ext) + curve;" +
+        "  float yLid = (-1.08 - ext) + blink * (1.96 + ext) + curve + u_life.y * 0.22 * side;" +
         "  float lidMask = (1.0 - smoothstep(yLid - 0.08, yLid + 0.08, p.y)) * inEye;" +
         "  float lashMask = (1.0 - smoothstep(0.0, 0.20, abs(p.y - yLid))) * (1.0 - smoothstep(0.90, 1.02, length(q)));" +
         "  vec3 grad = mix(vec3(0.95, 0.50, 0.51), vec3(0.94, 0.42, 0.44), clamp((p.y + 1.0) * 0.5, 0.0, 1.0));" +
@@ -1403,8 +2665,10 @@
         "}" +
         "vec2 eyeWarp(vec2 uv, vec2 c){" +
         "  vec2 p = uv - c;" +
-        "  float w = 1.0 - smoothstep(0.020, 0.034, length(p));" +
-        "  return c + p / (1.0 + u_eye.z * w) - u_eye.xy * w;" +
+        "  float d = length(p);" +
+        "  float w = 1.0 - smoothstep(0.020, 0.034, d);" +
+        "  float pupil = (1.0 - smoothstep(0.007, 0.017, d)) * clamp(u_life.x * 0.24, -0.16, 0.24);" +
+        "  return c + p / (1.0 + u_eye.z * w + pupil) - u_eye.xy * w;" +
         "}" +
         "float skinM(vec3 c){" +
         "  return smoothstep(0.60, 0.72, c.r) * smoothstep(0.36, 0.46, c.g) * smoothstep(0.26, 0.36, c.b) * (1.0 - smoothstep(0.30, 0.42, c.r - c.g));" +
@@ -1461,23 +2725,27 @@
         "  return region * mix(near, far, 0.26 + 0.25 * lift) * (1.0 - 0.66 * lift);" +
         "}" +
         "void main(){" +
+        "  vec2 matte = texture2D(u_plate, plateUV(v_uv, 0.0)).rg;" +
+        "  if (v_effects < 0.5) {" +
+        "    vec3 base = texture2D(u_tex, v_uv).rgb;" +
+        "    gl_FragColor = vec4(mix(base, texture2D(u_plate, plateUV(v_uv, 0.5)).rgb, matte.g), 1.0);" +
+        "    return;" +
+        "  }" +
+        "  if (matte.r < 0.002) discard;" +
+        "  float tissue = v_effects - 1.0;" +
         "  vec2 pivot = vec2(" + PELVIS_PIVOT[0] + "," + PELVIS_PIVOT[1] + ");" +
-        "  vec2 local = v_uv - pivot - u_pelvis.xy;" +
-        "  vec2 rest = pivot + vec2(dot(local, u_pelvis.zw), dot(local, vec2(-u_pelvis.w, u_pelvis.z)));" +
-        "  vec2 cL = vec2(" + HIP_LEFT[0] + "," + HIP_LEFT[1] + ");" +
-        "  vec2 cR = vec2(" + HIP_RIGHT[0] + "," + HIP_RIGHT[1] + ");" +
-        "  float wL = lobeC(rest, cL, vec2(0.088, 0.125));" +
-        "  float wR = lobeC(rest, cR, vec2(0.165, 0.155));" +
-        "  float wTL = lobe(rest, vec2(0.335, 0.440), vec2(0.145, 0.160));" +
-        "  wTL = 1.0 - (1.0 - wTL) * (1.0 - lobe(rest, vec2(0.380, 0.350), vec2(0.090, 0.095)));" +
-        "  float wTR = lobe(rest, vec2(0.735, 0.440), vec2(0.175, 0.175));" +
-        "  vec2 cBack = vec2(0.510, 0.430);" +
-        "  float wBack = lobe(rest, cBack, vec2(0.088, 0.095));" +
+        "  vec2 cL = vec2(0.468, 0.275);" +
+        "  vec2 cR = vec2(0.624, 0.282);" +
+        "  float wL = lobeC(v_uv, cL, vec2(0.086, 0.108));" +
+        "  float wR = lobeC(v_uv, cR, vec2(0.128, 0.118));" +
+        "  float wTL = lobe(v_uv, vec2(0.335, 0.440), vec2(0.145, 0.160));" +
+        "  wTL = 1.0 - (1.0 - wTL) * (1.0 - lobe(v_uv, vec2(0.380, 0.350), vec2(0.090, 0.095)));" +
+        "  float wTR = lobe(v_uv, vec2(0.735, 0.440), vec2(0.175, 0.175));" +
         "  float wCheeks = 1.0 - (1.0 - wL) * (1.0 - wR);" +
         "  float wThighs = 1.0 - (1.0 - wTL) * (1.0 - wTR);" +
         "  float w = 1.0 - (1.0 - wCheeks) * (1.0 - 0.5 * wThighs);" +
         "  vec2 sc = mix(vec2(1.0), u_scale, 0.35 * w + 0.65 * wCheeks);" +
-        "  vec2 squash = (rest - pivot) / sc - (rest - pivot);" +
+        "  vec2 squash = (v_uv - pivot) / sc - (v_uv - pivot);" +
         "  float wHead = lobe(v_uv, vec2(0.468, 0.675), vec2(0.220, 0.165));" +
         "  float wChin = lobe(v_uv, vec2(0.468, 0.790), vec2(0.180, 0.085));" +
         "  float wEarL = lobe(v_uv, vec2(0.350, 0.560), vec2(0.095, 0.085));" +
@@ -1486,19 +2754,14 @@
         "  float wHairR = lobe(v_uv, vec2(0.665, 0.725), vec2(0.175, 0.125));" +
         "  float wh = 1.0 - (1.0 - wHead) * (1.0 - 0.85 * wChin) * (1.0 - 0.75 * wEarL) * (1.0 - 0.75 * wEarR) * (1.0 - 0.90 * wHairL) * (1.0 - 0.90 * wHairR);" +
         "  w *= (1.0 - wh);" +
-        "  float wb = wBack * (1.0 - wh) * (1.0 - 0.65 * wCheeks);" +
-        "  vec2 backRel = rest - cBack;" +
-        "  vec2 backFlex = vec2(backRel.x, -backRel.y * 0.55) * (u_backFlex * wb);" +
-        "  float crest = 1.0 - smoothstep(0.22, 0.33, v_uv.y);" +
         "  vec2 jig = u_jigL * (wL * (1.0 - wh)) + u_jigR * (wR * (1.0 - wh));" +
-        "  jig.y *= 1.0 + 0.8 * crest;" +
-        "  vec2 rv = v_uv - vec2(0.55, 0.29);" +
-        "  float rr = length(rv * vec2(1.0, 1.3));" +
+        "  vec2 rv = v_uv - u_spankDent.xy;" +
+        "  float rr = length(rv * vec2(0.95, 1.15));" +
         "  vec2 rdir = rv / max(length(rv), 0.001);" +
-        "  float rip = sin(rr * 34.0 - u_wave.y * 26.0) * exp(-rr * 3.2) * u_wave.x * 0.0045 * (w + 0.5 * wCheeks) * (1.0 - wh);" +
+        "  float rip = sin(rr * 18.0 - u_wave.y * 14.0) * exp(-rr * rr * 34.0) * u_wave.x * 0.0032 * (w + 0.55 * wThighs + 0.55 * wCheeks) * (1.0 - wh);" +
         "  float aL = length(u_jigL), aR = length(u_jigR);" +
         "  vec2 dL = u_jigL / max(aL, 1e-5), dR = u_jigR / max(aR, 1e-5);" +
-        "  vec2 rL = rest - cL, rR = rest - cR;" +
+        "  vec2 rL = v_uv - cL, rR = v_uv - cR;" +
         "  float gL = wL * (1.0 - wh), gR = wR * (1.0 - wh);" +
         "  float alL = dot(rL, dL), alR = dot(rR, dR);" +
         "  vec2 sqz = gL * (-alL * dL * (3.2 * aL) + (rL - alL * dL) * (1.6 * aL)) + gR * (-alR * dR * (3.2 * aR) + (rR - alR * dR) * (1.6 * aR));" +
@@ -1508,24 +2771,23 @@
         "  float wCupL = lobe(v_uv, vec2(0.257, 0.735), vec2(0.065, 0.075));" +
         "  float wCupR = lobe(v_uv, vec2(0.627, 0.705), vec2(0.060, 0.070));" +
         "  hairD += 1.3 * (u_hair.xy * wCupL + u_hair.zw * wCupR);" +
-        "  float wLace = lobe(rest, vec2(0.53, 0.35), vec2(0.15, 0.07));" +
+        "  float wLace = lobe(v_uv, vec2(0.53, 0.35), vec2(0.15, 0.07));" +
         "  vec2 thD = -0.02 * u_fx.y * ((v_uv - vec2(0.335, 0.44)) * wTL + (v_uv - vec2(0.735, 0.44)) * wTR) * (1.0 - wh);" +
         "  vec2 toeD = -0.06 * u_eye.w * ((v_uv - vec2(0.165, 0.685)) * wFootL + (v_uv - vec2(0.865, 0.755)) * wFootR);" +
-        // Both hips and the upper trim share a rigid core. Thighs feather it into the rest of the picture.
-        "  vec2 core = (rest - pivot) / vec2(0.248, 0.194);" +
-        "  float wCore = 1.0 - smoothstep(0.44, 1.0, dot(core, core));" +
-        "  float wPelvis = (1.0 - (1.0 - wCore) * (1.0 - wBack) * (1.0 - 0.88 * wLace) * (1.0 - 0.58 * wThighs)) * (1.0 - wh);" +
         "  float shoulders = max(lobe(v_uv, vec2(0.287, 0.675), vec2(0.120, 0.086)), lobe(v_uv, vec2(0.690, 0.666), vec2(0.123, 0.089)));" +
-        "  vec2 headPivot = vec2(" + HEAD_PIVOT[0] + "," + HEAD_PIVOT[1] + ");" +
-        "  vec2 headLocal = v_uv - headPivot - u_head.xy;" +
-        "  vec2 headRest = headPivot + vec2(dot(headLocal, u_head.zw), dot(headLocal, vec2(-u_head.w, u_head.z)));" +
-        "  vec2 disp = hairD + u_lace * wLace * (1.0 - wh) + thD + toeD + sqz - backFlex + jig + rdir * rip;" +
-        "  vec2 suv = mix(v_uv, rest, wPelvis) + squash * (1.0 - wh) + (headRest - v_uv) * wh - disp;" +
-        "  suv.y += u_shoulders * shoulders * (1.0 - 0.65 * wHead);" +
-        // The contact patch samples the same inverse pose as the canvas tail root.
-        "  float tailPin = lobe(rest, vec2(" + TAIL_ROOT[0] + "," + TAIL_ROOT[1] + "), vec2(0.045, 0.052));" +
-        "  float earPin = max(lobe(headRest, vec2(0.331055, 0.600586), vec2(0.038, 0.032)), lobe(headRest, vec2(0.543945, 0.599609), vec2(0.038, 0.032)));" +
-        "  suv = clamp(mix(mix(suv, rest, tailPin), headRest, earPin), 0.0, 1.0);" +
+        // Keep UV slide gentle and bound by the rounded cheek lobes so fast beats never shear along a flat y line.
+        "  float rimSafe = smoothstep(" + BODY_RIG.cheekDetailBlend.join(",") + ", v_uv.y) * smoothstep(0.28, 0.90, matte.r);" +
+        "  float cheekDetail = wCheeks * rimSafe;" +
+        "  vec2 cheekOffset = ((squash * (1.0 - wh) - sqz - 0.35 * jig) * " + BODY_RIG.cheekDetailFollow + ") -" +
+        "    u_lace * wLace * (1.0 - wh);" +
+        "  cheekOffset *= mix(rimSafe, cheekDetail, 0.72) * min(1.0, " + BODY_RIG.cheekDetailMax + " / max(length(cheekOffset), 1e-5));" +
+        "  vec2 offset = cheekOffset - rdir * (rip * rimSafe) - hairD - thD - toeD;" +
+        "  offset.y += u_shoulders * shoulders * (1.0 - 0.65 * wHead);" +
+        // Overlay contacts follow the mesh alone.
+        "  float tailPin = lobe(v_uv, vec2(" + TAIL_ROOT[0] + "," + TAIL_ROOT[1] + "), vec2(0.045, 0.052));" +
+        "  float earPin = max(lobe(v_uv, vec2(0.331055, 0.600586), vec2(0.038, 0.032)), lobe(v_uv, vec2(0.543945, 0.599609), vec2(0.038, 0.032)));" +
+        "  float inside = tissue * (1.0 - max(tailPin, earPin));" +
+        "  vec2 suv = clamp(v_uv + offset * inside, 0.0, 1.0);" +
         "  suv = eyeWarp(eyeWarp(suv, vec2(0.381, 0.762)), vec2(0.516, 0.762));" +
         "  vec3 col = samplePortrait(suv);" +
         "  float skm = skinM(col);" +
@@ -1534,32 +2796,68 @@
         "  vec2 bq2 = (suv - vec2(0.552, 0.812)) / vec2(0.055, 0.026);" +
         "  float blushA = clamp(u_fx.x * 0.55 * (exp(-dot(bq1, bq1)) + exp(-dot(bq2, bq2))), 0.0, 0.6) * skm;" +
         "  col = mix(col, col * vec3(1.0, 0.74, 0.80) + vec3(0.10, 0.0, 0.03), blushA);" +
-        // Trace the exposed crests in artwork coordinates. The glint travels along the skin band.
-        "  if ((u_fx.z > 0.0 || u_comboSheen.y > 0.0) && suv.y > 0.215 && suv.y < 0.300) {" +
+        // Move each highlight in rest UVs against the surface turn, as a fixed
+        // light would move across a rolling cheek.
+        "  if (suv.y > 0.215 && suv.y < 0.300) {" +
         "    float warmSkin = skm * smoothstep(0.029, 0.072, warmth);" +
-        "    float sweep = 0.52 * sin(u_fx.w * 6.2831853);" +
+        "    float sweep = 0.38 * sin(u_fx.w * 6.2831853);" +
         "    vec2 artPx = suv * 1024.0;" +
-        "    float sheen = cheekCrestSheen(artPx, vec2(460.0, 258.0), 31.0, vec2(-16.0, 9.0), sweep) +" +
-        "                  cheekCrestSheen(artPx, vec2(630.0, 257.0), 49.0, vec2(13.0, 6.0), sweep);" +
-        "    float strength = u_fx.z * (0.82 + 0.18 * smoothstep(0.12, 0.58, u_fx.y));" +
+        "    vec2 glintShift = vec2(" + BODY_RIG.cheekGlintShift.map(function (n) { return n.toFixed(1); }).join(",") + ");" +
+        "    float sheenL = cheekCrestSheen(artPx + v_cheekTurn.xy * glintShift, vec2(460.0, 258.0), 31.0, vec2(-16.0, 9.0), sweep - v_cheekTurn.x * 1.4);" +
+        "    float sheenR = cheekCrestSheen(artPx + v_cheekTurn.zw * glintShift, vec2(630.0, 257.0), 49.0, vec2(13.0, 6.0), sweep - v_cheekTurn.z * 1.4);" +
+        "    float strength = u_fx.z * (0.82 + 0.18 * smoothstep(0.12, 0.58, u_fx.y)) + 0.14 * u_wave.x * (0.5 + 0.5 * cos(u_wave.y * 46.0)) + max(0.0, u_depthPush) * 2.2;" +
         "    if (u_comboSheen.y > 0.0) {" +
         "      float ripple = (artPx.x - u_comboSheen.x) / 30.0;" +
         "      float focused = mix(strength * 0.42, 1.0, exp(-ripple * ripple));" +
         "      strength = mix(strength, focused, u_comboSheen.y);" +
         "    }" +
-        "    col = mix(col, vec3(1.0, 0.99, 0.97), warmSkin * sheen * strength);" +
+        "    vec2 rollSheen = " + BODY_RIG.cheekGlintStrength.toFixed(2) + " * smoothstep(0.015, 0.17, vec2(length(v_cheekTurn.xy), length(v_cheekTurn.zw)));" +
+        "    float sheen = dot(vec2(sheenL, sheenR), max(vec2(strength), rollSheen));" +
+        "    col = mix(col, vec3(1.0, 0.99, 0.97), warmSkin * sheen);" +
         "  }" +
-        "  col *= 1.0 + 0.05 * u_fx.y * (wTL + wTR) * skm;" +
-        "  float leadL = clamp(dot(normalize(rL + 1e-4), dL) * aL * 70.0, -1.0, 1.0) * gL;" +
-        "  float leadR = clamp(dot(normalize(rR + 1e-4), dR) * aR * 70.0, -1.0, 1.0) * gR;" +
-        "  col *= 1.0 + 0.10 * (leadL + leadR);" +
-        "  float squeeze = clamp((u_jigL.x - u_jigR.x) * 38.0, 0.0, 1.0);" +
-        "  float cq = (v_uv.x - 0.552) / 0.026;" +
-        "  float crease = exp(-cq * cq) * wCheeks * (1.0 - wh);" +
-        "  col *= 1.0 - 0.18 * squeeze * crease;" +
+        "  col *= 1.0 + 0.05 * u_fx.y * (wTL + wTR) * skm * tissue;" +
+        "  float gluteTone = smoothstep(0.222, 0.262, v_uv.y);" +
+        "  float leadL = clamp(dot(normalize(rL + 1e-4), dL) * aL * 78.0, -1.0, 1.0) * gL;" +
+        "  float leadR = clamp(dot(normalize(rR + 1e-4), dR) * aR * 78.0, -1.0, 1.0) * gR;" +
+        "  float pushDepth = max(0.0, u_depthPush);" +
+        "  float underGlute = max(lobe(suv, vec2(0.472, 0.304), vec2(0.068, 0.022)), lobe(suv, vec2(0.628, 0.310), vec2(0.086, 0.024))) * skm * smoothstep(0.029, 0.072, warmth) * tissue;" +
+        "  col *= 1.0 + (0.085 * (leadL + leadR) + pushDepth * 1.15 * wCheeks * (1.0 - wh)) * tissue * gluteTone;" +
+        "  col = mix(col, col * vec3(0.88, 0.77, 0.79), clamp(underGlute * (0.06 + pushDepth * 2.1), 0.0, 0.20));" +
+        "  float squeeze = clamp((u_jigL.x - u_jigR.x) * 32.0 + (u_jigL.y + u_jigR.y) * 14.0 + pushDepth * 4.2, -0.30, 1.0);" +
+        "  vec2 hlq = (suv - vec2(0.464, 0.258)) / vec2(0.088, 0.058);" +
+        "  vec2 hrq = (suv - vec2(0.626, 0.264)) / vec2(0.106, 0.062);" +
+        "  vec2 hsq = (suv - u_spankDent.xy) / vec2(0.072, 0.062);" +
+        "  vec2 f1q = (suv - (u_spankDent.xy + vec2(-0.018 * u_spankDent.w, 0.044))) / vec2(0.022, 0.036);" +
+        "  vec2 f2q = (suv - (u_spankDent.xy + vec2(0.014 * u_spankDent.w, 0.048))) / vec2(0.022, 0.038);" +
+        "  float palmPrint = max(exp(-dot(hsq, hsq)), 0.78 * max(exp(-dot(f1q, f1q)), exp(-dot(f2q, f2q))));" +
+        "  float spotHeat = (u_spankDent.w < 0.0 ? u_spankHeat.x : u_spankHeat.y) * palmPrint;" +
+        "  float cheekHeat = clamp(max(u_spankHeat.x * exp(-dot(hlq, hlq)) + u_spankHeat.y * exp(-dot(hrq, hrq)), spotHeat * 0.85), 0.0, 1.0) * skm * smoothstep(0.029, 0.072, warmth) * tissue;" +
+        "  col = mix(col, col * vec3(1.03, 0.66, 0.72) + vec3(0.09, 0.0, 0.025), cheekHeat * 0.58);" +
+        "  vec2 dq = (suv - u_spankDent.xy) / vec2(0.058, 0.052);" +
+        "  float dr2 = dot(dq, dq);" +
+        "  float dentShade = exp(-dr2 * 1.8) * max(0.0, u_spankDent.z) * skm * smoothstep(0.029, 0.072, warmth) * tissue;" +
+        "  col = mix(col, col * vec3(0.79, 0.67, 0.71), clamp(dentShade * 0.36, 0.0, 0.30));" +
+        "  float cq = (v_uv.x - 0.548) / 0.028;" +
+        "  float crease = exp(-cq * cq) * wCheeks * (1.0 - wh) * tissue * smoothstep(0.218, 0.256, v_uv.y);" +
+        "  col = mix(col, col * vec3(0.84, 0.72, 0.74), clamp(0.22 * squeeze * crease, -0.05, 0.26));" +
         "  col = applyLid(col, suv, vec2(0.381, 0.762), vec2(0.041, 0.034), u_blink, 1.0);" +
         "  col = applyLid(col, suv, vec2(0.516, 0.762), vec2(0.041, 0.034), u_blink, -1.0);" +
         "  col = applyMouth(col, suv, u_mouthB.x, u_mouth, u_mouthB.yz);" +
+        "  if (u_mood.x > 0.04) {" +
+        "    vec2 eL = (suv - vec2(0.381, 0.762)) / vec2(0.022, 0.020);" +
+        "    vec2 eR = (suv - vec2(0.516, 0.762)) / vec2(0.022, 0.020);" +
+        "    float iris = max(exp(-dot(eL, eL) * 2.1), exp(-dot(eR, eR) * 2.1)) * (1.0 - smoothstep(0.35, 0.85, u_blink));" +
+        "    float pink = smoothstep(0.02, 0.25, col.r - col.g * 0.65) + 0.35 * step(0.55, max(col.r, col.g));" +
+        "    col += vec3(0.45, 0.06, 0.28) * (u_mood.x * 0.55 * iris * clamp(pink, 0.25, 1.0));" +
+        "    vec2 gL = (suv - vec2(0.376, 0.771)) / vec2(0.008, 0.005);" +
+        "    vec2 gR = (suv - vec2(0.511, 0.771)) / vec2(0.008, 0.005);" +
+        "    float tear = max(exp(-dot(gL, gL) * 1.9), exp(-dot(gR, gR) * 1.9)) * (1.0 - u_blink);" +
+        "    col = mix(col, vec3(1.0, 0.94, 0.98), clamp(u_mood.x * 0.42 * tear, 0.0, 0.45));" +
+        "  }" +
+        "  if (u_life.z > 0.02 && skm > 0.01) {" +
+        "    vec2 pc = (suv - vec2(0.45, 0.80)) / vec2(0.11, 0.06);" +
+        "    col += vec3(0.13, 0.02, 0.04) * (u_life.z * exp(-dot(pc, pc)) * skm);" +
+        "  }" +
         // Restrict the cast shadow to cheek skin below the two front locks.
         "  if (skm > 0.01 && suv.y > 0.770 && suv.y < 0.874) {" +
         "    float leftCheek = lobe(suv, vec2(0.344, 0.803), vec2(0.076, 0.068));" +
@@ -1567,7 +2865,7 @@
         "    float shadow = cheekShadow(suv, u_hair.xy, leftCheek) + cheekShadow(suv, u_hair.zw, rightCheek);" +
         "    col *= 1.0 - skm * shadow * vec3(0.44, 0.38, 0.28);" +
         "  }" +
-        "  gl_FragColor = vec4(col, 1.0);" +
+        "  gl_FragColor = vec4(col, matte.r);" +
         "}";
       function compile(type, src) {
         var sh = gl.createShader(type);
@@ -1584,31 +2882,47 @@
         return null;
       }
       gl.useProgram(prog);
-      var buf = gl.createBuffer();
-      gl.bindBuffer(gl.ARRAY_BUFFER, buf);
-      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
-      var loc = gl.getAttribLocation(prog, "a_pos");
-      gl.enableVertexAttribArray(loc);
-      gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+      if (!bodyMesh) bodyMesh = makeBodyMesh();
+      gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+      gl.bufferData(gl.ARRAY_BUFFER, bodyMesh.vertices, gl.STATIC_DRAW);
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gl.createBuffer());
+      gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, bodyMesh.indices, gl.STATIC_DRAW);
+      function bindSkinAttribute(name, size, offset) {
+        var loc = gl.getAttribLocation(prog, name);
+        gl.enableVertexAttribArray(loc);
+        gl.vertexAttribPointer(loc, size, gl.FLOAT, false, 9 * 4, offset * 4);
+      }
+      bindSkinAttribute("a_uv", 2, 0);
+      bindSkinAttribute("a_core", 4, 2);
+      bindSkinAttribute("a_legsFx", 3, 6);
 
-      var tex = gl.createTexture();
-      gl.bindTexture(gl.TEXTURE_2D, tex);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      function makeWarpTexture(unit) {
+        var tex = gl.createTexture();
+        gl.activeTexture(unit);
+        gl.bindTexture(gl.TEXTURE_2D, tex);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        return tex;
+      }
 
+      warpState.tex = makeWarpTexture(gl.TEXTURE0);
+      warpState.plate = makeWarpTexture(gl.TEXTURE1);
+      gl.uniform1i(gl.getUniformLocation(prog, "u_plate"), 1);
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+      if (!bodyPlate.src) bodyPlate.src = BODY_PLATE;
       warpState.gl = gl;
-      warpState.tex = tex;
-      warpState.uPelvis = gl.getUniformLocation(prog, "u_pelvis");
+      warpState.uBones = gl.getUniformLocation(prog, "u_bones[0]");
       warpState.uScale = gl.getUniformLocation(prog, "u_scale");
       warpState.uBlink = gl.getUniformLocation(prog, "u_blink");
-      warpState.uHead = gl.getUniformLocation(prog, "u_head");
       warpState.uShoulders = gl.getUniformLocation(prog, "u_shoulders");
       warpState.uSmirk = gl.getUniformLocation(prog, "u_smirk");
-      warpState.uBackFlex = gl.getUniformLocation(prog, "u_backFlex");
       warpState.uJigL = gl.getUniformLocation(prog, "u_jigL");
       warpState.uJigR = gl.getUniformLocation(prog, "u_jigR");
+      warpState.uCrestLag = gl.getUniformLocation(prog, "u_crestLag");
+      warpState.uCheekPress = gl.getUniformLocation(prog, "u_cheekPress");
       warpState.uWave = gl.getUniformLocation(prog, "u_wave");
       warpState.uMouth = gl.getUniformLocation(prog, "u_mouth");
       warpState.uMouthB = gl.getUniformLocation(prog, "u_mouthB");
@@ -1617,6 +2931,13 @@
       warpState.uEye = gl.getUniformLocation(prog, "u_eye");
       warpState.uHair = gl.getUniformLocation(prog, "u_hair");
       warpState.uLace = gl.getUniformLocation(prog, "u_lace");
+      warpState.uDepthPush = gl.getUniformLocation(prog, "u_depthPush");
+      warpState.uSpankHeat = gl.getUniformLocation(prog, "u_spankHeat");
+      warpState.uSpankDent = gl.getUniformLocation(prog, "u_spankDent");
+      warpState.uSpankDir = gl.getUniformLocation(prog, "u_spankDir");
+      warpState.uThighJig = gl.getUniformLocation(prog, "u_thighJig");
+      warpState.uMood = gl.getUniformLocation(prog, "u_mood");
+      warpState.uLife = gl.getUniformLocation(prog, "u_life");
       uploadWarpTexture();
       return gl;
     } catch (_) {
@@ -1625,29 +2946,42 @@
     }
   }
 
-  function renderWarp(x, y, cos, sin, sx, sy, blink, hx, hy, bArch, jlx, jly, jrx, jry, wa, wt, mo, f, glintX, glintStrength) {
+  function renderWarp(x, y, cos, sin, sx, sy, blink, hx, hy, bArch, jlx, jly, jrx, jry, wa, wt, mo, f, glintX, glintStrength, depthPush) {
     var gl = ensureWarpGl();
     if (!gl) return false;
     if (!warpState.texReady && !uploadWarpTexture()) return false;
+    if (!warpState.plateReady && !uploadWarpPlate()) return false;
     gl.viewport(0, 0, warpCanvas.width, warpCanvas.height);
-    gl.uniform4f(warpState.uPelvis, x, y, cos, sin);
+    poseBody(x, y, cos, sin, hx || 0, hy || 0, f.headAngle, bArch);
+    gl.uniform3fv(warpState.uBones, bodyBones);
     gl.uniform2f(warpState.uScale, sx, sy);
     gl.uniform1f(warpState.uBlink, blink || 0);
-    gl.uniform4f(warpState.uHead, hx || 0, hy || 0, Math.cos(f.headAngle), Math.sin(f.headAngle));
     gl.uniform1f(warpState.uShoulders, f.shoulders);
     gl.uniform1f(warpState.uSmirk, f.smirk);
-    gl.uniform1f(warpState.uBackFlex, bArch);
     gl.uniform2f(warpState.uJigL, jlx || 0, jly || 0);
     gl.uniform2f(warpState.uJigR, jrx || 0, jry || 0);
+    gl.uniform4fv(warpState.uCrestLag, bootyPhys.crestLag);
+    gl.uniform2fv(warpState.uCheekPress, bootyPhys.cheekPress);
     gl.uniform2f(warpState.uWave, wa || 0, wt || 0);
     gl.uniform4f(warpState.uMouth, mo ? mo.open : 0, mo ? mo.smile : 0, mo ? mo.wide : 0.85, mo ? mo.tongue : 0);
     gl.uniform3f(warpState.uMouthB, mo ? mo.str : 0, mo ? mo.wobAmp : 0, mo ? mo.wobPh : 0);
     gl.uniform4f(warpState.uFx, f ? f.flush : 0, f ? f.tension : 0, f ? f.sheen : 0, f ? f.sheenPh : 0);
     gl.uniform2f(warpState.uComboSheen, glintX, glintStrength);
     gl.uniform4f(warpState.uEye, f ? f.eyeX : 0, f ? f.eyeY : 0, f ? f.eyeS : 0, f ? f.curl : 0);
-    gl.uniform2f(warpState.uLace, f ? f.laceX : 0, f ? f.laceY : 0);
+    gl.uniform2f(warpState.uLace, f ? f.laceX * BODY_RIG.laceFollow : 0, f ? f.laceY * BODY_RIG.laceFollow : 0);
     gl.uniform4f(warpState.uHair, f ? f.oLx : 0, f ? f.oLy : 0, f ? f.oRx : 0, f ? f.oRy : 0);
-    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    gl.uniform1f(warpState.uDepthPush, depthPush || 0);
+    gl.uniform2f(warpState.uSpankHeat, bootyPhys.spankHeatL || 0, bootyPhys.spankHeatR || 0);
+    gl.uniform4f(warpState.uSpankDent, bootyPhys.dentU || 0.62, bootyPhys.dentVpos || 0.25, bootyPhys.dent || 0, bootyPhys.dentSide || 1);
+    gl.uniform2f(warpState.uSpankDir, bootyPhys.dentDirX || 0, bootyPhys.dentDirY || 0);
+    gl.uniform4f(warpState.uThighJig, bootyPhys.thLx || 0, bootyPhys.thLy || 0, bootyPhys.thRx || 0, bootyPhys.thRy || 0);
+    gl.uniform2f(warpState.uMood, f ? Math.min(1, f.arousal * 0.85 + f.spankT * 0.45 + bootyPhys.dropGain * 0.45) : 0, f ? f.pout : 0);
+    if (warpState.uLife) {
+      var lifeDilate = f ? clampNum((f.arousal * 0.52 + f.afterglow * 0.25 + (f.bedroomLock || 0) * 0.28) - (f.braceUntil > (performance.now() / 1000) ? 0.28 : 0), -0.35, 0.85) : 0;
+      var browTilt = f ? clampNum((f.afterglow * 0.55 + (mouthSt.flustered > 0 ? 0.35 : 0)) - (f.pout * 0.75 + f.sulk * 0.55), -1, 1) : 0;
+      gl.uniform3f(warpState.uLife, lifeDilate, browTilt, f ? f.heartPulse : 0);
+    }
+    gl.drawElements(gl.TRIANGLES, bodyMesh.indices.length, gl.UNSIGNED_SHORT, 0);
     if (warpCanvas.style.display !== "block") {
       warpCanvas.style.display = "block";
       button.classList.add("is-warp-on");
@@ -1659,7 +2993,7 @@
   // beat, gasp then smile on a spank, yawn on a stretch, smile on hover, an occasional tongue-out blep).
   var mouthSt = {
     open: 0, smile: 0.25, wide: 0.85, tongue: 0, str: 0, wobAmp: 0.12, wobPh: 0,
-    talkUntil: 0, talkPh: 0, gasp: 0, happy: 0, flustered: 0, blepUntil: 0, nextBlep: 0
+    talkUntil: 0, talkPh: 0, talkBurst: 0, talkAccent: 0, gasp: 0, happy: 0, flustered: 0, blepUntil: 0, nextBlep: 0
   };
 
   // Life layer: effort-driven breathing, blush build-up, eye behaviour, hair sway, thigh tension, toe curl, skin
@@ -1670,7 +3004,19 @@
     ptrX: 0, ptrY: 0, ptrT: 0, pdx: 0, pnear: 0, nextBreath: 0,
     rect: null, rectT: 0, tiredSaid: false, lookFrom: 0, lookUntil: 0, lookDir: 1, lookX: 0, lookY: 0, lid: 0, lcx: 0, lcy: 0, lvx: 0, lvy: 0, laceX: 0, laceY: 0, nextCurl: 0, curlPulse: 0,
     hLx: 0, hLy: 0, hLvx: 0, hLvy: 0, hRx: 0, hRy: 0, hRvx: 0, hRvy: 0,
-    oLx: 0, oLy: 0, oRx: 0, oRy: 0, headAngle: 0, shoulders: 0, chin: 0, smirk: 0
+    oLx: 0, oLy: 0, oRx: 0, oRy: 0, headAngle: 0, shoulders: 0, chin: 0, smirk: 0,
+    arousal: 0, combo: 0, lastStrikeAt: 0, lastZone: "", lastSide: 0,
+    pet: 0, lastPurrAt: 0, lastTailAt: 0, lastPetSayAt: 0, lastLoudAt: 0,
+    pout: 0, poutUntil: 0, teaseHoverAt: 0, teaseSaidAt: 0, teaseX: 0, teaseY: 0,
+    lastInteractAt: 0, nextPostSmileAt: 0,
+    squeezeActive: false, squeezeU: 0.62, squeezeV: 0.25, squeezeSide: 1, squeezeZone: "cheek",
+    afterglow: 0, needy: 0, needySaidAt: 0, sulk: 0,
+    shiver: 0, dizzy: 0, dizzyUntil: 0, carryPull: 0,
+    braceUntil: 0, watchControlUntil: 0, watchControlDir: 0,
+    heartPh: 0, heartPulse: 0, skipTimes: [], sleepy: 0,
+    arcStep: 0, arcLastAt: 0, edgeBiasX: 0, edgeBiasY: 0,
+    nextIdleBlink: 0, bedroomLock: 0, cupTiltL: 0, cupTiltR: 0, cupListenUntil: 0,
+    nextIdleChoreo: 0, idleHabit: "", idleHabitUntil: 0, idleChoreoIdx: 0
   };
   var GESTURE_LENGTH = { listen: 1.75, surprise: 0.95, smile: 1.55, curl: 3.2, stretch: 2.8 };
   var gesture = { kind: "", at: 0, side: 1, blinked: false };
@@ -1718,7 +3064,25 @@
   }
 
   document.addEventListener("pointermove", function (event) {
-    fxSt.ptrX = event.clientX; fxSt.ptrY = event.clientY; fxSt.ptrT = performance.now() / 1000;
+    var nowPtr = performance.now() / 1000;
+    var dtPtr = nowPtr - fxSt.ptrT;
+    if (!drag && !pinching && button.classList.contains("is-nsfw") && !reduceMotion && dtPtr > 0.004 && dtPtr < 0.12 && fxSt.rect) {
+      var r = fxSt.rect, cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+      var rx = cx - event.clientX, ry = cy - event.clientY;
+      var distC = Math.hypot(rx, ry);
+      var closeV = ((event.clientX - fxSt.ptrX) * rx + (event.clientY - fxSt.ptrY) * ry) / (Math.max(1, distC) * dtPtr);
+      if (distC >= 55 && distC <= 230 && closeV >= 950 && nowPtr > fxSt.braceUntil) {
+        fxSt.braceUntil = nowPtr + 0.22;
+        ensureBootyRaf();
+      }
+      var tgt = event.target && event.target.closest ? event.target.closest('[data-act*="pause"],[data-act*="prev"],[data-act*="next"],[data-act*="skip"],[data-act*="mute"],#player-play,#player-next,#player-prev,#player-vol,input[type="range"]') : null;
+      if (tgt && !button.contains(tgt)) {
+        fxSt.watchControlUntil = nowPtr + 0.9;
+        fxSt.watchControlDir = event.clientX < cx ? -1 : 1;
+        ensureBootyRaf();
+      }
+    }
+    fxSt.ptrX = event.clientX; fxSt.ptrY = event.clientY; fxSt.ptrT = nowPtr;
   }, { passive: true });
 
   var stageKey = "";
@@ -1738,7 +3102,7 @@
   }
 
   // Synthesised sound (no files). Off with localStorage["hq-musica-sfx"] = "0"; it only starts after a spank gesture.
-  var sfx = {
+  var bodySfx = {
     ctx: null, noise: null,
     on: function () {
       try { return window.localStorage.getItem("hq-musica-sfx") !== "0"; } catch (e) { return true; }
@@ -1770,16 +3134,19 @@
       src.connect(flt); flt.connect(g); out.connect(c.destination);
       src.start(t, Math.random() * 0.5, dur + 0.05);
     },
-    slap: function (force, pan) {
+    slap: function (force, pan, zone) {
       if (!button.classList.contains("is-nsfw") || reduceMotion || !this.on() || !this.init()) return;
       if (this.ctx.state === "suspended") { try { this.ctx.resume(); } catch (e) {} }
       var c = this.ctx, t = c.currentTime + 0.005, v = this.vol() * (0.5 + 0.5 * force);
-      this.burst(t, 0.09, "bandpass", 2200, 900, 0.9, 0.55 * v, pan);
+      var isThigh = zone === "thigh";
+      this.burst(t, isThigh ? 0.075 : 0.095, "bandpass", isThigh ? 2550 : 1850, isThigh ? 1050 : 760, isThigh ? 1.1 : 0.85, (isThigh ? 0.48 : 0.58) * v, pan);
       var o = c.createOscillator(), g = c.createGain();
-      o.type = "sine"; o.frequency.setValueAtTime(170, t); o.frequency.exponentialRampToValueAtTime(55, t + 0.14);
-      g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.5 * v, t + 0.008);
-      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.16);
-      o.connect(g); g.connect(c.destination); o.start(t); o.stop(t + 0.2);
+      o.type = "sine"; o.frequency.setValueAtTime(isThigh ? 195 : 122, t); o.frequency.exponentialRampToValueAtTime(isThigh ? 78 : 48, t + (isThigh ? 0.11 : 0.16));
+      g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime((isThigh ? 0.42 : 0.56) * v, t + 0.008);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.17);
+      var out = g;
+      if (c.createStereoPanner) { var pn = c.createStereoPanner(); pn.pan.value = pan || 0; g.connect(pn); out = pn; }
+      o.connect(g); out.connect(c.destination); o.start(t); o.stop(t + 0.21);
     },
     stop: function () {
       // Adult mode off / reduced motion: silence anything scheduled and release the audio device.
@@ -1787,9 +3154,42 @@
       try { this.ctx.close(); } catch (e) {}
       this.ctx = null; this.noise = null;
     },
-    gasp: function () {
-      if (!button.classList.contains("is-nsfw") || !this.on() || !this.ctx || this.ctx.state !== "running") return;
-      this.burst(this.ctx.currentTime + 0.08, 0.32, "bandpass", 1100, 1900, 1.4, 0.16 * this.vol());
+    gasp: function (pitchMul) {
+      if (!button.classList.contains("is-nsfw") || reduceMotion || !this.on() || !this.init()) return;
+      if (this.ctx.state === "suspended") { try { this.ctx.resume(); } catch (e) {} }
+      var c = this.ctx, t = c.currentTime + 0.04, p = pitchMul || 1, v = this.vol();
+      this.burst(t, 0.30, "bandpass", 1150 * p, 1950 * p, 1.4, 0.14 * v);
+      var o = c.createOscillator(), g = c.createGain();
+      o.type = "triangle"; o.frequency.setValueAtTime(480 * p, t); o.frequency.exponentialRampToValueAtTime(340 * p, t + 0.24);
+      g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.036 * v, t + 0.04);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.26);
+      o.connect(g); g.connect(c.destination); o.start(t); o.stop(t + 0.28);
+    },
+    purr: function (level) {
+      if (!button.classList.contains("is-nsfw") || reduceMotion || !this.on() || !this.init()) return;
+      if (this.ctx.state === "suspended") { try { this.ctx.resume(); } catch (e) {} }
+      var c = this.ctx, t = c.currentTime + 0.01, v = this.vol() * (0.45 + 0.55 * (level || 0.7));
+      var o = c.createOscillator(), flt = c.createBiquadFilter(), g = c.createGain();
+      o.type = "sawtooth"; o.frequency.setValueAtTime(104, t); o.frequency.linearRampToValueAtTime(92, t + 0.42);
+      flt.type = "lowpass"; flt.frequency.setValueAtTime(310, t);
+      g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.042 * v, t + 0.08);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.44);
+      o.connect(flt); flt.connect(g); g.connect(c.destination); o.start(t); o.stop(t + 0.46);
+    },
+    yawn: function () {
+      if (!button.classList.contains("is-nsfw") || reduceMotion || !this.on() || !this.init()) return;
+      if (this.ctx.state === "suspended") { try { this.ctx.resume(); } catch (e) {} }
+      this.burst(this.ctx.currentTime + 0.04, 0.75, "bandpass", 920, 440, 1.8, 0.085 * this.vol());
+    },
+    hum: function () {
+      if (!button.classList.contains("is-nsfw") || reduceMotion || !this.on() || !this.ctx || this.ctx.state !== "running") return;
+      var c = this.ctx, t = c.currentTime + 0.02, v = this.vol() * 0.026;
+      var o = c.createOscillator(), flt = c.createBiquadFilter(), g = c.createGain();
+      o.type = "triangle"; o.frequency.setValueAtTime(290, t); o.frequency.linearRampToValueAtTime(330, t + 0.24);
+      flt.type = "lowpass"; flt.frequency.setValueAtTime(620, t);
+      g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(Math.max(0.0002, v), t + 0.07);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.42);
+      o.connect(flt); flt.connect(g); g.connect(c.destination); o.start(t); o.stop(t + 0.44);
     },
     breath: function (effort) {
       if (!this.on() || !this.ctx || this.ctx.state !== "running") return;
@@ -1835,6 +3235,15 @@
       PELVIS_PIVOT[1] + y + sin * hx + cos * hy, side, effect);
   }
 
+  function triggerShiver(level) {
+    if (!button.classList.contains("is-nsfw") || reduceMotion) return;
+    fxSt.shiver = Math.min(1, fxSt.shiver + (level || 0.75));
+    bootyPhys.thLvx += (Math.random() - 0.5) * 0.012;
+    bootyPhys.thRvx += (Math.random() - 0.5) * 0.012;
+    if (fxSt.arousal > 0.45) spawnFx("°", 1);
+    ensureBootyRaf();
+  }
+
   function startLook(nowS, until, side) {
     var F = fxSt;
     F.lookFrom = nowS;
@@ -1850,32 +3259,91 @@
     var F = fxSt, kf = function (r) { return 1 - Math.exp(-dt * r); };
     var hover = chipHover();
     var music = active ? Math.min(1, intensity) * vol * bootyPhys.twerkGain * Math.min(1, bootyPhys.phAmp) : 0;
-    // breathing effort: dancing builds it, rest drains it over ~7 s
-    F.effort = Math.max(0, Math.min(1, F.effort + dt * 0.10 * music - F.effort * dt / 7));
+    // Emotional inertia (afterglow, sulk, needy), shiver/dizzy decay & heartbeat
+    var highHeat = F.arousal >= 0.58 || F.combo >= 4;
+    if (highHeat) F.afterglow = Math.min(1, F.afterglow + dt * 0.30);
+    else F.afterglow = F.afterglow > 0.004 ? F.afterglow * Math.exp(-dt * 0.018) : 0;
+    F.sulk = F.sulk > 0.004 ? F.sulk * Math.exp(-dt * 0.042) : 0;
+    F.shiver = F.shiver > 0.004 ? F.shiver * Math.exp(-dt * 4.5) : 0;
+    F.dizzy = (!drag && F.dizzy > 0.004) ? F.dizzy * Math.exp(-dt * 0.45) : (drag ? F.dizzy : 0);
+    if (!drag) F.carryPull = F.carryPull > 0.004 ? F.carryPull * Math.exp(-dt * 7.0) : 0;
+    F.sleepy = (active && intensity <= 0.52) ? Math.min(1, F.sleepy + dt * 0.16) : Math.max(0, F.sleepy - dt * 0.25);
+
+    var idleSince = F.lastInteractAt > 0 ? (nowS - F.lastInteractAt) : 0;
+    if (!hover && !F.squeezeActive && !active && (F.arousal > 0.42 || F.afterglow > 0.38) && idleSince > 16 && idleSince < 55) {
+      F.needy = Math.min(1, F.needy + dt * 0.14);
+      if (F.needy > 0.58 && (!F.needySaidAt || (nowS - F.needySaidAt) >= 36) && !drag && !document.hidden) {
+        F.needySaidAt = nowS;
+        bootyPhys.vx += (Math.random() < 0.5 ? -1 : 1) * 16;
+        bootyPhys.vy -= 12;
+        showReaction("needy", NSFW_NEEDY_LINES, false, { type: true, voice: true });
+      }
+    } else {
+      F.needy = Math.max(0, F.needy - dt * 0.35);
+    }
+
+    var bpm = 68 + F.effort * 56 + F.arousal * 44;
+    F.heartPh = (F.heartPh + dt * (bpm / 60)) % 1;
+    var beatEnv = Math.exp(-Math.pow((F.heartPh - 0.12) / 0.055, 2)) + 0.55 * Math.exp(-Math.pow((F.heartPh - 0.28) / 0.065, 2));
+    F.heartPulse = beatEnv * Math.min(1, F.effort * 0.65 + F.arousal * 0.85 + F.afterglow * 0.45);
+
+    // Escalating combo & arousal decay + squeeze buildup
+    if (F.squeezeActive) {
+      F.arousal = Math.min(1, F.arousal + dt * (F.afterglow > 0.25 ? 0.34 : 0.24));
+      F.flush = Math.min(1, F.flush + dt * 0.28);
+      F.tension = Math.min(1, F.tension + dt * 0.35);
+      mouthSt.flustered = Math.max(mouthSt.flustered, 0.6);
+      F.lastInteractAt = nowS;
+    } else {
+      F.arousal = F.arousal > 0.003 ? F.arousal * Math.exp(-dt * 0.11) : 0;
+    }
+    if (F.combo > 0 && nowS - F.lastStrikeAt > 8.5) F.combo = 0;
+    F.pet = F.pet > 0.005 ? F.pet * Math.exp(-dt * 2.6) : 0;
+    var wantPout = (nowS < F.poutUntil && !active) ? 1 : (F.sulk > 0.25 && !active ? F.sulk * 0.72 : 0);
+    F.pout += (wantPout - F.pout) * kf(8);
+    if (F.nextPostSmileAt && nowS >= F.nextPostSmileAt && mouthSt.gasp <= 0.05) {
+      F.nextPostSmileAt = 0;
+      if (!gesture.kind && !F.squeezeActive) startGesture("smile", nowS);
+    }
+    // breathing effort: dancing & arousal build it, afterglow holds gentle chest warmth
+    F.effort = Math.max(F.arousal * 0.42, F.afterglow * 0.28, Math.min(1, F.effort + dt * 0.10 * music - F.effort * dt / 7));
     if (F.effort > 0.5 && !F.tiredSaid) { F.tiredSaid = true; danceSay("tired", 1); }
     else if (F.effort < 0.3) F.tiredSaid = false;
-    F.breathPh += dt * (1.55 + 2.4 * F.effort);
-    if (F.effort > 0.55 && nowS > F.nextBreath && sfx.ctx && !document.hidden) {
-      sfx.breath(F.effort);
-      F.nextBreath = nowS + 2.6 - 1.2 * F.effort;
+    F.breathPh += dt * (1.55 + 2.4 * F.effort + 1.1 * F.arousal);
+    if ((F.effort > 0.55 || F.arousal > 0.65) && nowS > F.nextBreath && bodySfx.ctx && !document.hidden) {
+      bodySfx.breath(Math.max(F.effort, F.arousal * 0.85));
+      F.nextBreath = nowS + Math.max(1.05, 2.6 - 1.2 * Math.max(F.effort, F.arousal * 0.75));
     }
     // thigh tension and toe curl
     F.spankT *= Math.exp(-dt * 1.4);
-    F.tension += (Math.max(bootyPhys.dropGain * 0.8, F.spankT) - F.tension) * kf(8);
+    F.tension += (Math.max(bootyPhys.dropGain * 0.8, F.spankT, F.arousal * 0.34) - F.tension) * kf(8);
     if (nowS > F.nextCurl) { F.curlPulse = 0.35; F.nextCurl = nowS + 5 + Math.random() * 9; }
     F.curlPulse *= Math.exp(-dt * 2.2);
-    var curlT = Math.max(F.spankT * 0.9, F.tension * 0.6, F.curlPulse, mouthSt.happy > 0 ? 0.3 : 0);
+    var fastTap = (active && intensity >= 0.68 && bootyPhys.twerkGain > 0.2) ? Math.pow(Math.max(0, Math.sin(bootyPhys.twerkPhase)), 3) * 0.48 * intensity : 0;
+    var curlT = Math.max(F.spankT * 0.9, F.tension * 0.6, F.curlPulse, fastTap, mouthSt.happy > 0 ? 0.3 : 0, F.pet * 0.45);
     F.curl += (curlT - F.curl) * kf(10);
-    // blush builds with teasing and fades slowly
-    if (hover && F.flush < 0.4) F.flush += dt * 0.09;
-    if (music > 0.3 && F.flush < 0.25) F.flush += dt * 0.10;
-    F.flush = Math.max(0, Math.min(1, F.flush - dt / 16));
-    // skin sheen: a highlight sweeping across while dancing, a glossier skin after effort
-    var sheenT = Math.min(1, (music > 0 ? Math.sqrt(music) * 0.95 : 0) +
-      F.effort * 0.45 + bootyPhys.dropGain * 0.35);
-    F.sheen += (sheenT - F.sheen) * kf(sheenT > F.sheen ? 5 : 2.4);
+    // blush builds with teasing, petting, combos, and escalation and fades slowly
+    if (hover && F.flush < 0.4) F.flush += dt * 0.11;
+    if (music > 0.3 && F.flush < 0.28) F.flush += dt * 0.12;
+    if (F.combo > 0 && F.flush < 0.95) F.flush += dt * 0.06 * Math.min(5, F.combo);
+    if (F.spankT > 0.2 && F.flush < 0.92) F.flush += dt * 0.18 * F.spankT;
+    if (F.arousal > 0.30 && F.flush < F.arousal * 0.96) F.flush += dt * 0.18;
+    if (F.afterglow > 0.1 && F.flush < F.afterglow * 0.48) F.flush += dt * 0.12;
+    F.flush = Math.max(0, Math.min(1, F.flush - dt / 26));
+    // skin sheen: a highlight sweeping across while dancing, plus sweat/glow sheen at peak arousal & afterglow
+    var sheenT = Math.min(1, (music > 0 ? Math.sqrt(music) * 0.92 : 0) +
+      F.effort * 0.45 + F.arousal * 0.36 + F.afterglow * 0.28 + bootyPhys.dropGain * 0.35);
+    F.sheen += (sheenT - F.sheen) * kf(sheenT > F.sheen ? 5 : 2.2);
     if (F.sheen > 0.02) F.sheenPh = (F.sheenPh + dt * (0.28 + 0.22 * music)) % 1;
-    // eyes: saccades, cursor tracking, a shy glance after a spank, wider pupils on surprise, beating hearts
+    // eyes: irregular blinks, saccades, cursor tracking, bedroom-eye lock during tease/needy/afterglow
+    var bedroomT = clampNum((hover && F.pnear > 0.38 ? 0.55 : 0) + F.needy * 0.78 + F.afterglow * 0.65 + (F.squeezeActive ? 0.62 : 0), 0, 1);
+    F.bedroomLock += (bedroomT - F.bedroomLock) * kf(4.5);
+    if (!F.nextIdleBlink) F.nextIdleBlink = nowS + 2.2 + Math.random() * 2.5;
+    if (!bootyPhys.blinking && !drag && nowS >= F.nextIdleBlink) {
+      var slowBed = F.bedroomLock > 0.35;
+      triggerBlink(slowBed ? 0.38 : (0.19 + Math.random() * 0.09), true);
+      F.nextIdleBlink = nowS + (Math.random() < 0.16 ? 0.28 : (2.4 + Math.random() * 3.8));
+    }
     var tx, ty;
     if (nowS > F.nextSacc) {
       F.eyeTX = (Math.random() - 0.5) * 0.0070; F.eyeTY = (Math.random() - 0.5) * 0.0045;
@@ -1903,25 +3371,63 @@
       tx = gesture.side * 0.010 * motionHold(gestureAge, 0.14, 0.25, 0.70, 1.22);
       ty = 0;
     }
+    if (nowS < F.dizzyUntil) {
+      tx = Math.cos(nowS * 9.5) * 0.0085;
+      ty = Math.sin(nowS * 9.5) * 0.0055;
+    } else if (nowS < F.watchControlUntil) {
+      tx = F.watchControlDir * 0.0075;
+      ty = -0.003;
+    }
     F.eyeX += (tx * (1 - gazeStill) - F.eyeX) * kf(13);
     F.eyeY += (ty * (1 - gazeStill) - F.eyeY) * kf(13);
     var beat = music > 0.05 ? 0.045 * music * (0.5 + 0.5 * Math.sin(bootyPhys.twerkPhase)) : 0;
-    var eyeT = (mouthSt.gasp > 0 ? 0.20 : 0) + beat;
+    var eyeT = (mouthSt.gasp > 0 || nowS < F.braceUntil ? 0.20 : 0) + beat;
     if (gesture.kind === "surprise") eyeT += 0.17 * motionPulse(gestureAge, 0.08, 0.27, 0.63);
     F.eyeS += (eyeT - F.eyeS) * kf(16);
-    // The pupils lead, then the head catches up. Centered pupils hold contact before the glance away.
+    // The pupils lead, then the head catches up. Bedroom-eye lock holds cursor contact with half-lidded warmth.
     var turning = lookNow && lookAge >= (briefLook ? 0.08 : 0.13);
-    var lookTX = lookNow ? (turning ? F.lookDir * 0.009 : 0) : (hover ? F.pdx * F.pnear * 0.0045 : 0);
-    var lookTY = turning ? -0.004 : 0;
+    var wantCursorLock = hover || F.bedroomLock > 0.3 || (!active && (nowS - F.lastInteractAt > 14 || F.needy > 0.35) && nowS - F.ptrT < 2.2);
+    var lookTX = lookNow ? (turning ? F.lookDir * 0.009 : 0) :
+      (wantCursorLock ? F.pdx * F.pnear * (0.0050 + 0.0018 * F.bedroomLock) : 0);
+    var lookTY = turning ? -0.004 : (F.pet * -0.0055 + (F.bedroomLock > 0.3 && F.pnear > 0.2 ? 0.0015 * F.bedroomLock : 0));
     F.lookX += (lookTX - F.lookX) * kf(turning ? 7 : 4);
     F.lookY += (lookTY - F.lookY) * kf(turning ? 7 : 4);
-    var lidT = lookNow ? 0 : (mouthSt.happy > 0 ? 0.22 : 0) + F.effort * 0.16 + (F.flush > 0.5 ? 0.08 : 0);
+    var lidT = (lookNow || nowS < F.braceUntil) ? 0 : (mouthSt.happy > 0 ? 0.22 : 0) + F.effort * 0.16 + (F.flush > 0.5 ? 0.08 : 0) +
+      F.pet * 0.48 + F.arousal * 0.14 + F.afterglow * 0.15 + F.sleepy * 0.22 + F.bedroomLock * 0.24;
     if (gesture.kind === "smile") lidT = Math.max(lidT, 0.34 * motionHold(gestureAge, 0, 0.15, 0.52, 1.05));
-    F.lid += (lidT - F.lid) * kf(lookNow ? 12 : 3);
-    // The hair follows the turned head with its own lag.
-    hx += F.lookX - F.headAngle * 0.12; hy += F.lookY + F.chin;
+    F.lid += (lidT - F.lid) * kf(lookNow ? 12 : 3.5);
+    // Idle "the Listener" micro-choreography: stretch, humming beat, or impatient cursor peek.
+    if (!active && !drag && !F.squeezeActive && !gesture.kind && nowS >= F.idleHabitUntil) {
+      F.idleHabit = "";
+      if (!F.nextIdleChoreo) F.nextIdleChoreo = nowS + 6 + Math.random() * 6;
+      if (nowS >= F.nextIdleChoreo && !document.hidden) {
+        var modeIdx = F.idleChoreoIdx % 3;
+        F.idleChoreoIdx += 1;
+        F.nextIdleChoreo = nowS + 10 + Math.random() * 6;
+        if (modeIdx === 0) { startGesture("stretch", nowS); }
+        else if (modeIdx === 1) { F.idleHabit = "hum"; F.idleHabitUntil = nowS + 3.4; }
+        else { F.idleHabit = "peek"; F.idleHabitUntil = nowS + 2.6; startGesture("listen", nowS); }
+      }
+    } else if (active || drag || F.squeezeActive) {
+      F.idleHabit = ""; F.idleHabitUntil = 0;
+    }
+    if (nowS >= F.cupListenUntil) {
+      F.cupTiltL *= Math.exp(-dt * 6);
+      F.cupTiltR *= Math.exp(-dt * 6);
+    }
+    if (!hover || F.squeezeActive || active) { F.teaseHoverAt = 0; }
+    var peekBiasX = (F.idleHabit === "peek" && nowS - F.ptrT < 4) ? F.pdx * 0.0045 : 0;
+    var peekBiasY = (F.idleHabit === "peek" && nowS - F.ptrT < 4) ? -0.0025 : 0;
+    var tgtTeaseX = (hover && !F.squeezeActive && F.pnear > 0.35) ? F.pdx * (mouthSt.happy > 0.4 || F.arousal > 0.35 ? 0.0055 : -0.0042) :
+      (!active ? F.edgeBiasX * 0.0032 + peekBiasX : 0);
+    var tgtTeaseY = (hover && !F.squeezeActive && F.pnear > 0.35) ? (F.arousal > 0.4 ? -0.0038 : 0.0025) :
+      (!active ? F.edgeBiasY * 0.0022 + peekBiasY : 0);
+    F.teaseX += (tgtTeaseX - F.teaseX) * kf(4.5);
+    F.teaseY += (tgtTeaseY - F.teaseY) * kf(4.5);
+    // The hair follows the turned head with its own lag + gravity dangle while carried.
+    hx += F.lookX - F.headAngle * 0.12; hy += F.lookY + F.chin + F.carryPull * 0.007;
     var sw = Math.sin(nowS * 1.1) * 0.0006, sw2 = Math.sin(nowS * 1.3 + 1.7) * 0.0006;
-    var vxs = 0.05 * Math.tanh(bootyPhys.vx / 45), vys = 0.04 * Math.tanh(bootyPhys.vy / 60);
+    var vxs = 0.05 * Math.tanh(bootyPhys.vx / 45), vys = 0.04 * Math.tanh(bootyPhys.vy / 60) - F.carryPull * 0.12;
     var aL = -60 * (F.hLx - hx) - 8.0 * F.hLvx - vxs;
     var bL = -60 * (F.hLy - hy) - 8.0 * F.hLvy - vys;
     var aR = -52 * (F.hRx - hx) - 7.5 * F.hRvx - vxs;
@@ -1937,12 +3443,24 @@
     F.laceX = Math.tanh((F.lcx - bootyPhys.x) * 0.22) * 0.012;
     F.laceY = Math.tanh((F.lcy - bootyPhys.y) * 0.22) * 0.012;
     tailLink.flush = F.flush;
+    tailLink.arousal = F.arousal;
+    tailLink.pout = F.pout;
+    tailLink.pet = F.pet;
+    tailLink.heartPulse = F.heartPulse;
+    tailLink.watchDir = nowS < F.watchControlUntil ? F.watchControlDir : 0;
+    tailLink.carryPull = F.carryPull;
     return hover;
   }
 
   function resetFx() {
     var F = fxSt;
     F.effort = F.flush = F.tension = F.spankT = F.sheen = F.curl = F.curlPulse = 0;
+    fxSt.braceUntil = fxSt.watchControlUntil = fxSt.watchControlDir = 0;
+    fxSt.afterglow = fxSt.needy = fxSt.needySaidAt = fxSt.sulk = fxSt.shiver = fxSt.dizzy = fxSt.dizzyUntil = fxSt.carryPull = fxSt.sleepy = 0;
+    fxSt.heartPh = fxSt.heartPulse = fxSt.arcStep = fxSt.arcLastAt = 0;
+    fxSt.skipTimes = [];
+    F.arousal = F.combo = F.lastStrikeAt = F.pet = F.pout = F.poutUntil = F.teaseHoverAt = F.teaseX = F.teaseY = F.nextPostSmileAt = 0;
+    F.lastZone = ""; F.lastSide = 0; F.squeezeActive = false;
     F.sheenPh = 0;
     F.eyeX = F.eyeY = F.eyeS = 0;
     F.lookX = F.lookY = F.lid = 0; F.lcx = F.lcy = F.lvx = F.lvy = F.laceX = F.laceY = 0;
@@ -1957,6 +3475,17 @@
   }
 
   var lyricPlayback = { lecteur: null, musique: null };
+
+  // A .lrc may carry the real title and artist ([ti:] / [ar:]); the filename is only the last resort.
+  function parseLrcMeta(text) {
+    var meta = { title: "", artist: "" };
+    var body = String(text || "");
+    var ti = body.match(/^\s*\[ti:\s*([^\]\r\n]{1,120})\s*\]/im);
+    var ar = body.match(/^\s*\[ar:\s*([^\]\r\n]{1,120})\s*\]/im);
+    if (ti) meta.title = ti[1].trim();
+    if (ar) meta.artist = ar[1].trim();
+    return meta;
+  }
 
   function parseLrc(text) {
     var lines = new Map();
@@ -2022,6 +3551,10 @@
     var local = audio.id === "player-audio";
     var view = local ? "lecteur" : "musique";
     var track = null, request = 0, observedSource = audio.src;
+    boundAudio[view] = audio;
+    ["playing", "pause", "ended", "emptied"].forEach(function (name) {
+      audio.addEventListener(name, function () { onLocalAudio(audio, name); });
+    });
     var lookup = document.createElement("details");
     var summary = document.createElement("summary");
     summary.textContent = "Chercher dans LRCLIB";
@@ -2079,9 +3612,9 @@
     function stillCurrent(source, sequence) {
       return sequence === request && source === audio.src && audio.isConnected && !audio.hidden;
     }
-    function useLyrics(lines, source) {
+    function useLyrics(lines, source, meta) {
       if (!lines.some(function (line) { return line.vowels.length; })) return false;
-      track = { audio: audio, src: source, lines: lines };
+      track = { audio: audio, src: source, lines: lines, title: (meta && meta.title) || "", artist: (meta && meta.artist) || "" };
       var active = activeLyricTrack();
       if (!audio.paused || !active || active.audio === audio) select();
       feedback.textContent = " Paroles chargées.";
@@ -2111,7 +3644,7 @@
           headers: headers,
           body: JSON.stringify({ title: title.value.trim(), artist: artist.value.trim(), duration: duration })
         });
-        if (stillCurrent(source, sequence) && !useLyrics(parseLrc(data.lrc || ""), source)) {
+        if (stillCurrent(source, sequence) && !useLyrics(parseLrc(data.lrc || ""), source, { title: title.value.trim(), artist: artist.value.trim() })) {
           var message = "Aucune parole horodatée pour cette version.";
           var toast = window.hqToast || window.toast;
           if (typeof toast === "function") {
@@ -2135,9 +3668,10 @@
       search.disabled = false;
       try {
         if (file.size > 256 * 1024) throw new Error();
-        var lines = parseLrc(await file.text());
+        var text = await file.text();
+        var lines = parseLrc(text);
         if (!stillCurrent(source, sequence)) return;
-        if (!useLyrics(lines, source)) throw new Error();
+        if (!useLyrics(lines, source, parseLrcMeta(text))) throw new Error();
       } catch (_) {
         if (sequence === request && source === audio.src) feedback.textContent = " Fichier LRC illisible ou sans paroles horodatées.";
       }
@@ -2160,10 +3694,15 @@
       M.nextBlep = nowS + 14 + Math.random() * 16;
     }
     var talking = nowS < M.talkUntil;
+    M.talkBurst *= Math.exp(-dt * 14);
+    M.talkAccent *= Math.exp(-dt * 10);
     if (talking) {
       M.talkPh += dt * (8 + 3 * Math.sin(nowS * 1.7));
-      var syl = Math.abs(Math.sin(M.talkPh)) * (0.6 + 0.4 * Math.abs(Math.sin(M.talkPh * 0.37)));
-      tOpen = 0.16 + 0.55 * syl; tSmile = 0.18; tWide = 0.82 - 0.22 * syl; want = 1;
+      var syl = Math.abs(Math.sin(M.talkPh)) * (0.55 + 0.45 * Math.abs(Math.sin(M.talkPh * 0.37)));
+      var burst = Math.max(syl, M.talkBurst);
+      tOpen = 0.14 + 0.58 * burst; tSmile = 0.18 + 0.12 * M.talkAccent; tWide = 0.84 - 0.24 * burst; want = 1;
+    } else if (fxSt.idleHabit === "hum") {
+      tOpen = 0.11 + 0.09 * (0.5 + 0.5 * Math.sin(nowS * 7.5)); tSmile = 0.42; tWide = 0.68; want = 0.85;
     } else if (singing && !track) {
       var beat = 0.5 + 0.5 * Math.sin(bootyPhys.twerkPhase - 0.4);
       tOpen = 0.10 + 0.50 * beat * gain; tSmile = 0.5; tWide = 0.95 - 0.30 * beat * gain; want = 0.9 * gain;
@@ -2176,7 +3715,14 @@
       if (bootyPhys.coil > 0.3 && M.gasp <= 0) { tOpen = Math.max(tOpen, 0.20); tWide = 0.70; want = 1; }
       if (nowS < fxSt.lookUntil && M.gasp <= 0) { tSmile = Math.max(tSmile, 0.6); want = Math.max(want, 0.7); }
       if (M.gasp > 0) { tOpen = 0.9; tWide = 0.5; tSmile = -0.15; want = 1; }
-      else if (M.flustered > 0) { tSmile = 0.40; tOpen = 0.13 + 0.05 * Math.sin(nowS * 9); tWide = 0.60; want = 1; }
+      else if (fxSt.pout > 0.15) { tSmile = -0.35; tOpen = 0.04; tWide = 0.72; want = 0.85; }
+      else if (M.flustered > 0 || fxSt.arousal > 0.55) {
+        var ar = fxSt.arousal;
+        tSmile = 0.42 + 0.16 * ar;
+        tOpen = Math.max(0.13 + 0.10 * ar + 0.05 * Math.sin(nowS * 9), 0);
+        tWide = 0.60; want = 1;
+      }
+      else if (fxSt.pet > 0.25) { tSmile = Math.max(tSmile, 0.82); tOpen = Math.max(tOpen, 0.05); want = 1; }
       else if (M.happy > 0) { tSmile = 0.85; tOpen = Math.max(tOpen * 0.5, 0.06); want = 1; }
       if (nowS >= fxSt.lookUntil && nowS < M.blepUntil && M.gasp <= 0) { tTongue = 1; tOpen = Math.max(tOpen, 0.12); tSmile = 0.75; tWide = 0.85; want = 1; }
       if (gesture.kind === "smile" && Math.abs(fxSt.smirk) > 0.02 && M.gasp <= 0) {
@@ -2220,6 +3766,50 @@
 
   var FIG8_CUT = 4, FIG8_LAND = 4.24, FIG8_REVERSE = 5.24, FIG8_END = 9.24;
 
+  // Couple soft glute mass to a moving hip anchor with viscoelastic damping, gentle downward-sag
+  // looseness, weak cross-cleft pull from the opposite cheek, and volume-preserving outward flare.
+  function stepCheekSpring(st, posX, velX, posY, velY, ax, ay, kBase, damp, otherRelX, otherRelY, h) {
+    var dx = st[posX] - ax, dy = st[posY] - ay;
+    var r2 = Math.min(140, dx * dx + dy * dy);
+    // Downward sag (+dy) stretches slightly looser than upward lift (-dy) for heavy flesh drop.
+    var ky = dy > 0 ? kBase * 0.88 : kBase * 1.04;
+    var hard = 1 + 0.018 * r2;
+    var cross = 16;
+    st[velX] += (-kBase * hard * dx + cross * (otherRelX - dx) - damp * st[velX]) * h;
+    st[velY] += (-ky * hard * dy + cross * 0.45 * (otherRelY - dy) - damp * 0.94 * st[velY]) * h;
+    st[posX] += st[velX] * h;
+    st[posY] += st[velY] * h;
+  }
+
+  function finishCheekOutput(relX, relY, hipLagX, hipLagY, side, gain, reach) {
+    // Downward soft-tissue sag/impact pushes flesh outward away from the midline cleft (-/+ side).
+    var flareX = side * (Math.max(0, relY) * 0.34 - Math.max(0, -relY) * 0.14);
+    return [
+      Math.tanh((relX + hipLagX + flareX) * gain) * reach,
+      Math.tanh((relY + hipLagY) * gain) * reach
+    ];
+  }
+
+  function triggerFleshWave(amp, withRipple) {
+    if (amp <= 0) return;
+    if (amp > bootyPhys.wave || bootyPhys.waveT > 0.14) {
+      bootyPhys.wave = Math.min(1.35, Math.max(bootyPhys.wave * 0.55, amp));
+      bootyPhys.waveT = 0;
+    }
+    if (withRipple && (amp > bootyPhys.ripple || bootyPhys.rippleTime > 0.12)) {
+      bootyPhys.ripple = Math.min(1.15, Math.max(bootyPhys.ripple * 0.45, amp));
+      bootyPhys.rippleTime = 0;
+    }
+  }
+
+  function triggerHitFreeze(durationSec, impulse, nowS) {
+    if (durationSec <= 0 || bootyPhys.freezeT > 0.02 || (nowS - bootyPhys.lastFreezeAt) < 2.4) return;
+    bootyPhys.freezeT = durationSec;
+    bootyPhys.lastFreezeAt = nowS;
+    // Brief pelvic lock lets the cheeks carry through smoothly on their own spring inertia.
+    triggerFleshWave(Math.min(0.85, 0.45 * (impulse || 1)), false);
+  }
+
   function stepBooty(ts) {
     bootyPhys.raf = 0;
     if (!motionReady()) return;
@@ -2233,18 +3823,38 @@
     bootyPhys.lastTs = ts;
     var nowP = ts / 1000;
     if ((playback.playing || drag || pinching) && (gesture.kind === "curl" || gesture.kind === "stretch")) gesture.kind = "";
+    // Keep the identity clock real: stability is measured from when she first saw this song, not from the first
+    // time she wanted to talk. One read a second is enough and keeps the visible "elle écoute" label current.
+    if (!songSeenAt || ts - songSeenAt >= 1000) { songSeenAt = ts; currentSong(); refreshConceal(); }
+    flushSpeech();
     stepGesture(nowP, dt);
     var k = 220;   // snappy jiggle frequency
     var d = 5.2;   // natural multi-bounce wobble without over-stretching
-    var ax = -k * bootyPhys.x - d * bootyPhys.vx;
-    var ay = -k * bootyPhys.y - d * bootyPhys.vy;
-    var intensity = Number.isFinite(playback.intensity) ? playback.intensity : 0.78;
-    var vol = Number.isFinite(playback.volume) ? playback.volume : 1.0;
-    var playing = onMusiquePage() && playback.playing;
+    var ax = 0, ay = 0;   // driving forces; the springs are added per substep below
+    var localEl = localAudio();
+    var playing = (onMusiquePage() && playback.playing) || !!localEl;
     var activeMusic = playing && available && !drag && !pinching && gesture.kind !== "listen";
-    var speed = parseFloat(wave.style.getPropertyValue("--wave-speed")) || 1.25;
-    var tempoScale = intensity >= 0.95 ? 0.72 : (intensity < 0.60 ? 1.25 : 1.0);
-    var beatSec = Math.max(0.32, Math.min(0.82, speed * 0.5 * tempoScale));
+    syncBeatKey(localEl);
+    var songT = songTime(localEl);
+    var heard = activeMusic && localEl ? hearStep(localEl, songT) : false;
+    var intensity = localEl ? hear.intensity : (Number.isFinite(playback.intensity) ? playback.intensity : 0.78);
+    var vol = localEl ? (localEl.muted ? 0.18 : Math.max(0.18, Math.min(1.18, 0.25 + localEl.volume * 0.93)))
+      : (Number.isFinite(playback.volume) ? playback.volume : 1.0);
+    var crossed = activeMusic ? Beat.stepClock(beatClock, dt, songT) : 0;
+    var beatSec = beatClock.beatSec;
+    var beatsNow = beatClock.beats;
+    var gridDrops = !!(beatGrid && Array.isArray(beatGrid.drops) && beatGrid.drops.length);
+    if (beatClock.snapped) {
+      // A seek or a fresh lock moved the count: restart the phrase on the next bar of the new count.
+      bootyPhys.phUntil = Beat.nextBar(beatsNow, 4);
+      bootyPhys.dropTimer = 0;
+      updateBeatCss(true);
+    }
+    if (crossed) {
+      var beatIndex = Math.floor(beatsNow);
+      updateBeatCss(beatIndex % 8 === 0);   // re-seat the halo bars on the clock every two bars
+      onHaloBeat(beatIndex);
+    }
     var dancing = danceWrap.classList.contains("is-dancing");
     var poseAvailable = !dancing && !danceWrap.classList.contains("is-react");
     var twBefore = bootyPhys.twerkGain;
@@ -2258,6 +3868,9 @@
     // Anticipation: before the dance (or a drop) she coils, then releases; when it stops she overshoots and settles.
     if (playing && !wasPlaying) {
       bootyPhys.settleUntil = 0;
+      bootyPhys.freezeT = 0;
+      bootyPhys.freezeEnv = 0;
+      bootyPhys.lastDoubleBar = -1;
       bootyPhys.nextAccentCombo = "ripple";
       bootyPhys.fig8Beat = 0;
       bootyPhys.fig8Direction = 1;
@@ -2267,13 +3880,14 @@
       }
       bootyPhys.danceSince = ts / 1000;
       if (danceGenLeft() < 6) danceGenFetch(false);
-      bootyPhys.phKind = 0; bootyPhys.phCount = 0; bootyPhys.phUntil = ts / 1000 + 3 + Math.random() * 2;
+      bootyPhys.phKind = 0; bootyPhys.phCount = 0; bootyPhys.phUntil = Beat.nextBar(beatsNow, 5);
     }
     bootyPhys.prevPlaying = playing;
     var accent = 0;
     var finishedRoll = false;
     if (!playing && wasPlaying) {
       bootyPhys.settleUntil = ts / 1000 + 0.55;
+      bootyPhys.freezeT = 0;
       if (!drag && !pinching && bootyPhys.coilT === 0 && twBefore * bootyPhys.phAmp > 0.45) {
         bootyPhys.vy += 10;
         accent = -0.45;
@@ -2284,113 +3898,174 @@
       fxSt.lookUntil = fxSt.glanceFrom = fxSt.glanceUntil = 0;
     }
     if (bootyPhys.twerkGain > 0.005) {
-      // Normal, slow roll, burst, look-back, or a figure eight with a direction change.
+      // Normal, slow roll, burst, look-back tease, figure eight, or asymmetric cheek isolations.
       var slow = bootyPhys.phKind === 1;
       var lookDue = bootyPhys.phKind !== 3 && (bootyPhys.phCount + 1) % 3 === 0;
-      if (activeMusic && poseAvailable && nowP >= bootyPhys.phUntil && bootyPhys.dropAge < 0 && bootyPhys.coilT === 0) {
+      // Phrases change on bar lines of the shared clock; phUntil is a beat count, not a time.
+      if (activeMusic && poseAvailable && beatsNow >= bootyPhys.phUntil && bootyPhys.dropAge < 0 && bootyPhys.coilT === 0) {
         if (slow && !bootyPhys.holdSide) {
           bootyPhys.holdSide = bootyPhys.rollSide;
-          bootyPhys.phUntil = nowP + beatSec * 0.5;
-          startLook(nowP, bootyPhys.phUntil, bootyPhys.holdSide);
+          bootyPhys.phUntil = beatsNow + 0.5;
+          startLook(nowP, nowP + beatSec * 0.5, bootyPhys.holdSide);
         } else {
+          var wasLook = bootyPhys.phKind === 3;
           var heldSide = bootyPhys.holdSide;
           bootyPhys.holdSide = 0;
           if (heldSide) {
             bootyPhys.vx -= heldSide * 12 * vol;
             finishedRoll = true;
+          } else if (wasLook) {
+            bootyPhys.vy -= 14 * vol;
+            triggerFleshWave(0.54 * vol, false);
           }
           bootyPhys.rollSide *= -1;
           bootyPhys.phCount += 1;
-          var rr = Math.random(), hi = intensity >= 0.8;
+          var rr = Math.random(), hi = intensity >= 0.76;
           if (heldSide) {
-            bootyPhys.phKind = 0; bootyPhys.phUntil = nowP + 4 + Math.random() * 3;
+            bootyPhys.phKind = 0; bootyPhys.phUntil = Beat.nextBar(beatsNow, 4 + Math.random() * 4);
           } else if (lookDue && bootyPhys.twerkGain > 0.8) {
-            bootyPhys.phKind = 3; bootyPhys.phUntil = nowP + 1.4 + Math.random() * 0.4;
-            startLook(nowP, bootyPhys.phUntil);
+            bootyPhys.phKind = 3; bootyPhys.phUntil = Math.ceil(beatsNow / 2 - 1e-6) * 2 + 4;
+            startLook(nowP, nowP + (bootyPhys.phUntil - beatsNow) * beatSec);
             danceSay("look", 0.7);
-          } else if (bootyPhys.phCount % 4 === 1 && intensity >= 0.65 && intensity < 0.98 &&
+          } else if (bootyPhys.phCount % 4 === 1 && intensity >= 0.58 && intensity < 0.98 &&
               bootyPhys.dropTimer <= 0) {
             bootyPhys.phKind = 4;
-            bootyPhys.phUntil = nowP + 10 * beatSec;
+            bootyPhys.phUntil = Beat.nextBar(beatsNow, 8);
             bootyPhys.fig8Beat = 0;
-          } else if (rr < (hi ? 0.4 : 0.25) && bootyPhys.phKind !== 2) {
-            bootyPhys.phKind = 2; bootyPhys.phUntil = nowP + 2.5 + Math.random() * 2.5;
+          } else if (rr < (hi ? 0.34 : 0.22) && bootyPhys.phKind !== 2) {
+            bootyPhys.phKind = 2; bootyPhys.phUntil = Beat.nextBar(beatsNow, 3 + Math.random() * 4);
             danceSay("fast", 0.5);
-          } else if (rr < 0.6 && bootyPhys.phKind !== 1) {
-            bootyPhys.phKind = 1; bootyPhys.phUntil = nowP + 3 + Math.random() * 3;
+          } else if (rr < (hi ? 0.62 : 0.46) && bootyPhys.phKind !== 5) {
+            bootyPhys.phKind = 5; bootyPhys.phUntil = Beat.nextBar(beatsNow, 4 + Math.random() * 3);
+          } else if (rr < 0.80 && bootyPhys.phKind !== 1) {
+            bootyPhys.phKind = 1; bootyPhys.phUntil = Beat.nextBar(beatsNow, 4 + Math.random() * 4);
             danceSay("slow", 0.5);
           } else {
-            bootyPhys.phKind = 0; bootyPhys.phUntil = nowP + 4 + Math.random() * 4;
+            bootyPhys.phKind = 0; bootyPhys.phUntil = Beat.nextBar(beatsNow, 4 + Math.random() * 5);
           }
         }
       }
-      var phRateT = bootyPhys.phKind === 1 ? 0.5 : (bootyPhys.phKind === 2 ? 1.5 : 1);
+      // Half time, normal, or double time when the beat is slow enough for it to read: always whole multiples.
+      var phRateT = (bootyPhys.phKind === 1 || bootyPhys.phKind === 3) ? 0.5 : (bootyPhys.phKind === 2 && beatSec >= 0.6 ? 2 : 1);
       bootyPhys.phRate += (phRateT - bootyPhys.phRate) * Math.min(1, dt * 4);
       var prevPhase = bootyPhys.twerkPhase;
-      if (activeMusic && bootyPhys.phKind !== 3 && !bootyPhys.holdSide && bootyPhys.coilT === 0 && bootyPhys.dropAge < 0) {
+      if (activeMusic && !bootyPhys.holdSide && bootyPhys.coilT === 0 && bootyPhys.dropAge < 0) {
         bootyPhys.twerkPhase = (prevPhase + dt * ((2 * Math.PI) / beatSec) * bootyPhys.phRate) % (Math.PI * 4);
+        if (Math.abs(bootyPhys.phRate - phRateT) < 0.03) {
+          // Phase-lock the bounce to the shared clock, never more than a third faster or slower than the beat.
+          var perr = Beat.phaseError(bootyPhys.twerkPhase - BOUNCE_LEAD, beatsNow, phRateT);
+          var maxCorr = dt * (2 * Math.PI / beatSec) * 0.35;
+          bootyPhys.twerkPhase += Math.max(-maxCorr, Math.min(maxCorr, perr * Math.min(1, dt * 5)));
+          bootyPhys.twerkPhase = ((bootyPhys.twerkPhase % (Math.PI * 4)) + Math.PI * 4) % (Math.PI * 4);
+        }
       }
       if (Math.floor(prevPhase / (Math.PI * 2)) !== Math.floor(bootyPhys.twerkPhase / (Math.PI * 2))) {
         bootyPhys.beatWraps += 1;
         tailLink.beat += 1;
         if (bootyPhys.twerkGain > 0.5) {
-          // A twerk peak sends a (smaller) ripple out through the cheeks toward the thighs.
-          bootyPhys.wave = Math.max(bootyPhys.wave, (0.35 + intensity * 0.25) * vol);
-          bootyPhys.waveT = 0;
+          triggerFleshWave((0.24 + intensity * 0.16) * vol, false);
         }
-        if (intensity >= 0.68 && bootyPhys.phKind !== 4 && bootyPhys.dropTimer <= 0 && (bootyPhys.beatWraps % 14) === 0) {
-          bootyPhys.dropTimer = 3.2;
+      }
+      if (activeMusic) {
+        var beatNear = Math.round(beatsNow);
+        var beatInBar = ((beatNear % 4) + 4) % 4;
+        // Every 8 bars of a lively track with no known drops, arm one; it fires so the hit lands on a bar line.
+        if (crossed && !gridDrops && !heard && intensity >= 0.68 && bootyPhys.phKind !== 4 && bootyPhys.dropTimer <= 0 &&
+            ((Math.floor(beatsNow) % 32) + 32) % 32 === 28) {
+          bootyPhys.dropTimer = beatSec * 4.5;
         }
-        if (bootyPhys.phKind !== 1 && bootyPhys.phKind !== 4 && intensity >= 0.65 &&
-            bootyPhys.dropTimer <= 0 && bootyPhys.dropGain < 0.5 && Math.random() < (0.28 + intensity * 0.14)) {
-          var pop = (0.75 + intensity * 0.55) * vol * (dancing ? 1.25 : 1.0);
+        // Accents: on the onsets she hears when she can hear them, else weighted to the downbeat and the backbeat.
+        var popNow = false;
+        if (heard) {
+          var nearBeat = Math.abs(beatsNow - beatNear) < 0.15;
+          popNow = hear.onset > 0.35 && nearBeat && Math.random() < 0.35 + hear.onset * 0.5;
+        } else if (crossed) {
+          popNow = Math.random() < (beatInBar === 0 ? 0.5 : (beatInBar === 2 ? 0.35 : 0.12)) * (0.6 + intensity * 0.4);
+        }
+        if (popNow && beatNear !== bootyPhys.lastPopBeat && bootyPhys.phKind !== 1 && bootyPhys.phKind !== 3 &&
+            bootyPhys.phKind !== 4 && intensity >= 0.62 && bootyPhys.dropTimer <= 0 && bootyPhys.dropGain < 0.5) {
+          bootyPhys.lastPopBeat = beatNear;
+          var pop = (0.75 + intensity * 0.55) * vol * (dancing ? 1.25 : 1.0) * (beatInBar === 0 ? 1.15 : 1);
           bootyPhys.vy -= (30 + Math.random() * 18) * pop;
           bootyPhys.vx += (Math.random() < 0.5 ? 1 : -1) * (16 + Math.random() * 12) * pop;
+          triggerFleshWave(0.42 * pop, false);
+          if ((beatInBar === 1 || beatInBar === 3) && intensity >= 0.76 && Math.random() < 0.18) {
+            triggerHitFreeze(Math.min(0.18, beatSec * 0.34), pop, nowP);
+          }
         }
       }
     }
 
-    var holding = bootyPhys.phKind === 3 || bootyPhys.holdSide !== 0;
-    var phAmpT = holding ? 0 : (bootyPhys.phKind === 1 ? 1.12 : 1);
+    var hardHold = bootyPhys.holdSide !== 0;
+    var lookHold = bootyPhys.phKind === 3;
+    if (!activeMusic || hardHold || !poseAvailable || bootyPhys.dropAge >= 0) bootyPhys.freezeT = 0;
+    else if (bootyPhys.freezeT > 0) bootyPhys.freezeT = Math.max(0, bootyPhys.freezeT - dt);
+    bootyPhys.freezeEnv += ((bootyPhys.freezeT > 0 ? 1 : 0) - bootyPhys.freezeEnv) * Math.min(1, dt * 26);
+    var pelvisFreezeMul = 1 - 0.88 * bootyPhys.freezeEnv;
+    var phAmpT = hardHold ? 0 : (bootyPhys.phKind === 1 ? 1.12 : (lookHold ? 0.64 : 1));
     if (activeMusic || bootyPhys.twerkGain === 0) {
-      bootyPhys.phAmp += (phAmpT - bootyPhys.phAmp) * (1 - Math.exp(-dt * (holding ? 12 : 6)));
+      bootyPhys.phAmp += (phAmpT - bootyPhys.phAmp) * (1 - Math.exp(-dt * (hardHold ? 12 : 6)));
     }
     var danceGain = bootyPhys.twerkGain * bootyPhys.phAmp;
     // Evaluate two copies of the roll 75 ms apart. Blend the lead when the phrase changes.
     var phase = bootyPhys.twerkPhase;
     var hipLag = (2 * Math.PI / beatSec) * bootyPhys.phRate * 0.075;
     bootyPhys.rollLead += (bootyPhys.rollSide - bootyPhys.rollLead) * (1 - Math.exp(-dt * 14));
-    bootyPhys.slowRoll += ((bootyPhys.phKind === 1 ? 1 : 0) - bootyPhys.slowRoll) * (1 - Math.exp(-dt * 10));
+    bootyPhys.slowRoll += ((bootyPhys.phKind === 1 ? 1 : (lookHold ? 0.78 : 0)) - bootyPhys.slowRoll) * (1 - Math.exp(-dt * 10));
+    bootyPhys.isoWeight += ((bootyPhys.phKind === 5 ? 1 : 0) - bootyPhys.isoWeight) * (1 - Math.exp(-dt * 10));
     var leftLag = hipLag * (0.5 - 0.5 * bootyPhys.rollLead);
     var rightLag = hipLag * (0.5 + 0.5 * bootyPhys.rollLead);
-    var plant = activeMusic ? bootyPhys.holdSide : 0;
-    bootyPhys.hipWeight += (plant - bootyPhys.hipWeight) * (1 - Math.exp(-dt * 22));
-    // Settle quickly into the hold and after the stop. Leave the tail springs free to follow through.
-    var settling = holding ? 12 : (ts / 1000 < bootyPhys.settleUntil ? 8 : 0);
-    ax -= settling * bootyPhys.vx;
-    ay -= settling * bootyPhys.vy;
+    var isoSide = ((Math.floor(beatsNow / 2) % 2) === 0 ? 1 : -1) * bootyPhys.rollSide;
+    var isoPlant = activeMusic && bootyPhys.phKind === 5 ? isoSide * 0.42 * bootyPhys.isoWeight : 0;
+    var plant = activeMusic ? (bootyPhys.holdSide || isoPlant) : 0;
+    bootyPhys.hipWeight += (plant - bootyPhys.hipWeight) * (1 - Math.exp(-dt * 20));
+    // Settle quickly into the hold/freeze and after the stop while keeping cheeks free.
+    var settling = hardHold ? 12 : (bootyPhys.freezeEnv > 0.1 ? 10 * bootyPhys.freezeEnv : (ts / 1000 < bootyPhys.settleUntil ? 8 : 0));
 
     if (bootyPhys.dropTimer > 0 && activeMusic && bootyPhys.phKind !== 1) {
       bootyPhys.dropTimer = Math.max(0, bootyPhys.dropTimer - dt);
     } else if (!activeMusic) {
       bootyPhys.dropTimer = 0;
     }
-    var progDrop = false;
-    if (activeMusic && intensity >= 0.70 && playback.durationMs > 30000) {
-      var frac = (playback.progressMs + (Date.now() - playback.progressAt)) / playback.durationMs;
-      progDrop = (frac >= 0.25 && frac <= 0.32) || (frac >= 0.53 && frac <= 0.61) || (frac >= 0.79 && frac <= 0.86);
+    // A drop's first hit lands one coil (0.42 beat) plus 0.115 s after it starts: start it that far before the target.
+    var dropLead = beatSec * 0.42 + 0.115;
+    var toBarSec = Beat.toBar(beatsNow) * beatSec;
+    var barDue = toBarSec <= dropLead + 0.02 && toBarSec > dropLead - 0.06;
+    // Real drops first: the stored grid's, then the ones she hears; the song-position guess is the last resort.
+    var gridDue = false;
+    if (activeMusic && gridDrops && Number.isFinite(songT)) {
+      for (var gd = 0; gd < beatGrid.drops.length; gd += 1) {
+        var dropIn = beatGrid.drops[gd] - songT;
+        if (dropIn <= dropLead + 0.02 && dropIn > dropLead - 0.08 && beatGrid.drops[gd] !== bootyPhys.lastGridDrop) {
+          gridDue = true;
+          bootyPhys.lastGridDropPending = beatGrid.drops[gd];
+          break;
+        }
+      }
     }
-    var wantDrop = activeMusic && (finishedRoll || bootyPhys.dropTimer > 0 || progDrop);
+    var liveDrop = heard && hear.drop && !gridDrops;
+    var progDrop = false, progWin = 0;
+    var songMs = localEl ? localEl.duration * 1000 : playback.durationMs;
+    if (activeMusic && !gridDrops && !heard && intensity >= 0.70 && songMs > 30000 && Number.isFinite(songT)) {
+      var frac = songT * 1000 / songMs;
+      progWin = frac >= 0.25 && frac <= 0.32 ? 1 : (frac >= 0.53 && frac <= 0.61 ? 2 : (frac >= 0.79 && frac <= 0.86 ? 3 : 0));
+      progDrop = progWin > 0 && progWin !== bootyPhys.progWinDone && barDue;
+    }
+    var realDrop = gridDue || liveDrop;
+    var wantDrop = activeMusic && (finishedRoll || (bootyPhys.dropTimer > 0 && barDue) || progDrop || realDrop);
     if (!wantDrop) bootyPhys.prevDrop = false;
-    if (!activeMusic || holding) {
+    if (!activeMusic || hardHold) {
       if (bootyPhys.coilT > 0 && bootyPhys.coilKind === "drop") bootyPhys.prevDrop = false;
       bootyPhys.coilT = 0;
     }
-    if (wantDrop && poseAvailable && !holding && bootyPhys.phKind !== 1 && bootyPhys.phKind !== 4 &&
+    if (wantDrop && poseAvailable && !hardHold && (realDrop || (bootyPhys.phKind !== 1 && bootyPhys.phKind !== 3 && bootyPhys.phKind !== 4)) &&
         (!bootyPhys.prevDrop || finishedRoll) && bootyPhys.coilT === 0 && bootyPhys.dropAge < 0) {
       bootyPhys.coilKind = "drop";
       bootyPhys.coilT = beatSec * 0.42;
       bootyPhys.prevDrop = true;
+      bootyPhys.dropTimer = 0;
+      if (progDrop) bootyPhys.progWinDone = progWin;
+      if (gridDue) bootyPhys.lastGridDrop = bootyPhys.lastGridDropPending;
       bootyPhys.comboSide = finishedRoll ? -bootyPhys.rollSide : bootyPhys.rollSide;
       if (finishedRoll) {
         bootyPhys.comboKind = "fakeout";
@@ -2416,7 +4091,7 @@
         } else {
           accent = 0.4;
           bootyPhys.vy -= 22;
-          if (sfx.ctx) sfx.breath(0.7);
+          if (bodySfx.ctx) bodySfx.breath(0.7);
           danceSay("start", 0.9);
         }
       }
@@ -2447,10 +4122,11 @@
         dropSide += landing * move.side * comboSide * power * fade;
         if (activeMusic && !cancelled && priorAge < offset + impact && age >= offset + impact) {
           accent = Math.min(1, vol * power);
+          triggerFleshWave(Math.min(1.1, 0.85 * vol * power), true);
           if (comboKind !== "single") comboHit = move;
           else spawnFx("\u2726", 4);
           if (hit === 0) {
-            if (sfx.ctx) sfx.breath(0.7);
+            if (bodySfx.ctx) bodySfx.breath(0.7);
             danceSay("drop", 0.8);
           }
         }
@@ -2481,9 +4157,9 @@
     } else if (bootyPhys.dropGain > targetDrop) {
       bootyPhys.dropGain = Math.max(targetDrop, bootyPhys.dropGain - dt * 2.2);
     }
-    var wantFig8 = activeMusic && poseAvailable && !holding && !gesture.kind &&
+    var wantFig8 = activeMusic && poseAvailable && !hardHold && !gesture.kind &&
       bootyPhys.coilT === 0 && bootyPhys.dropAge < 0 && bootyPhys.dropGain < 0.1 &&
-      (bootyPhys.phKind === 4 || (bootyPhys.phKind !== 1 && intensity < 0.65));
+      (bootyPhys.phKind === 4 || (!lookHold && bootyPhys.phKind !== 1 && bootyPhys.phKind !== 5 && intensity < 0.65));
     var fig8Target = wantFig8 ? 1 : 0;
     bootyPhys.fig8Gain += (fig8Target - bootyPhys.fig8Gain) * (1 - Math.exp(-dt * 11));
     var fig8Gain = bootyPhys.fig8Gain * vol;
@@ -2508,27 +4184,57 @@
       crestX = bootyPhys.fig8Direction > 0 ? 630 : 460;
       crestStrength = motionPulse(figBeat, FIG8_CUT + 0.10, FIG8_LAND, FIG8_LAND + 0.34) * Math.min(1, fig8Gain);
     }
-    var groove = (0.65 + intensity * 0.65) * vol * (dancing ? 1.25 : 1.0) * danceGain *
-      (1 - 0.94 * bootyPhys.coil) * (1 - 0.9 * bootyPhys.dropGain) * (1 - bootyPhys.fig8Gain);
-    var bounceWave = Math.sin(phase) * 0.72 + Math.sin(phase * 2 - 0.5) * 0.34;
+    // Loudness against the track's own average: what she hears, else the stored curve, else flat.
+    var energyRel = heard && hear.tracker.meanN > 60 ? hear.rel :
+      (beatGrid && Array.isArray(beatGrid.energy) && Number.isFinite(songT) ? Beat.curveRel(beatGrid.energy, beatGrid.energy_step, songT) : 1);
+    var energyT = activeMusic ? Math.max(0.6, Math.min(1.45, 0.55 + 0.45 * energyRel)) : 1;
+    bootyPhys.energyMul += (energyT - bootyPhys.energyMul) * (1 - Math.exp(-dt * 3));
+    var groove = (0.65 + intensity * 0.65) * vol * bootyPhys.energyMul * (dancing ? 1.25 : 1.0) * danceGain *
+      (1 - fxSt.sulk * 0.45) * (1 - 0.94 * bootyPhys.coil) * (1 - 0.9 * bootyPhys.dropGain) * (1 - bootyPhys.fig8Gain);
+    // Upward pelvic pop (-y in top-down UV) snaps cleanly; downward drop settles heavier without twitching.
+    var sPh = Math.sin(phase);
+    var snapWave = sPh < 0 ? -Math.pow(-sPh, 0.85) : Math.pow(sPh, 1.12);
+    var bounceWave = snapWave * 0.76 + Math.sin(phase * 2 - 0.35) * 0.28;
     var swayWave = Math.cos(phase * 0.5);
-    ay += bounceWave * 520 * groove * (1 - 0.62 * bootyPhys.slowRoll);
-    ax += swayWave * 280 * groove;
+    var barBeat = ((beatsNow % 4) + 4) % 4;
+    var barCycle = Math.floor(beatsNow / 4);
+    var isoScale = 1 - 0.58 * bootyPhys.isoWeight;
+    ay += bounceWave * 520 * groove * pelvisFreezeMul * isoScale * (1 - 0.62 * bootyPhys.slowRoll);
+    ax += swayWave * 280 * groove * pelvisFreezeMul;
     ax += 390 * bootyPhys.hipWeight * vol;
 
-    var wantOrbit = activeMusic && !holding && !wantFig8 && bootyPhys.phKind !== 1 && bootyPhys.dropAge < 0 &&
-      (intensity >= 0.95 || (intensity >= 0.84 && vol >= 0.96));
-    var targetOrbit = wantOrbit ? 1 : 0;
+    // Intra-bar "liquid grind -> double-pop": lively phrases throw a quick twin pop before bar 1.
+    var doublePopDrive = 0;
+    if (activeMusic && danceGain > 0.4 && bootyPhys.dropAge < 0 && bootyPhys.coilT === 0 &&
+        (bootyPhys.phKind === 0 || bootyPhys.phKind === 5) && intensity >= 0.52 &&
+        (barCycle % 2 === 1) && barBeat > 3.25) {
+      var dp1 = (barBeat - 3.50) / 0.10, dp2 = (barBeat - 3.85) / 0.095;
+      doublePopDrive = (Math.exp(-dp1 * dp1) - 1.15 * Math.exp(-dp2 * dp2)) * vol * (0.75 + 0.45 * intensity);
+      ay += doublePopDrive * 460 * pelvisFreezeMul * danceGain;
+      if (barBeat >= 3.50 && bootyPhys.lastDoubleBar !== barCycle) {
+        bootyPhys.lastDoubleBar = barCycle;
+        triggerFleshWave(0.42 * vol, false);
+        if (intensity >= 0.78 && Math.random() < 0.22) {
+          triggerHitFreeze(Math.min(0.18, beatSec * 0.34), vol * 0.85, nowP);
+        }
+      }
+    }
+
+    var wantOrbit = activeMusic && !hardHold && !wantFig8 && bootyPhys.phKind !== 1 && bootyPhys.dropAge < 0 &&
+      (lookHold || intensity >= 0.44);
+    var targetOrbit = wantOrbit ? (lookHold ? 0.68 : (intensity >= 0.84 ? 1 : 0.48)) : 0;
+    if (bootyPhys.phKind === 0 && barBeat > 3.2 && barCycle % 2 === 1) targetOrbit *= 0.25;
     if (bootyPhys.orbitGain < targetOrbit) {
       bootyPhys.orbitGain = Math.min(targetOrbit, bootyPhys.orbitGain + dt * 2.4);
     } else if (bootyPhys.orbitGain > targetOrbit) {
       bootyPhys.orbitGain = Math.max(targetOrbit, bootyPhys.orbitGain - dt * 2.2);
     }
     if (bootyPhys.orbitGain > 0.005) {
-      var orbit = Math.min(1.15, Math.max(0, (intensity - 0.84) / 0.38)) * vol;
-      var ang = (ts * 0.001) * (12.5 + orbit * 4.5);
-      ax += Math.cos(ang) * (240 + orbit * 220) * bootyPhys.orbitGain * danceGain * (1 - bootyPhys.coil);
-      ay += Math.sin(ang) * (220 + orbit * 200) * bootyPhys.orbitGain * danceGain * (1 - bootyPhys.coil);
+      var orbit = Math.min(1.15, Math.max(0.18, (intensity - 0.38) / 0.62)) * vol;
+      var orbitTurn = (lookHold ? 0.5 : 1) * 2 * Math.PI * beatsNow;
+      var orbitMul = bootyPhys.orbitGain * pelvisFreezeMul * danceGain * (1 - bootyPhys.coil);
+      ax += Math.cos(orbitTurn) * (200 + orbit * 220) * orbitMul;
+      ay += Math.sin(orbitTurn) * (185 + orbit * 195) * orbitMul;
     }
 
     if (bootyPhys.ripple > 0.005) {
@@ -2539,39 +4245,86 @@
       bootyPhys.rippleTime = 0;
     }
 
-    bootyPhys.vx += ax * dt;
-    bootyPhys.vy += ay * dt;
-    bootyPhys.x += bootyPhys.vx * dt;
-    bootyPhys.y += bootyPhys.vy * dt;
-
-    // Hip lag: a soft spring behind the body; the cheeks chase it, so a push travels hips -> cheeks as a wave.
-    bootyPhys.hlvx += (-110 * (bootyPhys.hlx - bootyPhys.x) - 10.0 * bootyPhys.hlvx) * dt;
-    bootyPhys.hlvy += (-110 * (bootyPhys.hly - bootyPhys.y) - 10.0 * bootyPhys.hlvy) * dt;
-    bootyPhys.hlx += bootyPhys.hlvx * dt; bootyPhys.hly += bootyPhys.hlvy * dt;
-    // Cheek jiggle: each cheek chases the (lagged) hips with its own spring. Stiffness grows with strain (soft for
-    // small pushes, firm at the limit), damping rises with dance intensity, and the right cheek chases a frame late.
-    var dampMul = 0.8 + 0.7 * (activeMusic ? Math.min(1, intensity) * Math.min(1, bootyPhys.twerkGain) : 0);
-    var dlx = bootyPhys.jlx - bootyPhys.hlx, dly = bootyPhys.jly - bootyPhys.hly;
-    var drx = bootyPhys.jrx - bootyPhys.phx, dry = bootyPhys.jry - bootyPhys.phy;
-    var kl = 300 * bootyPhys.mL, kr = 250 * bootyPhys.mR;
-    bootyPhys.jlvx += (-kl * (1 + 0.02 * Math.min(150, dlx * dlx)) * dlx - 11.0 * dampMul * bootyPhys.jlvx) * dt;
-    bootyPhys.jlvy += (-kl * (1 + 0.02 * Math.min(150, dly * dly)) * dly - 11.0 * dampMul * bootyPhys.jlvy) * dt;
-    bootyPhys.jlx += bootyPhys.jlvx * dt; bootyPhys.jly += bootyPhys.jlvy * dt;
-    bootyPhys.jrvx += (-kr * (1 + 0.02 * Math.min(150, drx * drx)) * drx - 10.0 * dampMul * bootyPhys.jrvx) * dt;
-    bootyPhys.jrvy += (-kr * (1 + 0.02 * Math.min(150, dry * dry)) * dry - 10.0 * dampMul * bootyPhys.jrvy) * dt;
-    bootyPhys.jrx += bootyPhys.jrvx * dt; bootyPhys.jry += bootyPhys.jrvy * dt;
+    // Route kinematic hip moves (figure-8, drops, coils) through the same hip-lag & cheek springs so
+    // every phrase carries weighted viscoelastic flesh follow-through instead of moving rigidly.
+    var coilOff = -bootyPhys.coil * (bootyPhys.coilKind === "drop" ? 0.012 : -0.008);
+    var kinX = dropSide * vol * 0.023 + figX;
+    var kinY = coilOff + dropLanding + figY;
+    var totX = bootyPhys.x + kinX / 0.00352;
+    var totY = bootyPhys.y + kinY / 0.00432;
+    var dampMul = 0.82 + 0.48 * (activeMusic ? Math.min(1, intensity) * Math.min(1, bootyPhys.twerkGain) : 0);
+    var kl = 215 * bootyPhys.mL, kr = 190 * bootyPhys.mR;
+    var dampL = 9.8 * dampMul, dampR = 8.9 * dampMul;
+    // Alternating cheek wave + one-cheek isolation snaps (phKind === 5).
+    var isoMaskL = 1 - 0.72 * bootyPhys.isoWeight * (isoSide < 0 ? 1 : -0.45);
+    var isoMaskR = 1 - 0.72 * bootyPhys.isoWeight * (isoSide > 0 ? 1 : -0.45);
+    var isoSnap = bootyPhys.isoWeight * Math.sin(phase) * groove * 1.15;
+    var altDriveL = ((-Math.sin(phase - leftLag) + Math.sin(phase - rightLag)) * (1.35 + 0.75 * bootyPhys.slowRoll) * groove +
+      doublePopDrive * 0.85 * danceGain) * isoMaskL + (isoSide > 0 ? isoSnap : -0.25 * isoSnap);
+    var altDriveR = ((-Math.sin(phase - rightLag) + Math.sin(phase - leftLag)) * (1.35 + 0.75 * bootyPhys.slowRoll) * groove -
+      doublePopDrive * 0.85 * danceGain) * isoMaskR + (isoSide < 0 ? isoSnap : -0.25 * isoSnap);
+    altDriveL += fig8Gain * (Math.sin(figAng) * 0.95 + figPlant * bootyPhys.fig8Direction * 0.65) + dropSide * vol * 1.05;
+    altDriveR -= fig8Gain * (Math.sin(figAng) * 0.95 + figPlant * bootyPhys.fig8Direction * 0.65) + dropSide * vol * 1.05;
+    var altLat = Math.sin(phase * 0.5) * 0.42 * groove * (0.4 + 0.6 * Math.abs(bootyPhys.rollLead)) +
+      fig8Gain * Math.cos(figAng) * 0.30;
+    var subN = Math.max(1, Math.ceil(dt * 60 - 0.01)), h = dt / subN;
+    // Use the dock's actual travel, including the last delta of a quick drag
+    // that releases before the next animation frame.
+    var dragSpring = BODY_RIG.dragSpring;
+    var dragTargetX = -BODY_RIG.dragTravel[0] * Math.tanh(bootyPhys.dragDX / (BODY_RIG.dragSpeed[0] * dt));
+    var dragTargetY = -BODY_RIG.dragTravel[1] * Math.tanh(bootyPhys.dragDY / (BODY_RIG.dragSpeed[1] * dt));
+    bootyPhys.dragDX = bootyPhys.dragDY = 0;
+    for (var sub = 0; sub < subN; sub += 1) {
+      bootyPhys.dragVX += (dragSpring[0] * (dragTargetX - bootyPhys.dragX) - dragSpring[1] * bootyPhys.dragVX) * h;
+      bootyPhys.dragVY += (dragSpring[0] * (dragTargetY - bootyPhys.dragY) - dragSpring[1] * bootyPhys.dragVY) * h;
+      bootyPhys.dragX += bootyPhys.dragVX * h;
+      bootyPhys.dragY += bootyPhys.dragVY * h;
+      bootyPhys.vx += (ax - k * bootyPhys.x - (d + settling) * bootyPhys.vx) * h;
+      bootyPhys.vy += (ay - k * bootyPhys.y - (d + settling) * bootyPhys.vy) * h;
+      bootyPhys.x += bootyPhys.vx * h;
+      bootyPhys.y += bootyPhys.vy * h;
+      bootyPhys.hlvx += (-110 * (bootyPhys.hlx - totX) - 10.0 * bootyPhys.hlvx) * h;
+      bootyPhys.hlvy += (-110 * (bootyPhys.hly - totY) - 10.0 * bootyPhys.hlvy) * h;
+      bootyPhys.hlx += bootyPhys.hlvx * h; bootyPhys.hly += bootyPhys.hlvy * h;
+      var anchorLx = bootyPhys.hlx + altLat, anchorLy = bootyPhys.hly + altDriveL;
+      var anchorRx = bootyPhys.phx - altLat, anchorRy = bootyPhys.phy + altDriveR;
+      var dlx = bootyPhys.jlx - anchorLx, dly = bootyPhys.jly - anchorLy;
+      var drx = bootyPhys.jrx - anchorRx, dry = bootyPhys.jry - anchorRy;
+      stepCheekSpring(bootyPhys, "jlx", "jlvx", "jly", "jlvy", anchorLx, anchorLy, kl, dampL, drx, dry, h);
+      stepCheekSpring(bootyPhys, "jrx", "jrvx", "jry", "jrvy", anchorRx, anchorRy, kr, dampR, dlx, dly, h);
+      bootyPhys.phx = bootyPhys.hlx; bootyPhys.phy = bootyPhys.hly;
+    }
     bootyPhys.prevX = bootyPhys.x; bootyPhys.prevY = bootyPhys.y;
-    bootyPhys.phx = bootyPhys.hlx; bootyPhys.phy = bootyPhys.hly;
-    bootyPhys.jLx = Math.tanh((bootyPhys.jlx - bootyPhys.x) * 0.22) * 0.013;
-    bootyPhys.jLy = Math.tanh((bootyPhys.jly - bootyPhys.y) * 0.22) * 0.013;
-    bootyPhys.jRx = Math.tanh((bootyPhys.jrx - bootyPhys.x) * 0.22) * 0.013;
-    bootyPhys.jRy = Math.tanh((bootyPhys.jry - bootyPhys.y) * 0.22) * 0.013;
+    // Each cheek's own swing against the hips it hangs from, plus a share of the hips' lag behind the body.
+    var cheekHip = BODY_RIG.cheekHipShare, cheekGain = BODY_RIG.cheekGain, cheekReach = BODY_RIG.cheekReach;
+    var hipLagX = (bootyPhys.hlx - totX) * cheekHip, hipLagY = (bootyPhys.hly - totY) * cheekHip;
+    var outL = finishCheekOutput(bootyPhys.jlx - bootyPhys.hlx, bootyPhys.jly - bootyPhys.hly, hipLagX, hipLagY, -1, cheekGain, cheekReach);
+    var outR = finishCheekOutput(bootyPhys.jrx - bootyPhys.hlx, bootyPhys.jry - bootyPhys.hly, hipLagX, hipLagY, 1, cheekGain, cheekReach);
+    bootyPhys.jLx = outL[0]; bootyPhys.jLy = outL[1];
+    bootyPhys.jRx = outR[0]; bootyPhys.jRy = outR[1];
     if (bootyPhys.wave > 0.01) {
       bootyPhys.waveT += dt;
-      bootyPhys.wave *= Math.exp(-dt * 4.0);
+      bootyPhys.wave *= Math.exp(-dt * 4.2);
     } else {
       bootyPhys.wave = 0;
       bootyPhys.waveT = 0;
+    }
+    var thDt = Math.min(dt, 0.032);
+    var legDrvX = Math.tanh(-bootyPhys.vx * 0.0020) * 0.0025;
+    var legDrvY = Math.tanh(-bootyPhys.vy * 0.0020) * 0.0025 + fxSt.carryPull * 0.004;
+    var thSides = [["thLx", "thLvx", "thLy", "thLvy"], ["thRx", "thRvx", "thRy", "thRvy"]];
+    for (var ti = 0; ti < 2; ti += 1) {
+      var kx = thSides[ti][0], kvx = thSides[ti][1], ky = thSides[ti][2], kvy = thSides[ti][3];
+      if (Math.abs(bootyPhys[kx]) > 0.0001 || Math.abs(bootyPhys[kvx]) > 0.001 ||
+          Math.abs(bootyPhys[ky]) > 0.0001 || Math.abs(bootyPhys[kvy]) > 0.001 ||
+          Math.abs(legDrvX) > 0.0002 || Math.abs(legDrvY) > 0.0002) {
+        bootyPhys[kvx] += (155 * (legDrvX - bootyPhys[kx]) - 6.4 * bootyPhys[kvx]) * thDt;
+        bootyPhys[kvy] += (155 * (legDrvY - bootyPhys[ky]) - 6.4 * bootyPhys[kvy]) * thDt;
+        bootyPhys[kx] = clampNum(bootyPhys[kx] + bootyPhys[kvx] * thDt, -0.009, 0.009);
+        bootyPhys[ky] = clampNum(bootyPhys[ky] + bootyPhys[kvy] * thDt, -0.009, 0.009);
+      } else {
+        bootyPhys[kx] = bootyPhys[ky] = bootyPhys[kvx] = bootyPhys[kvy] = 0;
+      }
     }
 
     if (bootyPhys.blinking) {
@@ -2586,11 +4339,13 @@
     }
 
     var st = fxSt.shoulders / 0.025;
-    var rippleWave = bootyPhys.ripple > 0 ? Math.sin(bootyPhys.rippleTime * 38) * bootyPhys.ripple * 0.011 : 0;
-    var dx = Math.tanh(bootyPhys.x * 0.16) * 0.022 + dropSide * vol * 0.023 + figX;
-    var dy = Math.tanh(bootyPhys.y * 0.18) * 0.024 + rippleWave * 0.6 -
-      bootyPhys.coil * (bootyPhys.coilKind === "drop" ? 0.012 : -0.008) + dropLanding + figY;
-    var sq = Math.tanh(bootyPhys.y * 0.14) * 0.045 + rippleWave * 1.2 - dropLanding * 0.85;
+    var rippleWave = bootyPhys.ripple > 0 ? Math.sin(bootyPhys.rippleTime * 19) * bootyPhys.ripple * 0.008 : 0;
+    var shiverWave = fxSt.shiver > 0.02 ? Math.sin(ts * 0.058) * fxSt.shiver * 0.0022 : 0;
+    var dx = Math.tanh(bootyPhys.x * 0.16) * 0.022 + kinX + bootyPhys.dragX + fxSt.teaseX + shiverWave;
+    var dy = Math.tanh(bootyPhys.y * 0.18) * 0.024 + kinY + bootyPhys.dragY + fxSt.teaseY;
+    // Downward hip drop (bootyPhys.y > 0, dropLanding > 0, figY > 0) widens (sx > 1) and squashes (sy < 1).
+    var sq = -Math.tanh(bootyPhys.y * 0.14) * 0.044 + rippleWave * 0.55 - dropLanding * 0.85 - figY * 1.35 +
+      Math.abs(bootyPhys.spankTilt) * 0.35 - Math.abs(bootyPhys.dent) * 0.025;
     var sx = 1 - sq;
     var sy = 1 + sq;
     var poseGain = danceGain * vol * (1 - 0.85 * bootyPhys.coil) * (1 - 0.85 * bootyPhys.dropGain);
@@ -2598,32 +4353,96 @@
     var weightLift = 0.011 * bootyPhys.hipWeight * vol;
     var liftL = -Math.sin(phase - leftLag) * rollLift - weightLift;
     var liftR = -Math.sin(phase - rightLag) * rollLift + weightLift;
+    bootyPhys.spankTilt = Math.abs(bootyPhys.spankTilt) > 0.001 ? bootyPhys.spankTilt * Math.exp(-dt * 12) : 0;
     // The phased lift sets the height and tilt of a single pelvis. The hip span stays constant.
     var angle = Math.asin((HIP_SPAN_Y + liftR - liftL) / HIP_SPAN) - HIP_ANGLE;
-    angle += Math.tanh(bootyPhys.vx * 0.014) * 0.018 + dropSide * vol * 0.085 +
-      fig8Gain * (0.072 * Math.sin(figAng) + 0.11 * figPlant * bootyPhys.fig8Direction);
+    angle += Math.tanh(bootyPhys.vx * 0.014) * 0.018 + dropSide * vol * 0.085 - bootyPhys.dragX * 1.4 +
+      bootyPhys.spankTilt + fig8Gain * (0.072 * Math.sin(figAng) + 0.11 * figPlant * bootyPhys.fig8Direction);
     var cos = Math.cos(angle), sin = Math.sin(angle);
     var hx = -(dx - figX) * 0.24 + Math.cos(phase * 0.5 + 0.4) * 0.0045 * danceGain * (1 - bootyPhys.fig8Gain);
     var hy = (dy - figY) * 0.22 + Math.sin(phase - 0.5) * 0.0055 * danceGain * (1 - bootyPhys.fig8Gain);
     var mHover = stepFx(dt, ts / 1000, hx, hy, activeMusic, intensity, vol, figPlant * bootyPhys.fig8Gain);
-    hx += fxSt.lookX - fxSt.headAngle * 0.12; hy += fxSt.lookY + fxSt.chin;
+    var talkNod = (ts / 1000 < mouthSt.talkUntil) ? 0.005 * mouthSt.open * Math.sin(mouthSt.talkPh * 0.5) : 0;
+    hx += fxSt.lookX - fxSt.headAngle * 0.12; hy += fxSt.lookY + fxSt.chin + talkNod;
     var breathGain = 1 - 0.7 * Math.min(1, danceGain);
     var breathWave = Math.sin(fxSt.breathPh) * (1 + 0.9 * fxSt.effort) + 0.9 * bootyPhys.coil;
     var pelvisY = dy + (liftL + liftR) * 0.5 + breathWave * 0.0038 * breathGain;
-    var bArch = Math.sin(bootyPhys.twerkPhase - 0.50) * 0.040 * poseGain +
+    var bArch = Math.sin(bootyPhys.twerkPhase - 0.50) * 0.055 * poseGain +
+      Math.tanh(bootyPhys.vy * 0.02) * 0.018 * Math.min(1, vol) +
       Math.sin(figAng * 2.0 - 0.5) * 0.028 * fig8Gain +
       breathWave * 0.024 * breathGain - bootyPhys.coil * 0.04;
-    // Soft-tissue recoil flexes the back around the shared pose.
-    var jiggleGain = 1 - 0.85 * Math.max(bootyPhys.dropGain, Math.abs(bootyPhys.hipWeight));
+    // Soft-tissue recoil stays active across drops & figure-8 moves, easing only on static hip holds.
+    var jiggleGain = 1 - 0.22 * Math.abs(bootyPhys.hipWeight);
     var jigLx = bootyPhys.jLx * jiggleGain, jigRx = bootyPhys.jRx * jiggleGain;
-    var jigLy = bootyPhys.jLy * jiggleGain + dropRebound;
-    var jigRy = bootyPhys.jRy * jiggleGain + dropRebound * 0.85;
+    var jigLy = bootyPhys.jLy * jiggleGain + dropRebound * 0.55;
+    var jigRy = bootyPhys.jRy * jiggleGain + dropRebound * 0.48;
     bArch += (jigLy + jigRy) * 1.1;
-    stepMouth(dt, ts / 1000, mHover, activeMusic && !holding && danceGain > 0.1, Math.min(1, danceGain) * vol, st);
-    bootyPhys.bAs += (bArch - bootyPhys.bAs) * Math.min(1, dt * 14);
+    // Positive roll lowers the right hip in artwork coordinates. Let that side
+    // lead and carry the landing, blending both lag times through center.
+    var rig = BODY_RIG;
+    var loadTarget = Math.tanh(angle / rig.cheekLoadAngle);
+    bootyPhys.cheekLoad += (loadTarget - bootyPhys.cheekLoad) * (1 - Math.exp(-dt * rig.cheekLoadSpeed));
+    var load = bootyPhys.cheekLoad, rightLoad = (1 + load) * 0.5;
+    var lagMin = rig.cheekLagSec[0], lagSpan = rig.cheekLagSec[1] - lagMin;
+    var followL = Math.max(1 - Math.exp(-dt / (lagMin + lagSpan * rightLoad)), Math.min(1, bootyPhys.spankPressL * 24));
+    var followR = Math.max(1 - Math.exp(-dt / (lagMin + lagSpan * (1 - rightLoad))), Math.min(1, bootyPhys.spankPressR * 24));
+    var drive = bootyPhys.cheekDrive;
+    drive[0] += (jigLx - drive[0]) * followL;
+    drive[1] += (jigLy - drive[1]) * followL;
+    drive[2] += (jigRx - drive[2]) * followR;
+    drive[3] += (jigRy - drive[3]) * followR;
+    jigLx = drive[0]; jigLy = drive[1]; jigRx = drive[2]; jigRy = drive[3];
+    var heatDecay = Math.exp(-dt * 0.095);
+    var pressDecay = Math.exp(-dt * 9.0);
+    bootyPhys.spankHeatL = bootyPhys.spankHeatL > 0.004 ? bootyPhys.spankHeatL * heatDecay : 0;
+    bootyPhys.spankHeatR = bootyPhys.spankHeatR > 0.004 ? bootyPhys.spankHeatR * heatDecay : 0;
+    bootyPhys.spankPressL = bootyPhys.spankPressL > 0.0005 ? bootyPhys.spankPressL * pressDecay : 0;
+    bootyPhys.spankPressR = bootyPhys.spankPressR > 0.0005 ? bootyPhys.spankPressR * pressDecay : 0;
+    if (fxSt.squeezeActive) {
+      var sqDt = Math.min(dt, 0.032);
+      var sqTarget = 0.78 + 0.14 * Math.sin(fxSt.breathPh * 1.4);
+      var sqAccel = -145 * (bootyPhys.dent - sqTarget) - 16 * bootyPhys.dentV;
+      bootyPhys.dentV += sqAccel * sqDt;
+      bootyPhys.dent = clampNum(bootyPhys.dent + bootyPhys.dentV * sqDt, -0.55, 1.35);
+      bootyPhys.dentU = fxSt.squeezeU;
+      bootyPhys.dentVpos = fxSt.squeezeV;
+      if (fxSt.squeezeSide < 0) bootyPhys.spankHeatL = Math.max(bootyPhys.spankHeatL, 0.45);
+      else bootyPhys.spankHeatR = Math.max(bootyPhys.spankHeatR, 0.45);
+    } else if (Math.abs(bootyPhys.dent) > 0.002 || Math.abs(bootyPhys.dentV) > 0.02) {
+      var dentDt = Math.min(dt, 0.032);
+      var dentAccel = -235 * bootyPhys.dent - 10.5 * bootyPhys.dentV;
+      bootyPhys.dentV += dentAccel * dentDt;
+      bootyPhys.dent = clampNum(bootyPhys.dent + bootyPhys.dentV * dentDt, -0.55, 1.35);
+    } else {
+      bootyPhys.dent = 0;
+      bootyPhys.dentV = 0;
+    }
+    var landing = rig.cheekPressMax * skinSmooth(rig.cheekLanding, pelvisY);
+    bootyPhys.cheekPress[0] = Math.min(0.11, landing * Math.max(0, -load) + bootyPhys.spankPressL);
+    bootyPhys.cheekPress[1] = Math.min(0.11, landing * Math.max(0, load) + bootyPhys.spankPressR);
+    stepCrestLag(0, jigLx, h, subN);
+    stepCrestLag(1, jigLy, h, subN);
+    stepCrestLag(2, jigRx, h, subN);
+    stepCrestLag(3, jigRy, h, subN);
+    stepMouth(dt, ts / 1000, mHover, activeMusic && !hardHold && danceGain > 0.1, Math.min(1, danceGain) * vol, st);
+    // Supple back: the lower back chases its target on an underdamped spring (it overshoots and settles after a hit),
+    // the mid back chases the lower back on a softer one, and follows the pelvis late, so motion rolls up the spine.
+    var lowerSpring = BODY_RIG.lowerSpring, upperSpring = BODY_RIG.upperSpring;
+    var lagSpring = BODY_RIG.lagSpring, lagTarget = BODY_RIG.lagTarget;
+    bootyPhys.bAv += (-lowerSpring[0] * (bootyPhys.bAs - bArch) - lowerSpring[1] * bootyPhys.bAv) * dt;
+    bootyPhys.bAs += bootyPhys.bAv * dt;
+    bootyPhys.mAv += (-upperSpring[0] * (bootyPhys.mAs - bootyPhys.bAs) - upperSpring[1] * bootyPhys.mAv) * dt;
+    bootyPhys.mAs += bootyPhys.mAv * dt;
+    bootyPhys.spvx += (-lagSpring[0] * (bootyPhys.spx - dx * lagTarget) - lagSpring[1] * bootyPhys.spvx) * dt;
+    bootyPhys.spvy += (-lagSpring[0] * (bootyPhys.spy - pelvisY * lagTarget) - lagSpring[1] * bootyPhys.spvy) * dt;
+    bootyPhys.spx += bootyPhys.spvx * dt;
+    bootyPhys.spy += bootyPhys.spvy * dt;
     bArch = bootyPhys.bAs;
+    // 2.5D forward/back relief: arching or popping pushes hips toward camera with deeper glute relief.
+    var depthTarget = clampNum(-bArch * 0.42 + dropLanding * 1.15 + figY * 0.65 + bootyPhys.freezeEnv * 0.018 * groove, -0.042, 0.062);
+    bootyPhys.depthPush += (depthTarget - bootyPhys.depthPush) * Math.min(1, dt * 18);
     var warped = renderWarp(dx, pelvisY, cos, sin, sx, sy, Math.max(bootyPhys.blink, fxSt.lid), hx, hy, bArch,
-      jigLx, jigLy, jigRx, jigRy, bootyPhys.wave, bootyPhys.waveT, mouthSt, fxSt, crestX, crestStrength);
+      jigLx, jigLy, jigRx, jigRy, bootyPhys.wave, bootyPhys.waveT, mouthSt, fxSt, crestX, crestStrength, bootyPhys.depthPush);
     if (comboHit || trail >= 0) {
       var fxX = warped ? dx : 0, fxY = warped ? pelvisY : 0, fxCos = warped ? cos : 1, fxSin = warped ? sin : 0;
       if (comboHit) {
@@ -2637,11 +4456,16 @@
           fxX, fxY, fxCos, fxSin, -comboSide, "hip-trail", 1);
       }
     }
-    // Forward-transform the tail root using the same pose the shader samples in reverse.
-    var rootX = TAIL_ROOT[0] - PELVIS_PIVOT[0], rootY = TAIL_ROOT[1] - PELVIS_PIVOT[1];
-    tailLink.rx = warped ? dx + (cos - 1) * rootX - sin * rootY : 0;
-    tailLink.ry = warped ? pelvisY + sin * rootX + (cos - 1) * rootY : 0;
-    tailLink.rootAngle = warped ? angle : 0;
+    if (warped) {
+      poseBodyAnchor(tailAnchor);
+      earAnchors.forEach(poseBodyAnchor);
+      tailLink.rx = tailAnchor.x;
+      tailLink.ry = tailAnchor.y;
+      tailLink.rootAngle = tailAnchor.angle;
+    } else {
+      tailLink.rx = tailLink.ry = tailLink.rootAngle = 0;
+      earAnchors.forEach(resetBodyAnchor);
+    }
     tailLink.dx = dx;
     tailLink.dy = dy;
     tailLink.twerk = poseGain;
@@ -2650,19 +4474,22 @@
     tailLink.stretch = st;
     tailLink.blinking = bootyPhys.blinking;
     tailLink.music = activeMusic ? Math.min(1, intensity) * poseGain : 0;
-    tailLink.hx = warped ? hx : 0;
-    tailLink.hy = warped ? hy : 0;
-    tailLink.headAngle = warped ? fxSt.headAngle : 0;
     tailLink.talk = mouthSt.str > 0.3 ? Math.min(1, mouthSt.open * 1.6) : 0;
     tailLink.effort = fxSt.effort;
+    tailLink.strikeSide = fxSt.lastSide * Math.min(1, fxSt.spankT * 1.4);
     tailLink.shy = Math.min(1, mouthSt.flustered / 0.5);
     tailLink.happy = mouthSt.happy > 0 ? 1 : 0;
     tailLink.vx = bootyPhys.vx;
     tailLink.vy = bootyPhys.vy;
     tailLink.pdx = fxSt.pdx;
     tailLink.pnear = fxSt.pnear;
-    tailLink.holding = holding || gesture.kind === "listen" || tailLink.curlPose > 0.02 || bootyPhys.dropAge >= 0 || bootyPhys.dropGain > 0.05 ||
+    tailLink.holding = hardHold || gesture.kind === "listen" || tailLink.curlPose > 0.02 || bootyPhys.dropAge >= 0 || bootyPhys.dropGain > 0.05 ||
       (bootyPhys.coilKind === "drop" && bootyPhys.coilT > 0);
+    tailLink.tailState = fxSt.squeezeActive ? "squeeze" : (fxSt.spankT > 0.35 || bootyPhys.ripple > 0.35) ? "snap" : (tailAnim.perk > 0.15) ? "perk" : "idle";
+    tailLink.talkBurst = mouthSt.talkAccent;
+    tailLink.cupTiltL = fxSt.cupTiltL;
+    tailLink.cupTiltR = fxSt.cupTiltR;
+    tailLink.humBeat = fxSt.idleHabit === "hum" ? 1 : 0;
     tailLink.accent = accent;
     var steady = tailLink.holding || wantFig8 || !!gesture.kind || bootyPhys.phKind === 1;
     bootyPhys.cameraStill += ((steady ? 1 : 0) - bootyPhys.cameraStill) * (1 - Math.exp(-dt * (steady ? 22 : 5)));
@@ -2680,6 +4507,8 @@
 
     var lyricTrack = activeLyricTrack();
     var busy = playing || (lyricTrack && !lyricTrack.audio.paused && !lyricTrack.audio.ended) || drag || pinching || !!gesture.kind ||
+        Math.abs(bootyPhys.dragX) > 0.0005 || Math.abs(bootyPhys.dragY) > 0.0005 ||
+        Math.abs(bootyPhys.dragVX) > 0.015 || Math.abs(bootyPhys.dragVY) > 0.015 ||
         Math.abs(tailAnim.dragX) > 3 || Math.abs(tailAnim.dragY) > 3 ||
         Math.abs(tailAnim.dragVX) > 25 || Math.abs(tailAnim.dragVY) > 25 ||
         Math.abs(bootyPhys.x) > 0.12 || Math.abs(bootyPhys.y) > 0.12 ||
@@ -2690,9 +4519,18 @@
         bootyPhys.coilT > 0 || bootyPhys.wave > 0.01 || Math.abs(bootyPhys.hlx - bootyPhys.x) > 0.1 ||
         Math.abs(bootyPhys.jlx - bootyPhys.x) > 0.1 || Math.abs(bootyPhys.jly - bootyPhys.y) > 0.1 ||
         Math.abs(bootyPhys.jlvx) > 1 || Math.abs(bootyPhys.jlvy) > 1 ||
-        Math.abs(bootyPhys.jrvx) > 1 || Math.abs(bootyPhys.jrvy) > 1;
+        Math.abs(bootyPhys.jrvx) > 1 || Math.abs(bootyPhys.jrvy) > 1 ||
+        Math.abs(bootyPhys.spankTilt) > 0.002 ||
+        Math.abs(bootyPhys.dent) > 0.004 || Math.abs(bootyPhys.dentV) > 0.04 ||
+        Math.abs(bootyPhys.thLx) > 0.0004 || Math.abs(bootyPhys.thRx) > 0.0004 ||
+        Math.abs(bootyPhys.thLvx) > 0.002 || Math.abs(bootyPhys.thRvx) > 0.002 ||
+        bootyPhys.spankPressL > 0.002 || bootyPhys.spankPressR > 0.002 ||
+        fxSt.squeezeActive || fxSt.pet > 0.02 || fxSt.pout > 0.02 || fxSt.shiver > 0.02 ||
+        fxSt.dizzyUntil > (ts / 1000) || fxSt.braceUntil > (ts / 1000) ||
+        Math.abs(fxSt.teaseX) > 0.0004 || Math.abs(fxSt.teaseY) > 0.0004;
+    var crestMoving = bootyPhys.crestLag.some(function (value) { return Math.abs(value) > 0.0005; });
     // Only the slow idle breathing left: 30fps is plenty (saves battery on 120Hz ProMotion).
-    bootyPhys.calm = !busy;
+    bootyPhys.calm = !busy && !crestMoving;
 
     bootyPhys.raf = window.requestAnimationFrame(stepBooty);
   }
@@ -2704,6 +4542,8 @@
       bootyPhys.y = 0;
       bootyPhys.vx = 0;
       bootyPhys.vy = 0;
+      bootyPhys.dragX = bootyPhys.dragY = bootyPhys.dragVX = bootyPhys.dragVY = 0;
+      bootyPhys.dragDX = bootyPhys.dragDY = 0;
       bootyPhys.twerkGain = 0;
       bootyPhys.orbitGain = 0;
       bootyPhys.fig8Gain = 0;
@@ -2714,6 +4554,11 @@
       bootyPhys.hlx = bootyPhys.hly = bootyPhys.hlvx = bootyPhys.hlvy = bootyPhys.phx = bootyPhys.phy = 0;
       bootyPhys.jlx = bootyPhys.jly = bootyPhys.jlvx = bootyPhys.jlvy = 0;
       bootyPhys.jrx = bootyPhys.jry = bootyPhys.jrvx = bootyPhys.jrvy = 0;
+      bootyPhys.crestLag.fill(0);
+      bootyPhys.crestLagV.fill(0);
+      bootyPhys.cheekDrive.fill(0);
+      bootyPhys.cheekPress.fill(0);
+      bootyPhys.cheekLoad = 0;
       bootyPhys.prevX = bootyPhys.prevY = 0;
       bootyPhys.jLx = bootyPhys.jLy = bootyPhys.jRx = bootyPhys.jRy = 0;
       bootyPhys.wave = 0;
@@ -2723,9 +4568,10 @@
       tailLink.rx = tailLink.ry = tailLink.rootAngle = tailLink.dx = tailLink.dy = tailLink.twerk = tailLink.ripple = tailLink.stretch = 0;
       tailLink.blinking = false;
       tailLink.music = 0;
-      tailLink.hx = tailLink.hy = tailLink.talk = 0;
-      tailLink.headAngle = tailLink.curlPose = 0;
+      tailLink.talk = tailLink.curlPose = 0;
+      earAnchors.forEach(resetBodyAnchor);
       tailLink.effort = tailLink.shy = tailLink.happy = tailLink.vx = tailLink.vy = tailLink.pdx = tailLink.pnear = tailLink.accent = 0;
+      tailLink.arousal = tailLink.pout = tailLink.pet = tailLink.strikeSide = tailLink.heartPulse = tailLink.watchDir = tailLink.carryPull = 0;
       tailLink.holding = false;
       bootyPhys.ripple = 0;
       bootyPhys.rippleTime = 0;
@@ -2738,6 +4584,11 @@
       portrait.style.setProperty("--booty-glow", "0");
       resetFx();
       bootyPhys.coilT = bootyPhys.coil = bootyPhys.bAs = bootyPhys.settleUntil = 0;
+      bootyPhys.spankHeatL = bootyPhys.spankHeatR = bootyPhys.spankPressL = bootyPhys.spankPressR = bootyPhys.spankTilt = 0;
+      bootyPhys.dent = bootyPhys.dentV = 0;
+      bootyPhys.thLx = bootyPhys.thLy = bootyPhys.thLvx = bootyPhys.thLvy = 0;
+      bootyPhys.thRx = bootyPhys.thRy = bootyPhys.thRvx = bootyPhys.thRvy = 0;
+      bootyPhys.bAv = bootyPhys.mAs = bootyPhys.mAv = bootyPhys.spx = bootyPhys.spy = bootyPhys.spvx = bootyPhys.spvy = 0;
       bootyPhys.prevPlaying = bootyPhys.prevDrop = false;
       bootyPhys.phKind = 0; bootyPhys.phUntil = 0; bootyPhys.phRate = 1; bootyPhys.phAmp = 1;
       bootyPhys.twerkPhase = bootyPhys.beatWraps = 0;
@@ -2749,6 +4600,8 @@
       bootyPhys.nextAccentCombo = "ripple";
       bootyPhys.rollSide = bootyPhys.rollLead = 1;
       bootyPhys.holdSide = bootyPhys.hipWeight = bootyPhys.slowRoll = bootyPhys.cameraStill = 0;
+      bootyPhys.energyMul = 1;
+      bootyPhys.lastPopBeat = -1;
       updateStage(0, 0, 0, true);
       hideWarpCanvas();
     }
@@ -2765,12 +4618,17 @@
 
   function nudgeBooty(ddx, ddy, dockDX, dockDY) {
     if (!motionReady()) return;
+    var spd = Math.hypot(ddx, ddy);
     tailAnim.dragDX += dockDX;
     tailAnim.dragDY += dockDY;
+    bootyPhys.dragDX += dockDX;
+    bootyPhys.dragDY += dockDY;
     bootyPhys.vx += Math.max(-85, Math.min(85, -ddx * 3.4));
     bootyPhys.vy += Math.max(-85, Math.min(85, -ddy * 3.2));
+    fxSt.carryPull = Math.min(1, fxSt.carryPull + Math.min(0.28, spd * 0.015));
+    if (spd >= 11) fxSt.dizzy = Math.min(1, fxSt.dizzy + Math.min(0.24, (spd - 9) * 0.014));
     ensureBootyRaf();
-    if (Math.hypot(ddx, ddy) > 9) {
+    if (spd > 9) {
       showNsfwBubble();
     }
   }
@@ -2802,34 +4660,289 @@
     }, 3000 + Math.round(Math.random() * 3400));
   }
 
-  function spankBooty(event) {
+  function cheekStrikeSplit(clientX, clientY) {
+    if (!Number.isFinite(clientX)) {
+      var fallbackSide = bootyPhys.spankSwipeSide = -bootyPhys.spankSwipeSide;
+      return {
+        side: fallbackSide,
+        hitL: fallbackSide < 0 ? 1 : 0.28,
+        hitR: fallbackSide > 0 ? 1 : 0.28,
+        uHit: fallbackSide < 0 ? 0.468 : 0.622,
+        vHit: 0.27,
+        pan: fallbackSide * 0.22
+      };
+    }
+    var spR = button.getBoundingClientRect();
+    var uHit = Math.max(0, Math.min(1, (clientX - spR.left) / Math.max(1, spR.width)));
+    var vHit = Number.isFinite(clientY) ? Math.max(0, Math.min(1, (clientY - spR.top) / Math.max(1, spR.height))) : 0.27;
+    var off = (uHit - 0.548) / 0.075;
+    var side = off < 0 ? -1 : 1;
+    var th = Math.tanh(off);
+    return {
+      side: side,
+      hitL: Math.max(0.24, Math.min(1.0, 0.72 - 0.48 * th)),
+      hitR: Math.max(0.24, Math.min(1.0, 0.72 + 0.48 * th)),
+      uHit: uHit,
+      vHit: vHit,
+      pan: Math.max(-1, Math.min(1, (uHit - 0.5) * 1.6))
+    };
+  }
+
+  function resolveDentTarget(u, v, side) {
+    if (v <= 0.305) {
+      var dv = clampNum(v, 0.238, 0.278);
+      var cheekEdgeU = side < 0 ? 0.456 - (dv - 0.240) * 1.05 : 0.640 + (dv - 0.236) * 1.35;
+      return {
+        u: cheekEdgeU * 0.72 + clampNum(u, side < 0 ? 0.40 : 0.60, side < 0 ? 0.48 : 0.72) * 0.28,
+        v: dv,
+        thigh: false
+      };
+    }
+    var tv = clampNum(v, 0.310, 0.560);
+    var t = (tv - 0.305) / 0.265;
+    var outerU = side < 0 ? 0.405 - 0.220 * t : 0.730 + 0.165 * t;
+    var midU = side < 0 ? 0.440 - 0.210 * t : 0.695 + 0.155 * t;
+    var innerU = side < 0 ? 0.465 - 0.160 * t : 0.660 + 0.150 * t;
+    var onOuter = side < 0 ? u <= midU : u >= midU;
+    var edgeU = onOuter ? outerU : innerU;
+    var lo = Math.min(outerU, innerU) - 0.015;
+    var hi = Math.max(outerU, innerU) + 0.015;
+    return {
+      u: edgeU * 0.74 + clampNum(u, lo, hi) * 0.26,
+      v: tv,
+      thigh: true
+    };
+  }
+
+  function classifyChipZone(u, v) {
+    if (v >= 0.56 && u >= 0.28 && u <= 0.66) return "head";
+    if (v <= 0.21 && u >= 0.34 && u <= 0.64) return "tail";
+    if (v > 0.305 && v <= 0.60 && u >= 0.14 && u <= 0.90 && !(v > 0.34 && Math.abs(u - 0.545) < 0.09)) {
+      return "thigh";
+    }
+    return "cheek";
+  }
+
+  function startSqueeze(clientX, clientY) {
+    if (!button.classList.contains("is-nsfw") || reduceMotion) return false;
+    var hit = cheekStrikeSplit(clientX, clientY);
+    var zone = classifyChipZone(hit.uHit, hit.vHit);
+    if (zone !== "cheek" && zone !== "thigh") return false;
+    var dentPos = resolveDentTarget(hit.uHit, hit.vHit, hit.side);
+    var nowSp = performance.now() / 1000;
+    fxSt.squeezeActive = true;
+    fxSt.squeezeU = dentPos.u;
+    fxSt.squeezeV = dentPos.v;
+    fxSt.squeezeSide = hit.side;
+    fxSt.squeezeZone = zone;
+    fxSt.lastZone = zone;
+    fxSt.lastSide = hit.side;
+    fxSt.lastInteractAt = nowSp;
+    fxSt.arousal = clampNum(fxSt.arousal + 0.12, 0, 1);
+    fxSt.flush = Math.min(1, fxSt.flush + 0.28);
+    fxSt.effort = Math.min(1, fxSt.effort + 0.18);
+    fxSt.glanceFrom = nowSp + 0.12;
+    fxSt.glanceUntil = nowSp + 2.4;
+    fxSt.glanceDir = hit.side;
+    bootyPhys.dentSide = hit.side;
+    bootyPhys.dentDirX = -hit.side * 0.45;
+    bootyPhys.dentDirY = -0.35;
+    bootyPhys.spankTilt = clampNum(bootyPhys.spankTilt + hit.side * 0.036, -0.11, 0.11);
+    bootyPhys.spankHeatL = Math.min(1.0, bootyPhys.spankHeatL + 0.24 * hit.hitL);
+    bootyPhys.spankHeatR = Math.min(1.0, bootyPhys.spankHeatR + 0.24 * hit.hitR);
+    mouthSt.flustered = Math.max(mouthSt.flustered, 1.3);
+    mouthSt.happy = Math.max(mouthSt.happy, 1.4);
+    bodySfx.gasp(0.95 + fxSt.arousal * 0.12);
+    ensureBootyRaf();
+    showReaction("squeeze", NSFW_SQUEEZE_LINES, true, { type: true, voice: true });
+    return true;
+  }
+
+  function releaseSqueeze(withRebound) {
+    if (!fxSt.squeezeActive) return;
+    var side = fxSt.squeezeSide || 1;
+    fxSt.squeezeActive = false;
+    if (!withRebound) return;
+    var nowSp = performance.now() / 1000;
+    bootyPhys.dentV = -22;
+    bootyPhys.vy -= 42;
+    bootyPhys.vx += side * 26;
+    if (side < 0) bootyPhys.jlvx -= 48; else bootyPhys.jrvx += 48;
+    bootyPhys.jlvy -= 36;
+    bootyPhys.jrvy -= 36;
+    triggerFleshWave(0.65, true);
+    triggerShiver(0.55);
+    mouthSt.gasp = Math.max(mouthSt.gasp, 0.34);
+    mouthSt.flustered = Math.max(mouthSt.flustered, 1.2);
+    mouthSt.happy = Math.max(mouthSt.happy, 1.8);
+    fxSt.nextPostSmileAt = nowSp + 0.48;
+    bodySfx.gasp(1.06 + fxSt.arousal * 0.14);
+    spawnFx("♥", 2);
+    ensureBootyRaf();
+  }
+
+  function triggerHeadPet(hit, strong) {
+    if (!button.classList.contains("is-nsfw") || reduceMotion) return;
+    var nowSp = performance.now() / 1000;
+    if (!strong && fxSt.lastPurrAt && nowSp - fxSt.lastPurrAt < 0.42) return;
+    fxSt.lastPurrAt = nowSp;
+    fxSt.lastZone = "head";
+    fxSt.lastInteractAt = nowSp;
+    fxSt.pet = clampNum(fxSt.pet + (strong ? 0.55 : 0.28), 0, 1);
+    fxSt.arousal = clampNum(fxSt.arousal + (strong ? 0.10 : 0.045), 0, 1);
+    fxSt.flush = Math.min(1, fxSt.flush + (strong ? 0.26 : 0.10));
+    fxSt.pout = Math.max(0, fxSt.pout - 0.5);
+    fxSt.poutUntil = 0;
+    fxSt.sulk = Math.max(0, fxSt.sulk - 0.55);
+    chipMem.pets += 1;
+    if (strong) saveChipMemory();
+    mouthSt.happy = Math.max(mouthSt.happy, 2.0);
+    mouthSt.flustered = Math.max(mouthSt.flustered, 1.1);
+    tailAnim.excite = Math.max(tailAnim.excite, strong ? 0.85 : 0.45);
+    bodySfx.purr(strong ? 0.95 : 0.65);
+    if (strong) {
+      bootyPhys.vy -= 14;
+      startGesture("smile", nowSp);
+      spawnFx("♥", 2);
+    }
+    ensureBootyRaf();
+    if (strong || !fxSt.lastPetSayAt || nowSp - fxSt.lastPetSayAt >= 7.0) {
+      fxSt.lastPetSayAt = nowSp;
+      showReaction("pet", NSFW_PET_LINES, true, { type: true });
+    }
+  }
+
+  function triggerTailTease(hit, strong) {
+    if (!button.classList.contains("is-nsfw") || reduceMotion) return;
+    var nowSp = performance.now() / 1000;
+    if (!strong && fxSt.lastTailAt && nowSp - fxSt.lastTailAt < 0.34) return;
+    fxSt.lastTailAt = nowSp;
+    fxSt.lastZone = "tail";
+    fxSt.lastInteractAt = nowSp;
+    fxSt.arousal = clampNum(fxSt.arousal + (strong ? 0.15 : 0.06), 0, 1);
+    fxSt.flush = Math.min(1, fxSt.flush + (strong ? 0.35 : 0.14));
+    fxSt.effort = Math.min(1, fxSt.effort + 0.18);
+    tailAnim.vhook += (strong ? 5.2 : 2.6) * (hit && hit.side ? -hit.side : 1);
+    tailAnim.excite = Math.max(tailAnim.excite, strong ? 1.0 : 0.6);
+    bootyPhys.vx += (hit ? -hit.side : 1) * (strong ? 28 : 11);
+    bootyPhys.vy -= strong ? 26 : 8;
+    mouthSt.gasp = Math.max(mouthSt.gasp, strong ? 0.40 : 0.18);
+    mouthSt.flustered = Math.max(mouthSt.flustered, 1.3);
+    fxSt.glanceFrom = nowSp + 0.09;
+    fxSt.glanceUntil = nowSp + 1.8;
+    fxSt.glanceDir = hit ? hit.side : 1;
+    if (strong) {
+      bodySfx.gasp(1.12 + fxSt.arousal * 0.12);
+      triggerBlink();
+      spawnFx("♪", 2);
+    }
+    ensureBootyRaf();
+    if (strong || !fxSt.lastPetSayAt || nowSp - fxSt.lastPetSayAt >= 6.5) {
+      fxSt.lastPetSayAt = nowSp;
+      showReaction("tail", NSFW_TAIL_LINES, true, { type: true });
+    }
+  }
+
+  function spankBooty(event, powerScale) {
     if (!button.classList.contains("is-nsfw")) return;
     if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-    bootyPhys.vy -= 74;
-    bootyPhys.vx += (Math.random() < 0.5 ? 1 : -1) * (36 + Math.random() * 18);
-    bootyPhys.ripple = 1.0;
-    bootyPhys.rippleTime = 0;
-    bootyPhys.wave = 1.0;
-    bootyPhys.waveT = 0;
-    bootyPhys.mL = 0.95 + Math.random() * 0.10;
-    bootyPhys.mR = 0.95 + Math.random() * 0.10;
-    mouthSt.gasp = 0.5;
-    mouthSt.flustered = 1.5;
-    mouthSt.happy = 2.2;
-    var nowSp = performance.now() / 1000;
-    fxSt.spankT = 1;
-    fxSt.effort = Math.min(1, fxSt.effort + 0.35);
-    fxSt.flush = Math.min(1, fxSt.flush + 0.45);
-    fxSt.glanceFrom = nowSp + 0.45;
-    fxSt.glanceUntil = nowSp + 2.0;
-    fxSt.glanceDir = Math.random() < 0.5 ? -1 : 1;
-    var spPan = 0;
-    if (event && Number.isFinite(event.clientX)) {
-      var spR = button.getBoundingClientRect();
-      spPan = Math.max(-1, Math.min(1, ((event.clientX - spR.left) / Math.max(1, spR.width) - 0.5) * 1.6));
+    var hit = cheekStrikeSplit(event ? event.clientX : NaN, event ? event.clientY : NaN);
+    var zone = event && Number.isFinite(event.clientY) ? classifyChipZone(hit.uHit, hit.vHit) : "cheek";
+    if (zone === "head") {
+      if (hit.vHit >= 0.68 && hit.vHit <= 0.84 && ((hit.uHit >= 0.27 && hit.uHit <= 0.38) || (hit.uHit >= 0.52 && hit.uHit <= 0.63))) {
+        var nowCup = performance.now() / 1000;
+        if (hit.uHit < 0.45) fxSt.cupTiltL = 1.0; else fxSt.cupTiltR = 1.0;
+        fxSt.cupListenUntil = nowCup + 2.2;
+        startGesture("listen", nowCup);
+        showReaction(playing ? "look" : "pause", NSFW_PET_LINES, true, { type: true, voice: true });
+        return;
+      }
+      triggerHeadPet(hit, true);
+      return;
     }
-    sfx.slap(0.6 + Math.random() * 0.4, spPan);
-    window.setTimeout(function () { sfx.gasp(); }, 60);
+    if (zone === "tail") { triggerTailTease(hit, true); return; }
+    var nowSp = performance.now() / 1000;
+    var prevZone = fxSt.lastZone;
+    var withinCombo = fxSt.lastStrikeAt > 0 && (nowSp - fxSt.lastStrikeAt) < 2.2;
+    var alternating = !!(fxSt.lastSide && fxSt.lastSide !== hit.side && withinCombo && (nowSp - fxSt.lastStrikeAt) < 1.6);
+    fxSt.combo = withinCombo ? Math.min(8, fxSt.combo + 1) : 1;
+    fxSt.lastStrikeAt = nowSp;
+    fxSt.lastInteractAt = nowSp;
+    fxSt.lastZone = zone;
+    fxSt.lastSide = hit.side;
+    fxSt.pout = 0;
+    fxSt.poutUntil = 0;
+    fxSt.sulk = Math.max(0, fxSt.sulk - 0.25);
+    fxSt.needy = 0;
+    fxSt.arcStep = (fxSt.arcLastAt > 0 && (nowSp - fxSt.arcLastAt) < 3.6) ? (fxSt.arcStep + 1) % 3 : 0;
+    fxSt.arcLastAt = nowSp;
+    chipMem.hits += 1;
+    spankTotal += 1;
+    var hitMilestone = 0;
+    if (chipMem.hits === 10 || chipMem.hits === 25 || chipMem.hits === 50 || (chipMem.hits > 50 && chipMem.hits % 50 === 0)) {
+      if (chipMem.milestone < chipMem.hits) { hitMilestone = chipMem.hits; chipMem.milestone = chipMem.hits; }
+    }
+    saveChipMemory();
+    var afterglowGain = fxSt.afterglow > 0.25 ? 1.35 : 1.0;
+    fxSt.arousal = clampNum(fxSt.arousal + (0.13 + Math.min(0.10, fxSt.combo * 0.022)) * afterglowGain, 0, 1);
+    var pwr = Math.max(0.65, Math.min(1.55, (powerScale || 1) * (1 + Math.min(0.28, (fxSt.combo - 1) * 0.048))));
+    var side = hit.side, hitL = hit.hitL, hitR = hit.hitR, spPan = hit.pan;
+    var dentPos = resolveDentTarget(hit.uHit, hit.vHit, side);
+    if (zone === "thigh") dentPos.thigh = true;
+    var jgScale = dentPos.thigh ? 0.62 : 1.0;
+    var hasSwipe = !!(event && Number.isFinite(event.swipeX) && Number.isFinite(event.swipeY));
+    var dirX = hasSwipe ? event.swipeX : -side * 0.45;
+    var dirY = hasSwipe ? event.swipeY : -0.88;
+    // Translate the stroke vector directly into the cheek springs & hip tilt so swipes feel physical.
+    var impX = dirX * 118 * pwr, impY = dirY * 118 * pwr;
+    bootyPhys.vx += (hasSwipe ? impX * 0.52 - side * 22 * pwr : -side * (36 + Math.random() * 14) * pwr) * jgScale;
+    bootyPhys.vy += (hasSwipe ? impY * 0.68 - 28 * pwr : -72 * pwr) * jgScale;
+    bootyPhys.jlvx += (impX * 1.15 - 32 * hitL * pwr) * hitL * jgScale;
+    bootyPhys.jlvy += (impY * 1.25 - 26 * hitL * pwr) * hitL * jgScale;
+    bootyPhys.jrvx += (impX * 1.15 + 32 * hitR * pwr) * hitR * jgScale;
+    bootyPhys.jrvy += (impY * 1.25 - 26 * hitR * pwr) * hitR * jgScale;
+    bootyPhys.crestLagV[0] += dirX * 0.16 * hitL * pwr * jgScale;
+    bootyPhys.crestLagV[1] += dirY * 0.16 * hitL * pwr * jgScale;
+    bootyPhys.crestLagV[2] += dirX * 0.16 * hitR * pwr * jgScale;
+    bootyPhys.crestLagV[3] += dirY * 0.16 * hitR * pwr * jgScale;
+    bootyPhys.spankTilt = clampNum(
+      bootyPhys.spankTilt + ((hitR - hitL) * 0.068 + dirY * side * 0.032) * pwr * jgScale,
+      -0.11,
+      0.11
+    );
+    bootyPhys.spankPressL = Math.min(0.078, bootyPhys.spankPressL + 0.064 * hitL * pwr * jgScale);
+    bootyPhys.spankPressR = Math.min(0.078, bootyPhys.spankPressR + 0.064 * hitR * pwr * jgScale);
+    bootyPhys.spankHeatL = Math.min(1.0, bootyPhys.spankHeatL + 0.54 * hitL * pwr);
+    bootyPhys.spankHeatR = Math.min(1.0, bootyPhys.spankHeatR + 0.54 * hitR * pwr);
+    bootyPhys.dentU = dentPos.u;
+    bootyPhys.dentVpos = dentPos.v;
+    bootyPhys.dentSide = side;
+    bootyPhys.dentDirX = dirX;
+    bootyPhys.dentDirY = dirY;
+    bootyPhys.dent = clampNum(bootyPhys.dent + 0.48 * pwr, -0.55, 1.35);
+    bootyPhys.dentV = Math.max(0, bootyPhys.dentV) + 18.5 * pwr;
+    var thKick = dentPos.thigh ? 0.095 * pwr : 0.055 * pwr;
+    bootyPhys.thLvx += (dirX * hitL + (side < 0 ? 0.24 : 0.06)) * thKick;
+    bootyPhys.thLvy += (dirY * hitL + 0.18 * hitL) * thKick;
+    bootyPhys.thRvx += (dirX * hitR + (side > 0 ? -0.24 : -0.06)) * thKick;
+    bootyPhys.thRvy += (dirY * hitR + 0.18 * hitR) * thKick;
+    triggerFleshWave(Math.min(1.15, pwr * 1.05), true);
+    bootyPhys.mL = 0.88 + Math.random() * 0.08 + 0.10 * hitR;
+    bootyPhys.mR = 0.88 + Math.random() * 0.08 + 0.10 * hitL;
+    mouthSt.gasp = 0.52;
+    mouthSt.flustered = 1.6;
+    mouthSt.happy = 2.2;
+    fxSt.spankT = 1;
+    fxSt.effort = Math.min(1, fxSt.effort + 0.35 * pwr);
+    fxSt.flush = Math.min(1, fxSt.flush + 0.45 * pwr);
+    fxSt.glanceFrom = nowSp + 0.09;
+    fxSt.glanceUntil = nowSp + 2.0;
+    fxSt.glanceDir = side;
+    fxSt.nextPostSmileAt = nowSp + 0.55;
+    var gaspPitch = 1 + Math.min(0.24, (fxSt.combo - 1) * 0.032 + fxSt.arousal * 0.12);
+    bodySfx.slap((0.55 + Math.random() * 0.35) * Math.min(1.25, pwr), spPan, zone);
+    window.setTimeout(function () { bodySfx.gasp(gaspPitch); }, 55);
+    spawnFx("", 1, hit.uHit, hit.vHit, side, "hip-arc");
     spawnFx("♥", 3 + Math.round(Math.random() * 2));
     triggerBlink();
     ensureBootyRaf();
@@ -2839,21 +4952,32 @@
       blushTimer = 0;
       button.classList.remove("is-blushing");
     }, 850);
-    var spankGen = danceGenPeek("spank");
-    if (showNsfwBubble(spankGen || NSFW_SPANK_LINES[bubbleIdx++ % NSFW_SPANK_LINES.length], false, false, { type: true }) && spankGen) {
-      danceGenUse("spank");
+    var genKind = "", pool = NSFW_SPANK_LINES;
+    if (bootyPhys.dropGain > 0.35 || bootyPhys.dropAge >= 0) {
+      genKind = "drop"; pool = NSFW_DROP_SPANK_LINES;
+    } else if (hitMilestone) {
+      genKind = ""; pool = [pickReactionLine(NSFW_MILESTONE_LINES).replace("{n}", String(hitMilestone))];
+    } else if (fxSt.combo >= 4 || fxSt.arousal >= 0.72) {
+      genKind = "combo"; pool = NSFW_HIGH_COMBO_LINES;
+    } else if (fxSt.afterglow > 0.48 && fxSt.combo === 1) {
+      genKind = "afterglow"; pool = NSFW_AFTERGLOW_LINES;
+    } else if (zone === "thigh") {
+      genKind = "thigh"; pool = NSFW_THIGH_LINES;
+    } else if (alternating) {
+      genKind = "spank"; pool = NSFW_ALT_CHEEK_LINES;
+    } else if (fxSt.arcStep > 0) {
+      genKind = "spank"; pool = [NSFW_ARC_CHAINS[fxSt.arcStep]];
+    } else {
+      genKind = "spank"; pool = NSFW_SPANK_LINES;
     }
+    var important = !!(fxSt.combo === 4 || hitMilestone || (prevZone && prevZone !== zone) || bootyPhys.dropGain > 0.35);
+    showReaction(genKind, pool, important, { type: true, voice: important });
   }
-
-  button.addEventListener("contextmenu", function (event) {
-    if (!button.classList.contains("is-nsfw")) return;
-    event.preventDefault();
-    spankBooty(event);
-  });
 
   button.addEventListener("dblclick", function (event) {
     if (!button.classList.contains("is-nsfw")) return;
     event.preventDefault();
+    chipVoice.unlock();
     spankBooty(event);
   });
 
@@ -2867,7 +4991,7 @@
   }
 
   function startMusicTwerk() {
-    if (!playback.playing) return;
+    if (!musicPlaying()) return;
     ensureBootyRaf();
   }
 
@@ -2878,7 +5002,7 @@
   function idleBootyReady() {
     return !!(
       button.classList.contains("is-nsfw") &&
-      !playback.playing &&
+      !musicPlaying() &&
       available &&
       !document.hidden &&
       !reduceMotion
@@ -2894,14 +5018,40 @@
     idleBootyTimer = 0;
     if (!idleBootyReady()) return;
     if (!gesture.kind && !reactionBusy()) {
-      if (nextIdleGesture) {
-        if (startGesture(nextIdleGesture)) nextIdleGesture = nextIdleGesture === "curl" ? "stretch" : "";
+      if (nextIdleGesture === "flick") {
+        nextIdleGesture = "";
+        fxSt.hLvx += 18; fxSt.hRvx -= 14;
+        tailAnim.vhook += idleBootySide * 3.2;
+        fxSt.curlPulse = 0.85;
+        bodySfx.hum();
+        ensureBootyRaf();
+      } else if (nextIdleGesture) {
+        var did = nextIdleGesture;
+        if (startGesture(did)) {
+          nextIdleGesture = did === "curl" ? "stretch" : "flick";
+          if (did === "stretch") {
+            bodySfx.yawn();
+            mouthSt.happy = Math.max(mouthSt.happy, 1.1);
+          } else if (did === "curl") {
+            mouthSt.blepUntil = Math.max(mouthSt.blepUntil, performance.now() / 1000 + 2.6);
+          }
+        }
       } else {
         nextIdleGesture = "curl";
         idleBootySide = -idleBootySide;
-        bootyPhys.vy -= 3 + Math.random() * 3;
-        bootyPhys.vx += idleBootySide * (9 + Math.random() * 4);
+        bootyPhys.vy -= 4 + Math.random() * 3;
+        bootyPhys.vx += idleBootySide * (10 + Math.random() * 4);
         ensureBootyRaf();
+        window.setTimeout(function () {
+          if (idleBootyReady() && !drag) {
+            bootyPhys.vy -= 3;
+            bootyPhys.vx -= idleBootySide * 7;
+            ensureBootyRaf();
+          }
+        }, 180);
+      }
+      if (!drag && !fxSt.squeezeActive && (Date.now() - lastBubbleAt) >= 34000 && Math.random() < 0.65) {
+        showReaction("idle", NSFW_IDLE_TALK_LINES, false, { type: true });
       }
     }
     idleBootyTimer = window.setTimeout(runIdleBooty, 9000 + Math.round(Math.random() * 6000));
@@ -2913,23 +5063,45 @@
   }
 
   var longPressTimer = 0;
+  var titleHoldTimer = 0;
+  var spankTotal = 0;
 
-  function clearLongPress() {
+  function clearLongPress(withRebound) {
     if (longPressTimer) window.clearTimeout(longPressTimer);
     longPressTimer = 0;
+    if (titleHoldTimer) window.clearTimeout(titleHoldTimer);
+    titleHoldTimer = 0;
+    if (fxSt.squeezeActive) releaseSqueeze(!!withRebound);
   }
 
+  // True while this pointer is still a hold: chip in use, no drag yet, no pinch.
+  function stillHolding(id) {
+    return !!(available && drag && drag.id === id && !drag.moved && !pinching);
+  }
+
+  var spankSwipe = { x: 0, y: 0, t: 0, lastAt: 0 };
+
+  function resetSwipeTrack() {
+    spankSwipe.t = 0;
+    fxSt.teaseHoverAt = 0;
+  }
+
+  button.addEventListener("pointerleave", resetSwipeTrack);
+
   button.addEventListener("pointerdown", function (event) {
+    resetSwipeTrack();
+    chipVoice.unlock();
     if (event.button && event.button !== 0) return;
     stopDance();
     if (!event.isPrimary) {
-      clearLongPress();
+      clearLongPress(false);
       pinching = true;
       suppressClick = true;
       cancelDrag();
       return;
     }
     if (pinching) return;
+    fxSt.lastInteractAt = performance.now() / 1000;
     drag = {
       id: event.pointerId,
       startX: event.clientX,
@@ -2941,22 +5113,122 @@
       moved: false
     };
     try { button.setPointerCapture(event.pointerId); } catch (_) {}
-    // iPhone has no right-click / reliable double-click: a long press (~0.55s) = spank.
-    clearLongPress();
-    if (event.pointerType === "touch" && button.classList.contains("is-nsfw")) {
+    clearLongPress(false);
+    var touchHold = event.pointerType === "touch";
+    var squeezeHold = false;
+    if (button.classList.contains("is-nsfw") && !reduceMotion) {
       var pressId = event.pointerId;
+      var pressX = event.clientX, pressY = event.clientY;
+      var pressHit = cheekStrikeSplit(pressX, pressY);
+      var pressZone = classifyChipZone(pressHit.uHit, pressHit.vHit);
+      if (pressZone === "cheek" || pressZone === "thigh") {
+        squeezeHold = true;
+        longPressTimer = window.setTimeout(function () {
+          longPressTimer = 0;
+          if (stillHolding(pressId) && startSqueeze(pressX, pressY)) {
+            suppressClick = true;
+            if (navigator.vibrate) { try { navigator.vibrate(14); } catch (_) {} }
+          }
+        }, 280);
+      }
+    }
+    // iPhone has no right-click: on head/tail a hold spanks at ~0.55 s; on every zone a longer hold
+    // (~1.25 s) opens the title editor. Cheek/thigh squeeze at 280 ms and stay squeezed until the lift.
+    var holdId = event.pointerId;
+    if (touchHold && !squeezeHold && button.classList.contains("is-nsfw")) {
       longPressTimer = window.setTimeout(function () {
         longPressTimer = 0;
-        if (drag && drag.id === pressId && !drag.moved && !pinching) {
-          suppressClick = true;
-          spankBooty();
-          if (navigator.vibrate) { try { navigator.vibrate(18); } catch (_) {} }
-        }
+        if (!stillHolding(holdId)) return;
+        suppressClick = true;
+        spankBooty();
+        if (navigator.vibrate) { try { navigator.vibrate(18); } catch (_) {} }
       }, 550);
+    }
+    if (touchHold && SongUnit) {
+      titleHoldTimer = window.setTimeout(function () {
+        titleHoldTimer = 0;
+        if (!stillHolding(holdId)) return;
+        suppressClick = true;
+        if (navigator.vibrate) { try { navigator.vibrate([12, 40, 12]); } catch (_) {} }
+        openSongTitleEditor();
+      }, 1250);
     }
   });
 
   button.addEventListener("pointermove", function (event) {
+    if (!drag && !pinching && event.buttons === 0 && event.pointerType !== "touch" &&
+        button.classList.contains("is-nsfw") && !reduceMotion) {
+      var nowMs = performance.now();
+      var dtMs = nowMs - spankSwipe.t;
+      if (spankSwipe.t > 0 && dtMs > 2 && dtMs < 90) {
+        var swDx = event.clientX - spankSwipe.x;
+        var swDy = event.clientY - spankSwipe.y;
+        var dist = Math.hypot(swDx, swDy);
+        var speed = dist / (dtMs / 1000);
+        var brush = cheekStrikeSplit(event.clientX, event.clientY);
+        var hoverZone = classifyChipZone(brush.uHit, brush.vHit);
+        if (hoverZone === "head") {
+          fxSt.teaseHoverAt = 0;
+          if (brush.vHit >= 0.68 && brush.vHit <= 0.84 && ((brush.uHit >= 0.27 && brush.uHit <= 0.38) || (brush.uHit >= 0.52 && brush.uHit <= 0.63))) {
+            fxSt.cupListenUntil = Math.max(fxSt.cupListenUntil, performance.now() / 1000 + 0.35);
+            if (brush.uHit < 0.45) fxSt.cupTiltL = Math.max(fxSt.cupTiltL, 0.55);
+            else fxSt.cupTiltR = Math.max(fxSt.cupTiltR, 0.55);
+          }
+          if (dist >= 2 && speed < 900) triggerHeadPet(brush, false);
+        } else if (hoverZone === "tail") {
+          fxSt.teaseHoverAt = 0;
+          if (dist >= 2) triggerTailTease(brush, false);
+        } else {
+          if (!fxSt.teaseHoverAt) fxSt.teaseHoverAt = nowMs;
+          if (speed >= 720 && dist >= 12 && (nowMs - spankSwipe.lastAt) >= 220) {
+            spankSwipe.lastAt = nowMs;
+            spankBooty(
+              { clientX: event.clientX, clientY: event.clientY, swipeX: swDx / dist, swipeY: swDy / dist },
+              Math.max(0.78, Math.min(1.45, speed / 1350))
+            );
+          } else if (dist >= 4 && speed >= 220) {
+            // Medium cursor slide softly yields and nudges the cheek/thigh beneath the pointer before snapping.
+            var dirX = swDx / dist, dirY = swDy / dist;
+            var touch = Math.min(1, (speed - 220) / 500) * Math.min(1.4, dist / 14);
+            bootyPhys.jlvx += dirX * 14 * touch * brush.hitL;
+            bootyPhys.jlvy += dirY * 14 * touch * brush.hitL;
+            bootyPhys.jrvx += dirX * 14 * touch * brush.hitR;
+            bootyPhys.jrvy += dirY * 14 * touch * brush.hitR;
+            bootyPhys.spankPressL = Math.min(0.025, bootyPhys.spankPressL + 0.008 * touch * brush.hitL);
+            bootyPhys.spankPressR = Math.min(0.025, bootyPhys.spankPressR + 0.008 * touch * brush.hitR);
+            if (Math.abs(bootyPhys.dent) < 0.32) {
+              var brushDent = resolveDentTarget(brush.uHit, brush.vHit, brush.side);
+              bootyPhys.dentU = brushDent.u;
+              bootyPhys.dentVpos = brushDent.v;
+              bootyPhys.dentSide = brush.side;
+              bootyPhys.dentDirX = dirX;
+              bootyPhys.dentDirY = dirY;
+              bootyPhys.dent = Math.min(0.32, bootyPhys.dent + 0.08 * touch);
+              bootyPhys.dentV = Math.min(7.5, bootyPhys.dentV + 3.4 * touch);
+            }
+            ensureBootyRaf();
+          } else if ((nowMs - fxSt.teaseHoverAt) >= 1800 && (!fxSt.teaseSaidAt || (nowMs - fxSt.teaseSaidAt) >= 11500) && !musicPlaying()) {
+            fxSt.teaseSaidAt = nowMs;
+            showReaction("tease", NSFW_TEASE_HOVER_LINES, false, { type: true });
+          }
+        }
+      } else if (spankSwipe.t > 0 && dtMs >= 90) {
+        var stayHit = cheekStrikeSplit(event.clientX, event.clientY);
+        var stayZone = classifyChipZone(stayHit.uHit, stayHit.vHit);
+        if (stayZone === "head" || stayZone === "tail") {
+          fxSt.teaseHoverAt = 0;
+        } else {
+          if (!fxSt.teaseHoverAt) fxSt.teaseHoverAt = nowMs;
+          else if ((nowMs - fxSt.teaseHoverAt) >= 1800 && (!fxSt.teaseSaidAt || (nowMs - fxSt.teaseSaidAt) >= 11500) && !musicPlaying()) {
+            fxSt.teaseSaidAt = nowMs;
+            showReaction("tease", NSFW_TEASE_HOVER_LINES, false, { type: true });
+          }
+        }
+      }
+      spankSwipe.x = event.clientX;
+      spankSwipe.y = event.clientY;
+      spankSwipe.t = nowMs;
+    }
     if (!drag || event.pointerId !== drag.id) return;
     var dx = event.clientX - drag.startX;
     var dy = event.clientY - drag.startY;
@@ -2967,7 +5239,7 @@
     if (!drag.moved && Math.hypot(dx, dy) < DRAG_THRESHOLD) return;
     if (!drag.moved) {
       drag.moved = true;
-      clearLongPress();
+      clearLongPress(false);
       suppressClick = true;
       dock.classList.add("is-dragging");
     }
@@ -2979,8 +5251,19 @@
     if (event.cancelable) event.preventDefault();
   });
 
-  button.addEventListener("pointerup", clearLongPress);
-  button.addEventListener("pointercancel", clearLongPress);
+  button.addEventListener("pointerup", function () {
+    var wasSqueeze = fxSt.squeezeActive;
+    clearLongPress(true);
+    if (wasSqueeze && !pinching) {
+      window.setTimeout(function () { if (!drag) suppressClick = false; }, 120);
+    }
+  });
+  button.addEventListener("pointercancel", function () {
+    clearLongPress(false);
+    if (!pinching) {
+      window.setTimeout(function () { if (!drag) suppressClick = false; }, 0);
+    }
+  });
   button.addEventListener("pointerup", endDrag);
   button.addEventListener("pointercancel", endDrag);
 
@@ -3018,7 +5301,7 @@
 
   function danceReady() {
     return !!(
-      playback.playing &&
+      musicPlaying() &&
       available &&
       !document.hidden &&
       !reduceMotion &&
@@ -3172,17 +5455,20 @@
     stopDance();
   }
 
-  function onHaloBeat() {
+  // Called once a beat by the shared clock (or twice per halo cycle when the clock is not running, in SFW).
+  function onHaloBeat(beatIndex) {
     beatCount += 1;
     if (beatCount < nextDanceBeat) return;
+    if ((beatIndex != null ? beatIndex : beatCount) % 4 !== 0) return;   // start on a bar line
     if (!danceReady() || danceWrap.classList.contains("is-dancing") || pointerOverChip()) return;
-    nextDanceBeat = beatCount + 24;
+    nextDanceBeat = beatCount + 48;
     triggerDance();
   }
 
   function setWaveLive(on) {
-    var live = !!(on && onMusiquePage() && playback.playing && available && !document.hidden);
+    var live = !!(((on && onMusiquePage() && playback.playing) || localAudio()) && available && !document.hidden);
     button.classList.toggle("is-wave-live", live);
+    dock.classList.toggle("has-beat-tap", live);
     if (available && !document.hidden && button.classList.contains("is-nsfw")) {
       scheduleBlinkLoop();
     } else {
@@ -3197,8 +5483,13 @@
     }
   }
 
+  var playbackSyncedOnce = false;
+
   function applyPlayback(data) {
     if (!data || data.ok === false) return;
+    var wasPlaying = playback.playing;
+    var prevTrackId = playback.trackId;
+    var prevVol = playback.volume;
     var item = data.item || null;
     var nextTrack = item ? String(item.id || item.uri || item.name || "") : "";
     var nextPlaying = !!data.playing && !!item;
@@ -3224,6 +5515,7 @@
       playback.durationMs = Math.max(0, Number(item.duration_ms));
     }
     playback.track = item ? String(item.name || "") : "";
+    playback.album = (item && item.album && item.album.name) ? String(item.album.name) : "";
     playback.artist = item
       ? (Array.isArray(item.artists)
           ? item.artists.map(function (a) { return typeof a === "string" ? a : (a && a.name ? a.name : ""); }).filter(Boolean).join(", ")
@@ -3238,11 +5530,7 @@
     if (nextTrack !== playback.trackId) {
       playback.trackId = nextTrack;
       playback.intensity = computeTrackIntensity(item, playback.track, playback.artist, nextTrack);
-      var speed = nextTrack ? trackSpeed(nextTrack) : "1.25s";
-      wave.style.setProperty("--wave-speed", speed);
-      danceWrap.style.setProperty("--dance-duration", (parseFloat(speed) * 2).toFixed(2) + "s");
-      beatCount = 0;
-      nextDanceBeat = 8;
+      if (!localAudio()) syncBeatKey(null);   // the clock's guess, the stored grid, the halo and dance tempo
       stopDance();
       if (nextPlaying && playback.track) {
         window.setTimeout(fetchAmbientWhisper, 3500);
@@ -3250,6 +5538,65 @@
         if (button.classList.contains("is-nsfw")) window.setTimeout(function () { danceGenFetch(true); }, 1500);
       }
     }
+    if (playbackSyncedOnce && button.classList.contains("is-nsfw") && !reduceMotion && !document.hidden) {
+      var nowPb = performance.now() / 1000;
+      var pausedNow = wasPlaying && (!nextPlaying || (rawVol !== null && normVol <= 0.02 && prevVol > 0.28));
+      if (pausedNow) {
+        fxSt.pout = 1;
+        fxSt.poutUntil = nowPb + 4.5;
+        fxSt.sulk = Math.min(1, fxSt.sulk + 0.45);
+        mouthSt.happy = 0;
+        triggerShiver(0.55);
+        ensureBootyRaf();
+        showReaction("pause", NSFW_PAUSE_LINES, true, { type: true, voice: true });
+      } else if (!wasPlaying && nextPlaying) {
+        fxSt.pout = 0;
+        fxSt.poutUntil = 0;
+        fxSt.sulk = 0;
+        mouthSt.happy = Math.max(mouthSt.happy, 1.8);
+        if (playback.intensity >= 1.0) tailAnim.excite = Math.max(tailAnim.excite, 0.9);
+        if (!gesture.kind) startGesture("smile", nowPb);
+        ensureBootyRaf();
+        if (lateNightHour() && chipMem.greetedDay !== chipMem.dayKey) {
+          chipMem.greetedDay = chipMem.dayKey;
+          saveChipMemory();
+          showReaction("slow", NSFW_LATE_NIGHT_LINES, true, { type: true, voice: true });
+        }
+      } else if (prevTrackId && nextTrack && nextTrack !== prevTrackId && nextPlaying) {
+        fxSt.skipTimes = fxSt.skipTimes.filter(function (t) { return (nowPb - t) < 25; });
+        fxSt.skipTimes.push(nowPb);
+        triggerBlink();
+        if (fxSt.skipTimes.length >= 3) {
+          fxSt.skipTimes = [];
+          fxSt.pout = Math.max(fxSt.pout, 0.75);
+          fxSt.poutUntil = nowPb + 3.0;
+          showReaction("skip", NSFW_SKIP_STREAK_LINES, true, { type: true, voice: true });
+        } else {
+          if (!gesture.kind) startGesture("listen", nowPb);
+          if (playback.intensity >= 1.0) tailAnim.excite = Math.max(tailAnim.excite, 0.95);
+          if (playback.track && !concealedNow() && playback.intensity >= 0.92 && Math.random() < 0.45) {
+            showNsfwBubble(
+              pickReactionLine(NSFW_TRACK_VIBE_LINES).replace("{t}", playback.track.slice(0, 32)),
+              false, false, { type: true }
+            );
+          }
+        }
+        bootyPhys.vy -= 22;
+        ensureBootyRaf();
+      }
+      if (rawVol !== null && normVol >= 0.90 && prevVol < 1.07 && (!fxSt.lastLoudAt || (nowPb - fxSt.lastLoudAt) >= 12)) {
+        fxSt.lastLoudAt = nowPb;
+        triggerFleshWave(0.85, true);
+        triggerShiver(0.75);
+        mouthSt.gasp = Math.max(mouthSt.gasp, 0.42);
+        fxSt.effort = Math.min(1, fxSt.effort + 0.4);
+        tailAnim.excite = 1;
+        bodySfx.gasp(1.12);
+        ensureBootyRaf();
+        showReaction("loud", NSFW_LOUD_LINES, true, { type: true, voice: true });
+      }
+    }
+    playbackSyncedOnce = true;
     pollFailures = 0;
     if (changed) setWaveLive(playback.playing);
   }
@@ -3300,6 +5647,7 @@
     applyPlayback(event && event.detail);
   });
   window.addEventListener("hq:music-tab", function (event) {
+    activeMusicTab = event.detail && event.detail.tab ? String(event.detail.tab).slice(0, 32) : "";
     if (event.detail && event.detail.tab !== "quiz") stopListening();
     syncAvailability();
   });
@@ -3309,8 +5657,11 @@
     if (event.animationName === "hq-musica-chip-dance") finishDance();
   });
 
+  // When the physics loop is not running (SFW), the halo cycle (two beats of the clock's tempo) paces the dance.
   wave.firstElementChild.addEventListener("animationiteration", function (event) {
-    if (event.animationName === "hq-musica-chip-wave-bar") onHaloBeat();
+    if (event.animationName !== "hq-musica-chip-wave-bar" || motionReady()) return;
+    onHaloBeat();
+    onHaloBeat();
   });
 
   function adultOn() {
@@ -3339,7 +5690,9 @@
     if (bubbleTypeTimer) { window.clearInterval(bubbleTypeTimer); bubbleTypeTimer = 0; }
     var old = dock.querySelector(".hq-musica-chip-bubble");
     if (old) old.remove();
-    sfx.stop();
+    clearLongPress(false);
+    chipVoice.stop();
+    bodySfx.stop();
     stage.style.transform = "";
   }
 
@@ -3415,7 +5768,7 @@
       dock.hidden = false;
       available = true;
       applyPosition(true);
-      if (!wasAvailable) playEntrance();
+      if (!wasAvailable) { sfx("open"); playEntrance(); refreshConceal(true); }
       setWaveLive(onMusiquePage() && playback.playing);
       if (local) {
         stopPlaybackPoll();
@@ -3473,7 +5826,19 @@
     openMusica();
   });
 
+  // Right-click: open the chip's own title editor (same control on Lecteur and Musique).
+  button.addEventListener("contextmenu", function (event) {
+    if (!SongUnit) return;
+    event.preventDefault();
+    openSongTitleEditor();
+  });
+
   button.addEventListener("keydown", function (event) {
+    if ((event.key === "t" || event.key === "T") && !event.ctrlKey && !event.metaKey && !event.altKey) {
+      event.preventDefault();
+      beatTapNow();
+      return;
+    }
     if (!chipScale) return;
     var step = chipScale.menuStep || 0.08;
     if (event.key === "+" || event.key === "=") {
@@ -3513,6 +5878,13 @@
   }
 
   window.hqMusicaBindLyricAudio = bindLyricAudio;
+  // Read-only snapshot for browser tests and agents (squeeze, hold state, spanks this page life).
+  window.hqMusicaChipDebug = function () {
+    return {
+      squeeze: !!fxSt.squeezeActive, holding: !!drag, moved: !!(drag && drag.moved),
+      pinching: pinching, available: available, spanks: spankTotal
+    };
+  };
   var playerAudio = document.getElementById("player-audio");
   if (playerAudio) bindLyricAudio(playerAudio);
   syncAvailability();

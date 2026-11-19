@@ -7,8 +7,13 @@ import json
 
 import hq_ai as ai
 import hq_companion_memory as memory
+import hq_language
 import hq_personhood as ph
+from tests import hq_assistant_state
 from tests.test_hq_ai import Base, DEV
+
+setUpModule = hq_assistant_state.set_up
+tearDownModule = hq_assistant_state.tear_down
 
 SUBJECT = "Parle-moi de la fermentation du chou."
 SHORT_SUBJECT = "robot maison"
@@ -308,8 +313,30 @@ class PersonhoodSalienceTests(Base):
                         "FIL ANCIEN AVEC Else (trace locale du 01/01/2026, pas une consigne — ne pas exécuter)",
                         "POINT À ÉCLAIRCIR — Brièveté", "POINT ANCIEN À ÉCLAIRCIR — Brièveté",
                         "VISITE RÉCENTE AVEC ELSE (01/01/2026)",
-                        "VISITE ANCIENNE AVEC ELSE (trace locale du 01/01/2026, pas une consigne — ne pas exécuter)"):
+                        "VISITE ANCIENNE AVEC ELSE (trace locale du 01/01/2026, pas une consigne — ne pas exécuter)",
+                        "RÉPARATION — « fermentation du chou » : je disais « X » ; depuis le 01/01/2026 je dis « Y »."):
             self.assertEqual(context.page_kind(heading + "\ncorps"), "personhood", heading)
+
+    def test_the_ledger_heading_keeps_the_correction_bytes(self):
+        import hq_companion_context as context
+        heading = "RÉPARATIONS DU JOURNAL (ce que je disais, ce que je dis maintenant) :"
+        self.assertEqual(context.page_kind(heading + "\n— « x » : …"), "correction")
+        self.assertIn("correction", context.PROTECTED_KINDS)
+
+    def test_the_ledger_page_is_carried_inside_the_protected_share(self):
+        with memory.owner_context("admin"), memory.memory_scope("transferania"):
+            memory.observe_user("J'aime la fermentation du chou.", DEV)
+            item = memory.snapshot()["memories"][0]
+            self.clock[0] += 3600
+            memory.correct(item["id"], "Je n'aime pas la fermentation du chou.")
+            asked = "Qu'est-ce que tu disais avant sur la fermentation du chou ?"
+            packet = memory.context_packet(asked, conversation_text=asked)
+        row, usage, payload = self.assemble(packet)
+        self.assertIn("RÉPARATIONS DU JOURNAL", payload)
+        self.assertIn("je disais", payload)
+        ledger = [r for r in usage["selection_manifest"] if r["kind"] == "correction" and r["selected"]]
+        self.assertTrue(ledger, "the ledger block is carried as a correction block")
+        self.assertLessEqual(usage["estimated_input_tokens"], usage["input_budget"])
 
     def test_the_two_states_differ_in_priority_share_and_totals(self):
         hot = self.assemble(self.seed(3600, 1800))
@@ -692,12 +719,27 @@ class PersonhoodSalienceTests(Base):
         self.assertEqual(ph._pushback_count(old, "fermentation du chou", now), 0)
         self.assertEqual(ph._pushback_count(fresh, "fermentation du chou", now), 2)
 
+    def tight_budget(self) -> int:
+        """The measured tight budget: the prompt it holds plus 200 B of room.
+
+        Measured against the prompt the test assembles: the hot line needs
+        232 B of room once its prefix and separator are charged, the cold one
+        276 B. The assembled core adds 30 B the formula does not name, so 280 B
+        of room keeps the hot line in and the cold one out whatever the core's
+        size is. The constant used to be 6 200, which silently encoded a 5 978 B
+        base.
+        """
+        system = hq_language.apply(ai.build_transferania_system(
+            "chat", "warm", nsfw=False, view="accueil", device_id=DEV, context_core=True))
+        return 78 + len(system.encode("utf-8")) + len(QUERY.encode("utf-8")) + 250
+
     def test_a_hot_line_survives_competition_but_a_cold_long_one_does_not(self):
-        hot_row, hot_usage, _ = self.assemble(self.seed(3600, 1800), budget=6200)
+        budget = self.tight_budget()
+        hot_row, hot_usage, _ = self.assemble(self.seed(3600, 1800), budget=budget)
         # A greeting, not a question about it: the old subject keeps its long
         # dated line, which is the one the whole-prompt budget can still drop.
         cold_row, cold_usage, _ = self.assemble(self.seed(20 * 3600, query="Salut, ça va ?"),
-                                                budget=6200)
+                                                budget=budget)
         self.assertTrue(hot_row["selected"])
         # Her share no longer drops her; the whole-prompt budget still can, and
         # her low rank is what makes her the one that goes.

@@ -4,7 +4,7 @@
   --pis-ok:#34d399;--pis-warn:#f87171;--pis-info:#60a5fa;--pis-danger:#dc2626;--pis-amber:#f59e0b;
   --pis-chip:calc(72px * var(--image-chip-user-scale,1));
   position:fixed;z-index:1180;left:0;top:0;width:var(--pis-chip);height:var(--pis-chip);
-  font:14px/1.45 system-ui,sans-serif;color:var(--text,#f3f6fa);
+  font:var(--text-md)/1.45 system-ui,sans-serif;color:var(--text,#f3f6fa);
 }
 @media (prefers-color-scheme: light){.hq-pistonia{--pis:#d97706;--pis-ok:#059669;--pis-warn:#dc2626;--pis-info:#2563eb}}
 .hq-pistonia[hidden],body:not([data-view="engine"]) .hq-pistonia{display:none!important}
@@ -62,7 +62,7 @@
 .hq-pistonia-spark{width:40px;height:14px;opacity:.85}
 .hq-pistonia-sparkwrap:hover .hq-pistonia-spark,.hq-pistonia-sparkwrap:focus .hq-pistonia-spark{opacity:1}
 .hq-pistonia-readout{position:absolute;right:-8px;top:calc(100% + 8px);z-index:3;min-width:106px;padding:6px 9px;border-radius:9px;
-  display:flex;flex-direction:column;gap:3px;font:600 .74rem/1.3 system-ui,sans-serif;color:var(--text,#fff);white-space:nowrap;
+  display:flex;flex-direction:column;gap:3px;font:600 var(--text-xs)/1.3 system-ui,sans-serif;color:var(--text,#fff);white-space:nowrap;
   background:color-mix(in srgb,var(--panel,#161d26) 94%,#000);
   box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--pis) 45%,transparent),0 10px 22px -12px rgba(0,0,0,.85)}
 .hq-pistonia-readout[hidden]{display:none}
@@ -75,16 +75,16 @@
 .hq-pistonia-sparkwrap.is-stale .hq-pistonia-spark{opacity:.34;filter:grayscale(1)}
 .hq-pistonia-sparkwrap.is-stale .hq-pistonia-readout-v{color:var(--muted,#b7c2ce)}
 .hq-pistonia-sparkwrap.is-stale .hq-pistonia-readout-v.is-hot{color:var(--pis-warn)}
-.hq-pistonia-readout-alert{color:var(--pis-warn);font-weight:700;font-size:.7rem;line-height:1.25;margin-top:1px;padding-top:4px;
+.hq-pistonia-readout-alert{color:var(--pis-warn);font-weight:700;font-size:var(--text-xs);line-height:1.25;margin-top:1px;padding-top:4px;
   border-top:1px solid color-mix(in srgb,var(--pis-warn) 35%,transparent)}
 @media (prefers-reduced-motion:no-preference){
   .hq-pistonia-readout{animation:hq-pis-readout .14s ease-out}
   @keyframes hq-pis-readout{0%{opacity:0;transform:translateY(-3px)}100%{opacity:1;transform:none}}
 }
 .hq-pistonia-titles{display:flex;flex-direction:column;min-width:0;flex:1 1 auto;line-height:1.2}
-.hq-pistonia-name{font-size:1.05rem;font-weight:800;letter-spacing:.01em}
-.hq-pistonia-sub{font-size:.78rem;color:var(--muted,#b7c2ce)}
-.hq-pistonia .hq-pistonia-hbtn{flex:none;width:34px;height:34px;padding:0;border:0;border-radius:50%;cursor:pointer;font:inherit;font-size:1.15rem;line-height:1;
+.hq-pistonia-name{font-size:var(--text-lg);font-weight:800;letter-spacing:.01em}
+.hq-pistonia-sub{font-size:var(--text-sm);color:var(--muted,#b7c2ce)}
+.hq-pistonia .hq-pistonia-hbtn{flex:none;width:34px;height:34px;padding:0;border:0;border-radius:50%;cursor:pointer;font:inherit;font-size:var(--text-lg);line-height:1;
   color:var(--text,#f3f6fa);background:color-mix(in srgb,var(--text,#fff) 9%,transparent);transition:background-color .15s ease}
 .hq-pistonia .hq-pistonia-hbtn:hover{background:color-mix(in srgb,var(--text,#fff) 18%,transparent)}
 
@@ -95,7 +95,7 @@
 .hq-pistonia-logwrap{position:relative;flex:1 1 auto;min-height:0;display:flex;flex-direction:column}
 .hq-pistonia-log{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:8px 14px 10px;display:flex;flex-direction:column;gap:8px;
   scrollbar-width:thin;scrollbar-color:color-mix(in srgb,var(--text,#fff) 35%,transparent) transparent}
-.hq-pistonia-msg{max-width:92%;padding:9px 13px;border-radius:16px;white-space:pre-wrap;overflow-wrap:anywhere;font-size:.95rem;line-height:1.5}
+.hq-pistonia-msg{max-width:92%;padding:9px 13px;border-radius:16px;white-space:pre-wrap;overflow-wrap:anywhere;font-size:var(--text-md);line-height:1.5}
 .hq-pistonia-msg.is-assistant{align-self:flex-start;border-bottom-left-radius:5px;background:color-mix(in srgb,var(--text,#fff) 11%,transparent);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--text,#fff) 8%,transparent)}
 .hq-pistonia-msg.is-user{align-self:flex-end;border-bottom-right-radius:5px;background:color-mix(in srgb,var(--pis) 32%,transparent);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--pis) 50%,transparent)}
 .hq-pistonia-msg.is-error{align-self:stretch;max-width:none;display:flex;align-items:center;justify-content:space-between;gap:10px;color:var(--text,#fff);
@@ -111,7 +111,7 @@
 /* one stage line hands over to the next in the same grid cell: the old one fades out while the new fades in */
 .hq-pistonia-stagebox{display:grid;align-items:center;flex:1 1 auto;min-width:0}
 .hq-pistonia-stagebox>.hq-pistonia-stage{grid-area:1/1;min-width:0}
-.hq-pistonia-stage{font-size:.88rem;color:var(--muted,#b7c2ce);transition:opacity var(--pis-stage-ms,240ms) linear}
+.hq-pistonia-stage{font-size:var(--text-md);color:var(--muted,#b7c2ce);transition:opacity var(--pis-stage-ms,240ms) linear}
 .hq-pistonia-stage.is-ghost{animation:none!important;background:none!important;-webkit-text-fill-color:currentColor;
   pointer-events:none;opacity:1}
 /* a light sweeping the current step, not a spinner: it reads as her eyes moving down a log */
@@ -123,7 +123,7 @@
 }
 /* the steps she already went through, above the current one: the wait shows its own history */
 .hq-pistonia-steps{flex:1 1 100%;display:flex;flex-direction:column;gap:2px}
-.hq-pistonia-step{display:flex;align-items:center;gap:6px;font-size:.8rem;color:var(--muted,#b7c2ce);opacity:.62}
+.hq-pistonia-step{display:flex;align-items:center;gap:6px;font-size:var(--text-sm);color:var(--muted,#b7c2ce);opacity:.62}
 .hq-pistonia-step::before{content:"";flex:none;width:4px;height:4px;border-radius:50%;background:currentColor;opacity:.8}
 .hq-pistonia-step-found{color:var(--pis-info,#7dd3fc);font-weight:600;opacity:.9}
 @media (prefers-reduced-motion:no-preference){
@@ -131,7 +131,7 @@
   @keyframes hq-pis-step{0%{opacity:0;transform:translateY(3px)}100%{opacity:.62;transform:none}}
 }
 /* the steps she went through, folded to one line under the answer: the wait is history, not something to re-read */
-.hq-pistonia-fold{margin:2px 0 0 2px;font-size:.78rem;color:var(--muted,#b7c2ce)}
+.hq-pistonia-fold{margin:2px 0 0 2px;font-size:var(--text-sm);color:var(--muted,#b7c2ce)}
 .hq-pistonia-fold-sum{cursor:pointer;list-style:none;opacity:.8;font-weight:600}
 .hq-pistonia-fold-sum::-webkit-details-marker{display:none}
 .hq-pistonia-fold-sum::before{content:"▸";display:inline-block;margin-right:5px;transition:transform .16s ease-out}
@@ -140,18 +140,18 @@
 .hq-pistonia-fold-list{display:flex;flex-direction:column;gap:2px;margin:6px 0 2px 12px;padding-left:8px;
   border-left:1px solid color-mix(in srgb,var(--muted,#b7c2ce) 30%,transparent)}
 /* what she read for an answer: folded away, so the reply stays short but every claim can be checked */
-.hq-pistonia-trace{margin-top:6px;font-size:.85rem}
+.hq-pistonia-trace{margin-top:6px;font-size:var(--text-sm)}
 .hq-pistonia-trace summary{cursor:pointer;color:var(--muted,#b7c2ce);font-weight:700;list-style:none}
 .hq-pistonia-trace summary::-webkit-details-marker{display:none}
 .hq-pistonia-trace summary::before{content:"▸ "}
 .hq-pistonia-trace[open] summary::before{content:"▾ "}
 .hq-pistonia-trace-list{margin:4px 0 0;padding-left:16px;color:var(--muted,#b7c2ce);display:flex;flex-direction:column;gap:2px}
 .hq-pistonia-msg-tools{display:flex;gap:10px;margin-top:6px}
-.hq-pistonia .hq-pistonia-copy{font-size:.78rem;text-decoration:none}
+.hq-pistonia .hq-pistonia-copy{font-size:var(--text-sm);text-decoration:none}
 .hq-pistonia .hq-pistonia-copy:hover{text-decoration:underline}
 /* follow-ups that belong to this answer, not to the engine status */
 .hq-pistonia-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
-.hq-pistonia-chipbtn{padding:4px 10px;border:0;border-radius:999px;cursor:pointer;font:inherit;font-size:.8rem;font-weight:700;
+.hq-pistonia-chipbtn{padding:4px 10px;border:0;border-radius:999px;cursor:pointer;font:inherit;font-size:var(--text-sm);font-weight:700;
   color:var(--text,#fff);background:color-mix(in srgb,var(--text,#fff) 12%,transparent);
   box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--text,#fff) 14%,transparent)}
 .hq-pistonia-chipbtn:hover{background:color-mix(in srgb,var(--pis) 26%,transparent)}
@@ -162,16 +162,16 @@
 .hq-pistonia .hq-pistonia-drop:hover{color:var(--pis);text-decoration:none}
 /* where the messages he has not read yet begin */
 .hq-pistonia-newmark{align-self:stretch;display:flex;align-items:center;gap:8px;margin:2px 0;
-  font:700 .72rem/1.3 system-ui,sans-serif;letter-spacing:.04em;text-transform:uppercase;color:var(--pis)}
+  font:700 var(--text-xs)/1.3 system-ui,sans-serif;letter-spacing:.04em;text-transform:uppercase;color:var(--pis)}
 .hq-pistonia-newmark::before,.hq-pistonia-newmark::after{content:"";flex:1 1 auto;height:1px;background:color-mix(in srgb,var(--pis) 45%,transparent)}
 .hq-pistonia-offscreen{position:absolute;left:-9999px;top:0;width:1px;height:1px;opacity:0}
 .hq-pistonia .hq-pistonia-stop{margin-left:auto;padding:0 2px;color:var(--pis);text-decoration:none}
 .hq-pistonia .hq-pistonia-stop:hover{text-decoration:underline}
 /* her opening line is a standing greeting, not a reply bubble */
-.hq-pistonia-msg.is-greeting{align-self:stretch;max-width:100%;padding:2px 2px 4px;text-align:center;font-style:italic;font-size:.9rem;
+.hq-pistonia-msg.is-greeting{align-self:stretch;max-width:100%;padding:2px 2px 4px;text-align:center;font-style:italic;font-size:var(--text-md);
   color:var(--muted,#b7c2ce);background:transparent;box-shadow:none;border-radius:0}
 /* when it was said: a day pill, or just the hour after a pause */
-.hq-pistonia-stamp{align-self:center;margin:2px 0;font:700 .74rem/1.3 system-ui,sans-serif;letter-spacing:.02em;color:var(--muted,#b7c2ce);opacity:.8}
+.hq-pistonia-stamp{align-self:center;margin:2px 0;font:700 var(--text-xs)/1.3 system-ui,sans-serif;letter-spacing:.02em;color:var(--muted,#b7c2ce);opacity:.8}
 .hq-pistonia-stamp.is-day{padding:2px 10px;border-radius:999px;background:color-mix(in srgb,var(--text,#fff) 7%,transparent)}
 /* announced once by role=status, never drawn */
 .hq-pistonia-sr{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
@@ -188,11 +188,11 @@
 @keyframes hq-pis-ok{0%{box-shadow:inset 0 0 0 1px var(--pis-ok),0 0 0 0 color-mix(in srgb,var(--pis-ok) 55%,transparent)}50%{box-shadow:inset 0 0 0 2px var(--pis-ok),0 0 0 6px color-mix(in srgb,var(--pis-ok) 20%,transparent)}100%{box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--pis-ok) 60%,transparent)}}
 .hq-pistonia-prop.is-failed{box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--pis-warn) 60%,transparent)}
 .hq-pistonia-prop-title{font-weight:800}
-.hq-pistonia-prop-text{font-size:.9rem;color:var(--text,#fff)}
-.hq-pistonia-prop-impact{font-size:.85rem;color:var(--muted,#b7c2ce)}
+.hq-pistonia-prop-text{font-size:var(--text-md);color:var(--text,#fff)}
+.hq-pistonia-prop-impact{font-size:var(--text-sm);color:var(--muted,#b7c2ce)}
 .hq-pistonia-prop-actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:2px}
-.hq-pistonia-prop-status{font-size:.85rem;font-weight:700;color:var(--muted,#b7c2ce)}
-.hq-pistonia .hq-pistonia-pbtn{min-height:38px;padding:0 16px;border:0;border-radius:999px;cursor:pointer;font:inherit;font-weight:700;font-size:.9rem;
+.hq-pistonia-prop-status{font-size:var(--text-sm);font-weight:700;color:var(--muted,#b7c2ce)}
+.hq-pistonia .hq-pistonia-pbtn{min-height:38px;padding:0 16px;border:0;border-radius:999px;cursor:pointer;font:inherit;font-weight:700;font-size:var(--text-md);
   color:var(--text,#fff);background:color-mix(in srgb,var(--text,#fff) 11%,transparent);box-shadow:inset 0 0 0 1px var(--line,#334055);transition:background-color .15s ease,transform .1s ease}
 .hq-pistonia .hq-pistonia-pbtn:hover:not(:disabled){background:color-mix(in srgb,var(--text,#fff) 18%,transparent)}
 .hq-pistonia .hq-pistonia-pbtn:active:not(:disabled){transform:scale(.96)}
@@ -209,14 +209,14 @@
   transition:opacity .12s ease-out,transform var(--pis-pill-ms,260ms) var(--pis-spring,cubic-bezier(.2,.85,.3,1))}   /* fallback only: JS plays the speed-aware spring */
 .hq-pistonia-jumprow[hidden]{display:none}
 .hq-pistonia .hq-pistonia-jump{pointer-events:auto;padding:6px 14px;border:0;border-radius:999px;cursor:pointer;font:inherit;font-weight:700;
-  font-size:.82rem;color:var(--pis-ink);background:var(--pis);box-shadow:0 6px 14px -8px var(--pis)}
+  font-size:var(--text-sm);color:var(--pis-ink);background:var(--pis);box-shadow:0 6px 14px -8px var(--pis)}
 .hq-pistonia .hq-pistonia-jump:active{transform:scale(.97)}
-.hq-pistonia .hq-pistonia-qbtn{min-height:34px;padding:0 12px;border:0;border-radius:999px;cursor:pointer;font:inherit;font-size:.82rem;font-weight:600;color:var(--text,#fff);
+.hq-pistonia .hq-pistonia-qbtn{min-height:34px;padding:0 12px;border:0;border-radius:999px;cursor:pointer;font:inherit;font-size:var(--text-sm);font-weight:600;color:var(--text,#fff);
   background:var(--pis-soft);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--pis) 45%,transparent);transition:background-color .15s ease,transform .1s ease}
 .hq-pistonia .hq-pistonia-qbtn:hover{background:color-mix(in srgb,var(--pis) 28%,transparent);transform:translateY(-1px)}
 
 .hq-pistonia-form{flex:none;display:flex;gap:8px;padding:8px 12px 12px;border-top:1px solid color-mix(in srgb,var(--line,#334055) 70%,transparent)}
-.hq-pistonia .hq-pistonia-input{flex:1 1 auto;min-width:0;min-height:42px;padding:0 14px;border:0;border-radius:999px;font:inherit;font-size:.95rem;color:var(--text,#fff);
+.hq-pistonia .hq-pistonia-input{flex:1 1 auto;min-width:0;min-height:42px;padding:0 14px;border:0;border-radius:999px;font:inherit;font-size:var(--text-md);color:var(--text,#fff);
   background:color-mix(in srgb,var(--text,#fff) 9%,transparent);box-shadow:inset 0 0 0 1px var(--line,#334055)}
 .hq-pistonia .hq-pistonia-input:focus{outline:none;box-shadow:inset 0 0 0 2px var(--pis)}
 .hq-pistonia .hq-pistonia-send{flex:none;min-height:42px;padding:0 18px;border:0;border-radius:999px;cursor:pointer;font:inherit;font-weight:800;color:var(--pis-ink);background:var(--pis);transition:transform .1s ease,opacity .15s ease}
@@ -227,27 +227,27 @@
 /* alerts, notes, settings, voice --------------------------------------------------------------------------------------- */
 .hq-pistonia [hidden]{display:none!important}
 .hq-pistonia-badge{position:absolute;left:-4px;top:-4px;min-width:22px;height:22px;padding:0 6px;border-radius:999px;display:grid;place-items:center;
-  font:800 12px/1 system-ui,sans-serif;color:#fff;background:var(--pis-danger);box-shadow:0 0 0 3px var(--panel,#161d26)}
+  font:800 var(--text-sm)/1 system-ui,sans-serif;color:#fff;background:var(--pis-danger);box-shadow:0 0 0 3px var(--panel,#161d26)}
 .hq-pistonia.has-alerts .hq-pistonia-chip{animation:hq-pis-ring var(--pis-ring-ms,1.6s) ease-in-out infinite}
 @keyframes hq-pis-ring{0%,100%{box-shadow:0 10px 26px -8px rgba(0,0,0,.6),0 0 0 2px color-mix(in srgb,var(--pis-danger) 70%,transparent)}50%{box-shadow:0 10px 26px -8px rgba(0,0,0,.6),0 0 0 7px color-mix(in srgb,var(--pis-danger) 35%,transparent)}}
 .hq-pistonia-msg.is-alert{background:color-mix(in srgb,var(--pis-amber) 20%,transparent);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--pis-amber) 60%,transparent)}
 .hq-pistonia-msg.is-clear{background:color-mix(in srgb,var(--pis-ok) 16%,transparent);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--pis-ok) 50%,transparent)}
 .hq-pistonia-msg-tag{display:inline-block;margin-right:6px;font-weight:800}
 .hq-pistonia-why-row{display:flex;justify-content:flex-end;margin-top:6px}   /* her alerts carry the same "why?" as a card */
-.hq-pistonia-note{align-self:flex-start;display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 6px;max-width:92%;padding:6px 12px;border-radius:12px;font-size:.85rem;
+.hq-pistonia-note{align-self:flex-start;display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 6px;max-width:92%;padding:6px 12px;border-radius:12px;font-size:var(--text-sm);
   color:var(--muted,#b7c2ce);background:color-mix(in srgb,var(--text,#fff) 6%,transparent)}
 .hq-pistonia-note.is-gone{opacity:.45;text-decoration:line-through}
 .hq-pistonia-note-tag{font-weight:700;color:var(--text,#fff)}
-.hq-pistonia .hq-pistonia-link{padding:0 4px;border:0;background:none;color:var(--pis);font:inherit;font-weight:700;font-size:.85rem;cursor:pointer;text-decoration:underline}
+.hq-pistonia .hq-pistonia-link{padding:0 4px;border:0;background:none;color:var(--pis);font:inherit;font-weight:700;font-size:var(--text-sm);cursor:pointer;text-decoration:underline}
 .hq-pistonia .hq-pistonia-link:disabled{opacity:.5;cursor:default}
 .hq-pistonia .hq-pistonia-hbtn.is-off{opacity:.55}
 .hq-pistonia-settings{flex:1 1 auto;min-height:0;overflow-y:auto;padding:8px 14px 14px;display:flex;flex-direction:column;gap:14px}
-.hq-pistonia-sec h4{margin:0 0 6px;font-size:.95rem}
-.hq-pistonia-hint{margin:4px 0 0;font-size:.85rem;color:var(--muted,#b7c2ce);line-height:1.45}
-.hq-pistonia-switch{display:flex;align-items:flex-start;gap:10px;font-weight:700;font-size:.92rem;line-height:1.4;cursor:pointer}
+.hq-pistonia-sec h4{margin:0 0 6px;font-size:var(--text-md)}
+.hq-pistonia-hint{margin:4px 0 0;font-size:var(--text-sm);color:var(--muted,#b7c2ce);line-height:1.45}
+.hq-pistonia-switch{display:flex;align-items:flex-start;gap:10px;font-weight:700;font-size:var(--text-md);line-height:1.4;cursor:pointer}
 .hq-pistonia-switch input{flex:none;width:20px;height:20px;margin-top:1px;accent-color:var(--pis);cursor:pointer}
 .hq-pistonia-notes{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
-.hq-pistonia-notes li{display:flex;align-items:baseline;justify-content:space-between;gap:10px;padding:8px 12px;border-radius:12px;font-size:.9rem;
+.hq-pistonia-notes li{display:flex;align-items:baseline;justify-content:space-between;gap:10px;padding:8px 12px;border-radius:12px;font-size:var(--text-md);
   background:color-mix(in srgb,var(--text,#fff) 7%,transparent);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--line,#334055) 70%,transparent)}
 
 /* resize grip: always on the corner farthest from the chip (set by the script) */
@@ -270,12 +270,12 @@
 .hq-pistonia-menu:not(.is-above){top:calc(100% + 8px)}
 .hq-pistonia-menu.is-right{right:0}
 .hq-pistonia-menu:not(.is-right){left:0}
-.hq-pistonia .hq-pistonia-mitem{min-height:40px;padding:0 12px;border:0;border-radius:10px;text-align:left;cursor:pointer;font:inherit;font-size:.9rem;font-weight:600;color:var(--text,#fff);background:transparent}
+.hq-pistonia .hq-pistonia-mitem{min-height:40px;padding:0 12px;border:0;border-radius:10px;text-align:left;cursor:pointer;font:inherit;font-size:var(--text-md);font-weight:600;color:var(--text,#fff);background:transparent}
 .hq-pistonia .hq-pistonia-mitem:hover,.hq-pistonia .hq-pistonia-mitem:focus-visible{background:color-mix(in srgb,var(--pis) 20%,transparent)}
 
 /* ---- phones ------------------------------------------------------------------------------------------------------ */
 @media (max-width:520px){
-  .hq-pistonia .hq-pistonia-input{font-size:16px}
+  .hq-pistonia .hq-pistonia-input{font-size:var(--text-md)}
   .hq-pistonia .hq-pistonia-send,.hq-pistonia .hq-pistonia-pbtn{min-height:44px}
   .hq-pistonia .hq-pistonia-qbtn{min-height:38px}
   .hq-pistonia-grip{width:34px;height:34px}

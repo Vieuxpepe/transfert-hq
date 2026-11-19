@@ -193,6 +193,7 @@ class Tapo:
         self.lsk = self.ivb = b""
         self.tag_prefix = ""
         self.tpap_keys = None
+        self.trace = []  # (step, camera error_code) of the latest login, for the server log; never secrets.
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
         context.check_hostname = False
         # The camera's certificate is self-signed on the local robotics subnet;
@@ -235,6 +236,14 @@ class Tapo:
             raise DeviceError("Réponse de la caméra invalide") from None
         if not isinstance(value, dict):
             raise DeviceError("Réponse de la caméra invalide")
+        try:
+            sent = json.loads(body)
+            params = sent.get("params") or {}
+            step = params.get("sub_method") or ("digest" if "digest_passwd" in params else
+                                                "challenge" if "cnonce" in params else sent.get("method"))
+        except (ValueError, AttributeError):
+            step = "request"
+        self.trace = self.trace[-7:] + [(step, value.get("error_code"))]
         return value
 
     def _app_headers(self, content_type):
@@ -269,7 +278,7 @@ class Tapo:
         }}), headers)
         self._check_login_lockout(register)
         if register.get("error_code") != 0:
-            raise DeviceError("Compte caméra refusé")
+            raise DeviceError(f"Compte caméra refusé (inscription, code {register.get('error_code')})")
         try:
             registration = register["result"]
             credential = c200_credential(self.password, registration["extra_crypt"])
@@ -286,7 +295,7 @@ class Tapo:
             raise DeviceError("Connexion à la caméra refusée (réponse de connexion indisponible)") from None
         self._check_login_lockout(share)
         if share.get("error_code") != 0:
-            raise DeviceError("Compte caméra refusé")
+            raise DeviceError(f"Compte caméra refusé (échange, code {share.get('error_code')})")
         try:
             result = share["result"]
             stok, seq = result["stok"], int(result["start_seq"])
@@ -321,7 +330,7 @@ class Tapo:
             raise DeviceError("Connexion à la caméra suspendue (trop d’essais)")
         nonce, confirm = data.get("nonce"), data.get("device_confirm")
         if first.get("error_code") != -40413 or not isinstance(nonce, str) or not isinstance(confirm, str):
-            raise DeviceError("Compte caméra refusé")
+            raise DeviceError(f"Compte caméra refusé (défi, code {first.get('error_code')})")
         hashed = None
         for candidate in (hashlib.sha256(self.password.encode()).hexdigest().upper(),
                           hashlib.md5(self.password.encode()).hexdigest().upper()):

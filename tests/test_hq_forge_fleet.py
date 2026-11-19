@@ -599,6 +599,33 @@ class FleetHttp(unittest.TestCase):
         self.assertEqual([row["error"] for row in done["tasks"] if row["state"] == "failed"], ["quota"])
         self.assertEqual(len(self.gallery_ids()), 2)
 
+    def test_one_image_of_a_batch_can_be_cancelled_without_touching_the_others(self):
+        a = self.worker("PC A", start=False)
+        a.worker.poll_once()
+        status, payload = self.batch([a.id], 3, "cancel-one-key-1")
+        self.assertIn(status, (200, 202))
+        batch_id = payload["batch"]["batch_id"]
+        queued = [row for row in payload["batch"]["tasks"] if row["state"] == "queued"]
+        self.assertEqual(len(queued), 3)
+        status, done = self.post("/api/forge/batches/" + batch_id + "/tasks/" + queued[0]["id"] + "/cancel", {})
+        self.assertEqual(status, 200)
+        states = {row["id"]: row["state"] for row in done["batch"]["tasks"]}
+        self.assertEqual(states[queued[0]["id"]], "cancelled")
+        self.assertEqual([states[row["id"]] for row in queued[1:]], ["queued", "queued"])
+        self.assertEqual(done["batch"]["counts"]["cancelled"], 1)
+        # Cancelling the whole batch would forbid this; cancelling one image does not.
+        status, done = self.post("/api/forge/batches/" + batch_id + "/tasks/" + queued[1]["id"] + "/cancel", {})
+        self.assertEqual(status, 200)
+        self.assertEqual(done["batch"]["counts"]["cancelled"], 2)
+        self.assertEqual(sum(1 for row in done["batch"]["tasks"] if row["state"] == "queued"), 1)
+        a.start()
+        final = self.finished(batch_id)
+        self.assertEqual(final["counts"]["done"], 1)
+        self.assertEqual(final["counts"]["cancelled"], 2)
+        self.assertEqual(len(self.gallery_ids()), 1)
+        self.assertEqual(len(a.forge_mock.calls), 1)
+        self.assertEqual(self.post("/api/forge/batches/" + batch_id + "/tasks/tk-" + "0" * 24 + "/cancel", {})[0], 404)
+
     def test_incompatible_model_is_refused_with_french_reason_and_no_substitution(self):
         a = self.worker("PC A")
         b = self.worker("PC B", models=("other.safetensors [ffff]",))
@@ -1020,6 +1047,27 @@ class FleetHttp(unittest.TestCase):
         self.assertEqual(len(a.forge_mock.calls), 1)
         self.assertEqual(a.forge_mock.interrupts, 0)
         self.assertTrue(any(task["cancel_deferred"] for task in done["tasks"]))
+
+    def test_pause_keeps_queued_images_and_resume_finishes_the_same_batch(self):
+        a = self.worker("PC A", delay=0.8)
+        status, payload = self.batch([a.id], 3, "pause-key-1")
+        self.assertEqual(status, 202, payload)
+        batch_id = payload["batch"]["batch_id"]
+        wait_for(lambda: a.forge_mock.active == 1)
+        status, paused = self.post(f"/api/forge/batches/{batch_id}/pause", {})
+        self.assertEqual(status, 200)
+        self.assertTrue(paused["batch"]["paused"])
+        wait_for(lambda: self.admin.json(f"/api/forge/batches/{batch_id}")[1]["batch"]["counts"]["done"] == 1, timeout=20)
+        time.sleep(0.6)
+        batch = self.admin.json(f"/api/forge/batches/{batch_id}")[1]["batch"]
+        self.assertEqual((batch["counts"]["done"], batch["counts"]["pending"], batch["paused"]), (1, 2, True))
+        self.assertEqual(len(a.forge_mock.calls), 1, "a paused batch dispatches nothing new")
+        status, resumed = self.post(f"/api/forge/batches/{batch_id}/resume", {})
+        self.assertEqual(status, 200)
+        self.assertFalse(resumed["batch"]["paused"])
+        done = self.finished(batch_id)
+        self.assertEqual((done["counts"]["done"], done["counts"]["pending"]), (3, 0))
+        self.assertEqual(len(a.forge_mock.calls), 3)
 
     def test_private_is_refused_for_remote_and_prompt_never_reaches_workers(self):
         a = self.worker("PC A")

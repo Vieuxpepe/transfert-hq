@@ -144,6 +144,13 @@ if __name__ == "__main__":
     if a.host not in ("127.0.0.1", "localhost", "::1"):
         raise SystemExit("loopback only")
     STATE["root"] = a.root
-    srv = ThreadingHTTPServer((a.host, a.port), H)
+    # Windows: SO_REUSEADDR (the HTTP server default) lets a second daemon bind the same port, so two models would
+    # load into VRAM and /health could answer from one while a synth hung on the other. Refuse the second instance.
+    ThreadingHTTPServer.allow_reuse_address = False
+    try:
+        srv = ThreadingHTTPServer((a.host, a.port), H)
+    except OSError:
+        print(f"port {a.port} déjà utilisé : un démon Chatterbox tourne déjà.", flush=True)
+        raise SystemExit(1)
     threading.Thread(target=lambda: load(a.device), daemon=True).start()  # port answers while loading
     srv.serve_forever()

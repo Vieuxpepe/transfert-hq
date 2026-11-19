@@ -59,6 +59,23 @@ assert.ok(target('wide').open>target('open').open);
 assert.ok(geometry(1,0,0).bottom>geometry(0,0,0).bottom+25,'wide opening adds a cavity rather than scaling a painted lip');
 assert.ok(geometry(.1,1,0).width>geometry(.1,0,0).width,'smile widens corners');
 assert.deepEqual(target('laugh',{time:0,reduced:true}),target('laugh',{time:500,reduced:true}),'reduced motion has a static laugh');
+// Stillness carries the last turn: clipped replies hold longer, warm ones linger,
+// a considered (or correction) answer moves less and holds more.
+const {turnCharacter, nextIdleGap} = require('../assets/hq-companion-mouth.js');
+const clipped = turnCharacter({chars: 42});
+const warm = turnCharacter({chars: 260, warm: true});
+const careful = turnCharacter({chars: 140, primary: 'thoughtful'});
+const neutral = turnCharacter({chars: 150});
+assert.equal(clipped.kind, 'clipped');
+assert.equal(warm.kind, 'warm');
+assert.equal(careful.kind, 'careful');
+assert.equal(neutral.kind, 'neutral');
+assert.ok(nextIdleGap(clipped, 0) >= 15000 && nextIdleGap(clipped, 1) >= 24000, 'a clipped reply is followed by a longer quiet');
+assert.ok(nextIdleGap(warm, 1) <= 11500, 'a warm reply comes back sooner');
+assert.ok(nextIdleGap(careful, 0) >= 21000, 'a considered answer holds the longest');
+assert.ok(careful.amplitude < clipped.amplitude && clipped.amplitude < warm.amplitude, 'amplitude follows the same order');
+assert.ok(warm.linger > neutral.linger && careful.linger < warm.linger, 'linger strength follows the turn');
+for (const c of [clipped, warm, careful, neutral]) assert.ok(nextIdleGap(c, 0) <= nextIdleGap(c, 1));
 console.log('check_hq_companion_mouth: expression ranges, geometry, original rest and reduced motion ok');
 
 const lickA=target('lick',{time:0}),lickB=target('lick',{time:700});
@@ -219,3 +236,38 @@ const kiss=target('auto',{kissBlow:true,time:400});
 assert.equal(kiss.open,0,'kiss blow keeps the lips closed');
 assert.ok(kiss.seal>0&&kiss.press>.4,'kiss blow uses a sealed pucker');
 assert.equal(target('auto',{kissBlow:true,speaking:true,audioLevel:0}).seal,0,'speech takes priority over kiss blow');
+
+// A gesture's head leads the mouth: counter-move first, then a small overshoot
+// that settles. Before this, idle gestures moved the head not at all.
+const {gestureHead, idleBeatAllowed} = require('../assets/hq-companion-mouth.js');
+assert.deepEqual(gestureHead('unknown', 100), {tilt: 0, nod: 0});
+assert.deepEqual(gestureHead('smile', -1), {tilt: 0, nod: 0});
+const lead = gestureHead('smile', 60, 1, 1);
+const settle = gestureHead('smile', 620, 1, 1);
+assert.ok(lead.tilt < 0 && settle.tilt > 0, 'the head moves against the coming gesture before following it');
+assert.ok(gestureHead('smile', 60, -1, 1).tilt > 0, 'the pre-move follows the gesture side');
+let peak = 0, peakAt = 0;
+for (let t = 230; t <= 560; t += 5) { const v = gestureHead('smile', t, 1, 1).tilt; if (v > peak) { peak = v; peakAt = t; } }
+assert.ok(peakAt > 340 && peakAt < 450, 'the overshoot lands in the middle of the settle window: ' + peakAt);
+assert.ok(peak > settle.tilt * 1.12, 'the head passes the target before settling: ' + (peak / settle.tilt).toFixed(3));
+assert.ok(Math.abs(gestureHead('smile', 900, 1, 1).tilt - .22) < .002, 'it settles on the gesture amplitude');
+assert.ok(Math.abs(gestureHead('smile', 395, 1, .5).tilt - peak * .5) < .002, 'strength scales the whole envelope');
+assert.ok(gestureHead('laugh', 395).nod > gestureHead('smile', 395).nod, 'a laugh nods further than a smile');
+for (let t = 0; t < 900; t += 1) {
+  const a = gestureHead('laugh', t).tilt, b = gestureHead('laugh', t + 1).tilt;
+  assert.ok(Math.abs(b - a) < .02, 'the head envelope has no jump at ' + t + ' ms');
+}
+assert.deepEqual(gestureHead('press', 100, 1, 1), gestureHead('press', 100, 1, 1), 'the envelope is deterministic');
+
+// Fewer gestures, not only longer ones: a considered turn lets beats pass.
+const count = (c, beats) => { let n = 0; for (let b = 1; b <= beats; b += 1) if (idleBeatAllowed(c, b)) n += 1; return n; };
+assert.equal(count(neutral, 30), 30, 'a neutral turn takes every beat');
+assert.equal(count(warm, 30), 30, 'a warm turn takes every beat');
+assert.equal(count(clipped, 30), 20, 'a clipped turn skips one beat in three');
+assert.equal(count(careful, 30), 10, 'a considered turn skips two beats in three');
+assert.equal(idleBeatAllowed(null, 1), true, 'a missing character falls back to every beat');
+for (const c of [neutral, warm, clipped, careful]) {
+  let last = -1;
+  for (let b = 1; b <= 9; b += 1) if (idleBeatAllowed(c, b)) { assert.ok(b > last); last = b; }
+}
+console.log('check_hq_companion_mouth: gesture head lead/overshoot and idle-beat duty ok');

@@ -47,7 +47,7 @@ class FakeArm:
         if self.error == "feedback":
             raise arm.DeviceError("device timeout")
         return {"source": "hardware", "actual": self.actual.copy(), "xyz": arm.position(self.actual),
-                "load": {}, "torque": dict(self.torque), "voltage": None}
+                "load": dict(getattr(self, "load", {})), "torque": dict(self.torque), "voltage": None}
 
     def move(self, pose, speed, acceleration):
         self.calls.append(("move", pose, speed, acceleration))
@@ -55,6 +55,13 @@ class FakeArm:
             raise arm.DeviceError("device timeout")
         if self.follow:
             self.actual = {key: pose[key] for key in arm.JOINTS}
+
+    def set_torque(self, enabled):
+        self.calls.append(("torque", bool(enabled)))
+        self.torque = {key: (1 if enabled else 0) for key in arm.JOINTS}
+
+    def telemetry(self):
+        return self.feedback()
 
     def emergency_stop(self):
         self.calls.append("stop")
@@ -495,6 +502,127 @@ class Controller(unittest.TestCase):
         self.assertEqual(assistant.load(assistant.store_path(self.lab, "owner"))["scripts"]["k"]["play_count"], 1)
         self.assertGreaterEqual(self.lab.lease.expires - self.now, robotics.LEASE_SECONDS - 1)
 
+    def shaped_fixture(self, points, legs):
+        """An approved hardware script whose steps were generated from shaped legs, like the 3D editor's."""
+        legs = [assistant.leg(item) for item in legs]
+        generated, owners = assistant.expand_legs(self.lab.config(), arm.HOME.copy(), points, legs)
+        version = self.live_fixture(generated)
+        path = assistant.store_path(self.lab, "owner")
+        state = assistant.load(path)
+        script = state["scripts"]["k"]
+        script["plan"] = {"points": points, "legs": legs, "owners": owners}
+        script["digest"] = assistant.script_digest(script)
+        script["review"]["digest"] = script["approval"]["digest"] = script["digest"]
+        self.lab.write(path, state)
+        return {"id": "k", "digest": script["digest"]}, generated, owners
+
+    def test_goto_approaches_any_pose_in_measured_substeps_on_the_arm(self):
+        self.hardware(video=False, camera_required=False)
+        self.arm.follow = True
+        keys = self.arm_keys()
+        target = {**arm.HOME, "base": 20, "shoulder": 10}
+        limit = self.lab.config()["step_limit"] - .5
+        for _ in range(12):
+            status = self.call("move", {**keys, "kind": "goto", "pose": target})
+            sent = [call[1] for call in self.arm.calls if isinstance(call, tuple)][-1]
+            self.assertEqual(status["script"]["index"], "goto")
+            self.now += .6
+            self.call("telemetry")
+            keys["ticket"] = self.status(keys["lease"])["ticket"]
+            if status["script"]["gap"] <= .25:
+                break
+        self.assertLessEqual(status["script"]["gap"], .25)
+        self.assertAlmostEqual(self.arm.actual["base"], 20, places=2)
+        moves = [call[1] for call in self.arm.calls if isinstance(call, tuple)]
+        steps = [max(abs(b[k] - a[k]) for k in arm.JOINTS) for a, b in zip([arm.HOME, *moves], moves)]
+        self.assertTrue(all(step <= limit + 1e-6 for step in steps))  # never more than one physical step
+        self.assertGreater(len(moves), 1)
+
+    def test_goto_refuses_an_invalid_pose_and_moves_at_once_in_simulation(self):
+        keys = self.arm_keys()
+        with self.assertRaises(ValueError):
+            self.call("move", {**keys, "kind": "goto", "pose": {**arm.HOME, "shoulder": 90}})
+        keys["ticket"] = self.status(keys["lease"])["ticket"]  # still armed: a refused target keeps the arming
+        status = self.call("move", {**keys, "kind": "goto", "pose": {**arm.HOME, "base": 40}})
+        self.assertTrue(status["moving"])
+        self.assertAlmostEqual(status["target"]["base"], 40)
+        self.assertGreater(status["motion"]["seconds"], 0)
+        self.assertEqual(status["motion"]["elapsed"], 0)
+        self.now += 1
+        later = self.status(keys["lease"])
+        if later["moving"]:
+            self.assertAlmostEqual(later["motion"]["elapsed"], 1, places=2)
+
+    def test_leg_group_finds_the_steps_of_a_shaped_leg(self):
+        script = {"steps": [{}] * 6, "plan": {"owners": [1, 1, 1, 2, 3, 3]}}
+        self.assertEqual([assistant.leg_group(script, i) for i in range(6)],
+                         [(0, 2), (0, 2), (0, 2), (3, 3), (4, 5), (4, 5)])
+        self.assertEqual(assistant.leg_group({"steps": [{}] * 3}, 1), (1, 1))
+        self.assertEqual(assistant.leg_group({"steps": [{}] * 3, "plan": {"owners": [1, 1]}}, 1), (1, 1))
+        self.assertEqual(assistant.leg_group({"steps": [{}] * 2, "plan": {"owners": [1, "x"]}}, 0), (0, 0))
+
+    def test_fluid_shaped_leg_streams_as_one_continuous_move(self):
+        version, generated, owners = self.shaped_fixture([{**arm.HOME, "base": 30}], [{"type": "linear"}])
+        self.assertGreater(len(generated), 8)
+        self.arm.follow = True
+        keys = self.arm_keys()
+        self.confirm_live(keys, version, fluid=True)
+        began = self.now
+        status = self.live_move(keys, version)
+        sent = [call[1] for call in self.arm.calls if isinstance(call, tuple)]
+        self.assertAlmostEqual(sent[-1]["base"], 30, places=2)
+        self.assertEqual(status["script"]["index"], len(generated) - 1)  # the page skips the covered steps
+        self.assertAlmostEqual(status["script"]["seconds"], self.now - began, delta=.5)  # the page waits this long
+        self.assertEqual(status["script"]["gap"], 0)
+        # one stream: its goals pass through every generated pose without stopping at any of them
+        for pose in generated[:-1]:
+            near = min(max(abs(goal[k] - pose[k]) for k in arm.JOINTS) for goal in sent)
+            self.assertLess(near, 2.0)
+        # one ramp at each end for the whole leg, not one per generated pose
+        per_step = sum(self.lab.stream_plan(self.lab.config(), a, b, 100)[0]
+                       for a, b in zip([arm.HOME, *generated], generated))
+        self.assertLess(self.now - began, per_step - (len(generated) - 1) * robotics.STREAM_RAMP * .8)
+        stored = assistant.load(assistant.store_path(self.lab, "owner"))["scripts"]["k"]
+        self.assertEqual(stored["play_count"], 1)
+
+    def test_a_shaped_leg_in_the_middle_of_a_script_is_not_the_last_step(self):
+        points = [{**arm.HOME, "base": 20}, {**arm.HOME, "base": 20, "shoulder": 12}]
+        version, generated, owners = self.shaped_fixture(points, [{"type": "joint"}, {"type": "linear"}])
+        self.arm.follow = True
+        keys = self.arm_keys()
+        self.confirm_live(keys, version, fluid=True)
+        first = self.live_move(keys, version, 0)
+        self.assertEqual(first["script"]["index"], 0)  # a joint leg is a single step
+        self.now += .6
+        self.call("telemetry")
+        keys["ticket"] = self.status(keys["lease"])["ticket"]
+        second = self.live_move(keys, version, 1)
+        self.assertEqual(second["script"]["index"], len(generated) - 1)
+        self.assertEqual(assistant.load(assistant.store_path(self.lab, "owner"))["scripts"]["k"]["play_count"], 1)
+
+    def test_a_shaped_leg_refuses_when_any_part_of_its_path_enters_a_zone(self):
+        self.call("settings", {"keepout": []})
+        version, generated, owners = self.shaped_fixture([{**arm.HOME, "base": 30}], [{"type": "linear"}])
+        middle = arm.position(generated[len(generated) // 2])
+        self.lab.write(self.lab.config_path, {**self.lab.config(), "keepout": [
+            {"name": "Milieu", "x": [middle["x"] - 6, middle["x"] + 6], "y": [middle["y"] - 6, middle["y"] + 6],
+             "z": [middle["z"] - 6, middle["z"] + 6]}]})
+        keys = self.arm_keys()
+        self.confirm_live(keys, version, fluid=True)
+        with self.assertRaises(robotics.Rejected) as caught:
+            self.live_move(keys, version)
+        self.assertEqual(caught.exception.code, "robotics_keepout")
+        self.assertFalse(any(isinstance(call, tuple) for call in self.arm.calls))
+
+    def test_non_fluid_play_of_a_shaped_script_still_uses_measured_substeps(self):
+        version, generated, owners = self.shaped_fixture([{**arm.HOME, "base": 30}], [{"type": "linear"}])
+        keys = self.arm_keys()
+        self.confirm_live(keys, version, fluid=False)
+        status = self.live_move(keys, version, 0)
+        self.assertEqual(status["script"]["index"], 0)
+        sent = [call[1] for call in self.arm.calls if isinstance(call, tuple)]
+        self.assertEqual(len(sent), 1)
+
     def test_fluid_live_script_falls_back_to_substeps_when_the_whole_path_fails(self):
         version = self.live_fixture([{**arm.HOME, "base": 70}])
         keys = self.arm_keys()
@@ -775,6 +903,80 @@ class Controller(unittest.TestCase):
             arm.cartesian({"x": 499, "y": 300, "z": 489, "t": 180}, arm.LIMITS, arm.WORKSPACE)
         with self.assertRaises(ValueError):
             arm.validate_path(arm.HOME, {**arm.HOME, "shoulder": 55}, arm.LIMITS, arm.WORKSPACE)
+
+    def test_compliant_grasp_simulation_and_hardware_torque_contact(self):
+        # In simulation: open gripper to 100°, then grasp to 180°.
+        lease = self.call("arm")["lease"]
+        ticket = self.status(lease)["ticket"]
+        self.call("move", {"lease": lease, "ticket": ticket, "kind": "joints",
+                           "pose": {**arm.HOME, "hand": 100}})
+        self.now += 12
+        ticket = self.status(lease)["ticket"]
+        grasped = self.call("move", {"lease": lease, "ticket": ticket, "kind": "grasp",
+                                     "hand": 180, "load_limit": 300})
+        self.assertEqual(grasped["script"]["index"], "grasp")
+        self.assertFalse(grasped["script"]["contact"])
+        self.assertAlmostEqual(grasped["target"]["hand"], 180.0)
+        # In hardware mode: when hand load crosses load_limit, grasp halts immediately and sets contact=True.
+        self.call("cancel", {"lease": lease})
+        self.hardware(camera_required=False)
+        self.arm.actual = {**arm.HOME, "hand": 120.0}
+        self.arm.load = {"base": 10.0, "shoulder": 20.0, "elbow": 15.0, "hand": 360.0}
+        self.now += 1
+        self.call("telemetry")
+        keys = self.arm_keys()
+        contact_state = self.call("move", {**keys, "kind": "grasp", "hand": 180, "load_limit": 320})
+        self.assertTrue(contact_state["script"]["contact"])
+        self.assertEqual(contact_state["script"]["gap"], 0.0)
+        self.assertAlmostEqual(contact_state["target"]["hand"], 120.0)
+
+    def test_s_curve_ramp_has_zero_initial_acceleration_and_exact_endpoints(self):
+        curve = robotics.trapezoid(2.0, 0.4)
+        self.assertAlmostEqual(curve(0.0), 0.0, places=9)
+        self.assertAlmostEqual(curve(2.0), 1.0, places=9)
+        self.assertAlmostEqual(curve(1.0), 0.5, places=9)
+        # Raised-cosine S-curve starts much more gently (cubic in t) than a constant-acceleration ramp (quadratic in t).
+        dt = 0.01
+        self.assertLess(curve(dt), 0.5 * (1 / 1.6) * dt * dt / 0.4 * 0.1)
+
+    def test_teach_mode_releases_and_reengages_torque_and_blocks_arming(self):
+        self.hardware(camera_required=False)
+        status = self.call("teach", {"enable": True})
+        self.assertTrue(status["teach_mode"])
+        self.assertIn(("torque", False), self.arm.calls)
+        with self.assertRaises(robotics.Rejected):
+            self.call("arm")
+        self.arm.actual = {**arm.HOME, "base": 18.0}
+        status = self.call("teach", {"enable": False})
+        self.assertFalse(status["teach_mode"])
+        self.assertIn(("torque", True), self.arm.calls)
+        self.assertAlmostEqual(status["target"]["base"], 18.0)
+
+    def test_lease_renew_extends_deadline_and_rejects_wrong_lease(self):
+        lease = self.call("arm")["lease"]
+        self.now += 15
+        renewed = self.call("renew", {"lease": lease})
+        self.assertTrue(renewed["ok"])
+        self.now += 15
+        self.assertTrue(self.status(lease)["armed"])
+        with self.assertRaises(robotics.Rejected) as err:
+            self.call("renew", {"lease": "wrong-lease"})
+        self.assertEqual(err.exception.status, 403)
+
+    def test_floor_guard_enforces_floor_z_and_tool_offset_on_preview_and_move(self):
+        # Neutral pose Z is ~236.8 mm; a pose at Z=80 mm with floor_z=60 and tool_offset=35 (eff Z=45 < 60) must be refused.
+        low_xyz = {"x": 220.0, "y": 0.0, "z": 80.0, "t": 180.0}
+        ok = self.call("preview", {"kind": "cartesian", "xyz": low_xyz, "floor_z": 60.0, "tool_offset": 10.0})
+        self.assertTrue(ok["ok"])
+        with self.assertRaises(robotics.Rejected) as err:
+            self.call("preview", {"kind": "cartesian", "xyz": low_xyz, "floor_z": 60.0, "tool_offset": 35.0})
+        self.assertEqual(err.exception.code, "robotics_floor_guard")
+        lease = self.call("arm")["lease"]
+        ticket = self.status(lease)["ticket"]
+        with self.assertRaises(robotics.Rejected) as move_err:
+            self.call("move", {"lease": lease, "ticket": ticket, "kind": "cartesian",
+                               "xyz": low_xyz, "floor_z": 60.0, "tool_offset": 35.0})
+        self.assertEqual(move_err.exception.code, "robotics_floor_guard")
 
 
 class SafetyRegression(unittest.TestCase):
@@ -1531,6 +1733,8 @@ class SafetyRegression(unittest.TestCase):
         self.assertTrue(status["uncertain"])
         self.assertEqual(status["stop_state"], "unconfirmed")
 
+    # Calibrated on the bare 22 mm link tubes: the wider gripper tube is switched off here.
+    @patch.object(arm, "GRIPPER_EXTRA", 0.0)
     def test_async_joint_keepout_counterexample(self):
         start = {**arm.HOME, "base": -2.5, "shoulder": -2.5, "elbow": 87.5}
         end = {**arm.HOME, "base": 2.5, "shoulder": 2.5, "elbow": 92.5}
@@ -1593,6 +1797,8 @@ class SafetyRegression(unittest.TestCase):
         old_thread.join(timeout=2.0)
         self.assertEqual(self.lab.active_stream_id, 2)
 
+    # Calibrated on the bare 22 mm link tubes: the wider gripper tube is switched off here.
+    @patch.object(arm, "GRIPPER_EXTRA", 0.0)
     def test_swept_clearance_terminal_interval_fails_closed(self):
         # Tiny interval (0.01 deg) near a box at exact 22.05 mm distance: c_mid > 0,
         # but c_mid - half_arc < 0 at terminal subdivision -> must fail closed.
@@ -2106,6 +2312,18 @@ class Transport(unittest.TestCase):
             Locked("192.168.2.187", "admin", "pw", 1).night_mode()
         self.assertEqual(Locked.tries, 1)
 
+    def test_tapo_refusal_names_the_step_and_the_camera_code(self):
+        class Refuses(tapo.Tapo):
+            def _http(self, path, body, headers=None):
+                import json as _json
+                sub = (_json.loads(body).get("params") or {}).get("sub_method")
+                if sub == "discover":
+                    return {"error_code": 0, "result": {"tpap": {"pake": [2]}}}
+                return {"error_code": -40413}
+
+        with self.assertRaisesRegex(arm.DeviceError, r"Compte caméra refusé \(inscription, code -40413\)"):
+            Refuses("192.168.2.187", "admin", "pw", 1).night_mode()
+
     def test_rtsp_relay_rejects_redirect(self):
         gateway, g = socket.socketpair()
         camera_socket, c = socket.socketpair()
@@ -2135,6 +2353,112 @@ class Transport(unittest.TestCase):
             finally:
                 stopped.set()
                 worker.join(1)
+
+
+class SerialAndCommissioning(unittest.TestCase):
+    def test_serial_port_validation_and_protocol(self):
+        self.assertEqual(arm.serial_port_name("com3"), "COM3")
+        for bad in ("", "COM0", "COM999", "../COM3", "http://127.0.0.1"):
+            with self.assertRaises(ValueError):
+                arm.serial_port_name(bad)
+
+        sent = []
+        home_xyz = arm.position(arm.HOME)
+        t1051 = json.dumps({
+            **home_xyz,
+            "T": 1051,
+            "b": math.radians(arm.HOME["base"]),
+            "s": math.radians(arm.HOME["shoulder"]),
+            "e": math.radians(arm.HOME["elbow"]),
+            "t": math.radians(arm.HOME["hand"]),
+            "torB": 10, "torS": 20, "torE": 30, "torH": 5,
+            "torswitchB": 1, "torswitchS": 1, "torswitchE": 1, "torswitchH": 1,
+        }).encode("utf-8") + b"\n"
+
+        class FakeSerialStream:
+            def __init__(self):
+                self._reply = b""
+
+            def write(self, payload):
+                sent.append(json.loads(payload.decode("utf-8")))
+                self._reply = t1051 if sent[-1].get("T") == 105 else b"\n"
+
+            def readline(self, _limit=4097):
+                return self._reply
+
+            def close(self):
+                pass
+
+        client = arm.SerialArm("com3", 0.5, opener=lambda _p, _t: FakeSerialStream())
+        fb = client.feedback()
+        self.assertEqual(fb["torque_state"], "enabled")
+        self.assertAlmostEqual(fb["actual"]["elbow"], arm.HOME["elbow"], places=2)
+        client.move(arm.HOME, 80, 4)
+        client.emergency_stop()
+        self.assertEqual([c["T"] for c in sent], [105, 102, 210])
+        self.assertEqual(sent[2]["cmd"], 0)
+
+    def test_serial_transport_settings_probe_and_commission_route(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake_arm = FakeArm()
+
+            def serial_factory(port, _timeout):
+                self.assertEqual(port, "COM3")
+                return fake_arm
+
+            now = [100.0]
+            lab = robotics.Robotics(root, clock=lambda: now[0], serial_factory=serial_factory)
+            try:
+                cfg = lab.dispatch("settings", "POST", {
+                    "mode": "hardware",
+                    "transport": "serial",
+                    "serial_port": "com3",
+                    "camera_required": False,
+                }, "s", physical=True, local=True, authorized=lambda: True)["config"]
+                self.assertEqual(cfg["transport"], "serial")
+                self.assertEqual(cfg["serial_port"], "COM3")
+
+                gates = {g: True for g in robotics.COMMISSION_GATES}
+                # Refused before feedback is read
+                with self.assertRaises(robotics.Rejected):
+                    lab.dispatch("commission", "POST", {
+                        "confirmed": True, "firmware_version": "v1.4", "operator": "Master", "gates": gates,
+                    }, "s", physical=True, local=True, authorized=lambda: True)
+
+                lab.dispatch("telemetry", "POST", {}, "s", physical=True, local=True, authorized=lambda: True)
+                # Refused from non-local session
+                with self.assertRaises(robotics.Rejected):
+                    lab.dispatch("commission", "POST", {
+                        "confirmed": True, "firmware_version": "v1.4", "operator": "Master", "gates": gates,
+                    }, "s", physical=False, local=False, authorized=lambda: True)
+                # Refused with incomplete gates
+                with self.assertRaises(robotics.Rejected):
+                    lab.dispatch("commission", "POST", {
+                        "confirmed": True, "firmware_version": "v1.4", "operator": "Master",
+                        "gates": {**gates, "G3.6": False},
+                    }, "s", physical=True, local=True, authorized=lambda: True)
+
+                res = lab.dispatch("commission", "POST", {
+                    "confirmed": True, "firmware_version": "RoArm-M2-S v1.4", "operator": "Marc-Antoine", "gates": gates,
+                }, "s", physical=True, local=True, authorized=lambda: True)
+                self.assertTrue(res["commissioned"])
+                self.assertEqual(res["commissioned_info"]["firmware_version"], "RoArm-M2-S v1.4")
+                status = lab.dispatch("status", "GET", {}, "s", physical=True, local=True, authorized=lambda: True)
+                self.assertTrue(status["commissioned"])
+                self.assertTrue(status["commissioned_info"]["gates_signed"])
+                # Capture blackbox sample and verify persistence across close/reopen
+                now[0] += 2.0
+                lab.dispatch("status", "GET", {}, "s", physical=True, local=True, authorized=lambda: True)
+            finally:
+                lab.close()
+
+            reopened = robotics.Robotics(root, clock=lambda: 200.0, serial_factory=serial_factory)
+            try:
+                bb = reopened.dispatch("blackbox", "GET", {}, "s", physical=True, local=True, authorized=lambda: True)
+                self.assertGreaterEqual(len(bb["entries"]), 1)
+            finally:
+                reopened.close()
 
 
 original_connection = http.client.HTTPConnection

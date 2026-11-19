@@ -1,7 +1,7 @@
 /* Local, pre-generated reaction OGGs. No synthesis credentials in the browser. */
 (function(root,factory){const api=factory();if(typeof module==='object'&&module.exports)module.exports=api;else root.HqCompanionReactionAudio=api;})(typeof globalThis!=='undefined'?globalThis:this,function(){
   'use strict';
-  const MANIFEST_REVISION='2026-11-04-expressive';
+  const MANIFEST_REVISION='2026-11-18-oral-suction';
   const HOT_PREFETCH_KINDS=['hmm','giggle','laugh','exhale','kiss','moan','surprised','lipsmack','wet_mouth','gulp','pleasure','whimper','contented','humming','yawn'];
   const HOT_PREFETCH_PER_KIND=2;
   function pickVariant(samples,state,random=Math.random){

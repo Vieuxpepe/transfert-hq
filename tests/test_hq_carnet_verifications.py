@@ -13,6 +13,7 @@ import json
 import os
 import sys
 import unittest
+from tests.hq_symlink_test_helper import skip_without_symlinks
 from pathlib import Path
 from unittest import mock
 
@@ -855,6 +856,7 @@ class CorruptionTests(VBase):
         self.assertEqual((ids[good["id"]], ids[bad["id"]], out["unavailable"]), ("ok", "corrupt", 1))
         self.va("verification_update", good, note="le reste fonctionne")
 
+    @skip_without_symlinks
     def test_invalid_and_noncanonical_files_do_not_poison_listing_or_index(self):
         good = self.vc()
         d = self.tmp / ".hq-carnet" / "verifications"
@@ -1005,6 +1007,7 @@ class TrustPathTests(VBase):
     def rev_path(self, rid_):
         return self.tmp / ".hq-carnet" / "reviews" / (rid_ + ".json")
 
+    @skip_without_symlinks
     def test_snapshot_swapped_to_a_symlink_before_read_fails_closed_and_signoff_records_nothing(self):
         t = self.t_snapshot()
         v = self.ready(self.t_page(), [t])
@@ -1022,6 +1025,7 @@ class TrustPathTests(VBase):
         with self.assertRaises(snaps.SnapshotStorageError):
             snaps.get(t["snapshot_id"])
 
+    @skip_without_symlinks
     def test_review_swapped_to_a_symlink_before_read_fails_closed(self):
         t = self.t_item()
         self.full_item = self.full(t)
@@ -1037,6 +1041,7 @@ class TrustPathTests(VBase):
             reviews.get(t["review_id"])
         self.assertEqual(self.getv(v)["signoffs"], [])
 
+    @skip_without_symlinks
     def test_open_time_swap_after_the_lstat_is_caught_by_the_descriptor_check(self):
         import hq_carnet_canon as canon
 
@@ -1066,6 +1071,7 @@ class TrustPathTests(VBase):
         self.rev_path(ti["review_id"]).unlink()
         self.assertEqual(ver.observe_ref(ti, evidence.World())["state"], "missing")
 
+    @skip_without_symlinks
     def test_directory_replacement_fails_closed(self):
         t = self.t_snapshot()
         ti = self.full(self.t_item())
@@ -1157,6 +1163,7 @@ class BackupTests(VBase):
         self.assertFalse(out["verifications"]["valid"])
         self.assertEqual((self.tmp / "backup" / "verifications" / self.path_of(v).name).read_bytes(), data)
 
+    @skip_without_symlinks
     def test_final_file_swaps_are_refused_and_never_followed(self):
         v = self.vc()
         path = self.path_of(v)
@@ -1188,6 +1195,7 @@ class BackupTests(VBase):
             v = self.vc()
             path = self.path_of(v)
 
+    @skip_without_symlinks
     def test_redirected_store_directory_is_refused(self):
         self.vc()
         d = self.tmp / ".hq-carnet" / "verifications"

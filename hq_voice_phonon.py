@@ -8,6 +8,8 @@ network beyond 127.0.0.1.
 """
 from __future__ import annotations
 
+import hq_language
+
 import hashlib
 import json
 import os
@@ -34,6 +36,8 @@ PHONON_HOST = "127.0.0.1"
 PHONON_PORT = int(os.environ.get("HQ_PHONON_PORT", "8058"))
 PHONON_URL = f"http://{PHONON_HOST}:{PHONON_PORT}"
 PHONON_LOG = PROJECT_ROOT / ".tmp" / "phonon_daemon.log"
+# Stamped on every reply by scripts/phonon_daemon.py (keep the literal in sync: that script runs isolated).
+PHONON_SIGNATURE = "hq-phonon"
 MODELS = {  # lang -> checkpoint. French is gated on Hugging Face (CC BY-NC 4.0).
     "fr": "hf://gradium/phonon-40m-fr",
     "en": "hf://gradium/phonon-31m-en",
@@ -48,6 +52,7 @@ ALIASES = {"transferina": "transferania", "transferania": "transferania", "else"
            "inventoria": "inventoria", "musica": "musica", "pistonia": "pistonia",
            "kinetia": "kinetia", "kinétia": "kinetia"}
 ENGINES = ("xtts", "phonon", "browser")
+REPLY_LANGUAGES = ("en", "fr")
 
 # Audition shortlists picked from catalog *descriptions*; NOT verified by listening.
 # No permanent voice is assigned until the user saves one.
@@ -104,6 +109,8 @@ def load_profiles() -> dict[str, dict[str, Any]]:
             if isinstance(s.get("pitch"), (int, float)):
                 p["pitch"] = max(PITCH_LIMITS[0], min(PITCH_LIMITS[1], float(s["pitch"])))
             p["selected"] = bool(p["voice"]) or c == "else" or p["engine"] == "browser"
+            if s.get("reply_language") in REPLY_LANGUAGES:
+                p["reply_language"] = s["reply_language"]
         out[c] = p
     return out
 
@@ -125,8 +132,27 @@ def save_profile(char: str, engine: str, voice: Optional[str], rate: float, pitc
         profiles = load_profiles()
         profiles[c].update(engine=engine, voice=voice if engine == "phonon" else None,
                            rate=rate, pitch=pitch, selected=True)
-        keep = {k: {f: v[f] for f in ("engine", "voice", "rate", "pitch")} for k, v in profiles.items()}
-        hq_state.write_json_atomic(PROFILES_FILE, {"version": 1, "profiles": keep})
+        hq_state.write_json_atomic(PROFILES_FILE, {"version": 1, "profiles": _profiles_to_keep(profiles)})
+        return profiles[c]
+
+
+def _profiles_to_keep(profiles: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """What is written to disk: the user's choices only (``reply_language`` only when one was set)."""
+    return {k: {f: v[f] for f in ("engine", "voice", "rate", "pitch", "reply_language") if f in v} for k, v in profiles.items()}
+
+
+def set_reply_language(char: str, language: Optional[str]) -> dict[str, Any]:
+    """Pin a character's written-reply language ('en' / 'fr'), or None to follow the saved voice again."""
+    c = character_key(char)
+    if c is None or language not in (*REPLY_LANGUAGES, None):
+        raise ValueError("personnage ou langue inconnu")
+    with _cfg_lock:
+        profiles = load_profiles()
+        if language is None:
+            profiles[c].pop("reply_language", None)
+        else:
+            profiles[c]["reply_language"] = language
+        hq_state.write_json_atomic(PROFILES_FILE, {"version": 1, "profiles": _profiles_to_keep(profiles)})
         return profiles[c]
 
 
@@ -137,9 +163,11 @@ def reset_profile(char: str) -> dict[str, Any]:
         raise ValueError("personnage inconnu")
     with _cfg_lock:
         profiles = load_profiles()
+        kept_language = profiles[c].get("reply_language")  # a voice reset does not change the reply language
         profiles[c] = default_profile(c)
-        keep = {k: {f: v[f] for f in ("engine", "voice", "rate", "pitch")} for k, v in profiles.items()}
-        hq_state.write_json_atomic(PROFILES_FILE, {"version": 1, "profiles": keep})
+        if kept_language:
+            profiles[c]["reply_language"] = kept_language
+        hq_state.write_json_atomic(PROFILES_FILE, {"version": 1, "profiles": _profiles_to_keep(profiles)})
         return profiles[c]
 
 
@@ -191,6 +219,81 @@ def _health(timeout: float = 1.0) -> dict[str, Any]:
         return {}
 
 
+def _port_owner(port: int) -> Optional[int]:
+    """PID listening on our loopback port. The stdlib has no socket-owner call; netstat does on Windows."""
+    if os.name != "nt":
+        return None
+    try:
+        raw = subprocess.run(["netstat", "-ano", "-p", "TCP"], capture_output=True, timeout=10).stdout
+    except Exception:
+        return None
+    # netstat prints in the OEM code page ("État" is 0x90 on a French Windows): decoding as UTF-8 raises, and a
+    # silent failure here would disable the reap exactly when it is needed.
+    try:
+        out = raw.decode("oem", errors="replace")
+    except LookupError:
+        out = raw.decode("cp850", errors="replace")
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) < 5 or parts[0].upper() != "TCP" or parts[3].upper() != "LISTENING":
+            continue
+        if parts[1].endswith(f":{port}") and parts[4].isdigit():
+            return int(parts[4])
+    return None
+
+
+def _probe(path: str = "/health", timeout: float = 1.5) -> tuple[bool, str]:
+    """(answered, body) for a short GET. The daemon stamps every reply, errors included, with PHONON_SIGNATURE: a
+    copy that still answers but is no longer healthy stays recognisable as ours, a foreign service does not.
+    """
+    try:
+        with urllib.request.urlopen(f"{PHONON_URL}{path}", timeout=timeout) as r:
+            return True, r.read(4096).decode("utf-8", "replace")
+    except urllib.error.HTTPError as exc:
+        try:
+            return True, exc.read(4096).decode("utf-8", "replace")
+        except Exception:
+            return True, ""
+    except Exception:
+        return False, ""
+
+
+def reap_stale_daemon() -> bool:
+    """Kill a phonon daemon that holds our port without answering /health.
+
+    A wedged copy keeps the port and never replies, so a fresh daemon cannot bind and voice would stay dead until
+    someone kills it by hand. Run on bridge boot. Nothing is killed while a daemon answers /health, and nothing is
+    killed while whatever answers the port fails to identify itself as ours.
+    """
+    if _health(1.5):
+        return False
+    answered, body = _probe()
+    if answered and PHONON_SIGNATURE not in body:
+        return False  # something else owns the port; never ours to kill
+    pid = _port_owner(PHONON_PORT)
+    if not pid or pid == os.getpid():
+        return False
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, timeout=10)
+        else:
+            os.kill(pid, 15)
+    except Exception:
+        return False
+    try:
+        PHONON_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with open(PHONON_LOG, "a", encoding="utf-8") as log:
+            print(f"reaped a wedged daemon (pid {pid}) holding port {PHONON_PORT}", file=log)
+    except Exception:
+        pass
+    end = time.time() + 5.0
+    while time.time() < end:
+        if not _port_owner(PHONON_PORT):
+            return True
+        time.sleep(0.2)
+    return False
+
+
 def daemon_ready(lang: Optional[str] = None, timeout: float = 1.0) -> bool:
     h = _health(timeout)
     return bool(h.get("ready")) and (lang is None or lang in (h.get("models") or {}))
@@ -212,6 +315,9 @@ def start_daemon(wait_sec: float = 0.0) -> bool:
     if not _daemon_lock.acquire(blocking=False):
         return False
     try:
+        if _health():
+            return True
+        reap_stale_daemon()  # a wedged copy would make the daemon below unable to bind
         if _proc is None or _proc.poll() is not None:
             PHONON_LOG.parent.mkdir(parents=True, exist_ok=True)
             env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
@@ -286,7 +392,7 @@ def synthesize(text: str, *, character: str, language: str = "fr", style: str = 
     c = character_key(character)
     prof = load_profiles().get(c or "", {})
     style = normalize_style(style)
-    lang = "en" if language == "en" else "fr"
+    lang = hq_language.pick(language)
     chosen = voice or prof.get("voice") or prof.get("preview_voice")
     if not chosen:
         return {"ok": False, "engine": "phonon", "code": "no_voice", "error": "Aucune voix Phonon choisie"}
@@ -395,7 +501,7 @@ def studio(op: str, data: dict, *, admin: bool) -> dict[str, Any]:
             return {"ok": False, "error": str(e), "code": "validation"}
     # voice_preview: never persists anything
     text = str(data.get("text") or "")[:MAX_PREVIEW_CHARS]
-    lang = "en" if data.get("language") == "en" else "fr"
+    lang = hq_language.pick(data.get("language"))
     style = str(data.get("style") or "neutral")
     if engine == "xtts":
         if c != "else":
@@ -477,13 +583,19 @@ ENGLISH_DIRECTIVE = (
 
 
 def reply_language(character: Any) -> Optional[str]:
-    """'en' when the character's saved Phonon voice is English-only (so written replies must be
-    English too, or the voice would mispronounce them); otherwise None = leave the prompt alone."""
+    """'en' when the character's replies must be English: an explicit ``reply_language`` pinned in the profile
+    ('fr' pins French), else a saved Phonon voice that is English-only (the voice would mispronounce French).
+    None = leave the prompt alone."""
     c = character_key(character)
     if not c:
-        return None
+        return "en" if hq_language.english_only() else None
     try:
         prof = load_profiles().get(c) or {}
+        if hq_language.english_only():
+            return "en"  # one language for everything she says
+        pinned = prof.get("reply_language")
+        if pinned in REPLY_LANGUAGES:
+            return "en" if pinned == "en" else None
         v = prof.get("voice")
         if prof.get("engine") == "phonon" and v and resolve_voice(v, "en") and not resolve_voice(v, "fr"):
             return "en"

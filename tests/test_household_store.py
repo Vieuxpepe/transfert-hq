@@ -168,7 +168,11 @@ class StoreLifecycleTests(unittest.TestCase):
             conn.commit()
         finally:
             conn.close()
-        self.assertEqual(int(sqlite3.connect(str(path)).execute("PRAGMA user_version").fetchone()[0]), 1)
+        probe = sqlite3.connect(str(path))
+        try:
+            self.assertEqual(int(probe.execute("PRAGMA user_version").fetchone()[0]), 1)
+        finally:
+            probe.close()
         with store.open_store(self.root, create=False) as st:
             self.assertEqual(st.schema_version, 7)
             st.set_meta("post-v2", "ok")
@@ -208,7 +212,11 @@ class StoreLifecycleTests(unittest.TestCase):
             conn.commit()
         finally:
             conn.close()
-        self.assertEqual(int(sqlite3.connect(str(path)).execute("PRAGMA user_version").fetchone()[0]), 2)
+        probe = sqlite3.connect(str(path))
+        try:
+            self.assertEqual(int(probe.execute("PRAGMA user_version").fetchone()[0]), 2)
+        finally:
+            probe.close()
         with store.open_store(self.root, create=False) as st:
             self.assertEqual(st.schema_version, 7)
             row = st.conn.execute("SELECT currency FROM budget_envelopes WHERE id = ?", (env,)).fetchone()

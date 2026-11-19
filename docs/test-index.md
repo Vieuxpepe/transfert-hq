@@ -32,6 +32,8 @@ Verify scripts (recommended):
 |--------|--------|
 | `python scripts/verify_agent_pipeline.py` | HQ client debug + agent triage unit |
 | `python scripts/verify_animation_pipeline.py` | Companion/dangle/home motion perf guards |
+| `python tests/visual_hq_rain_sky_playwright.py` | Rainy Accueil sky, weather pinned: 3 interleaved samples, precipitation must stay 2 sheet animations (0 in Lite), rain-vs-cloudy fps within 15 % |
+| `python scripts/verify_home_bg_composite_budget.py` | Home background grain: paired Full fps + pixel parity (blend vs composite) |
 | `python scripts/verify_bridge_smoke.py` | Bridge HTTP + diag secrecy slice |
 | `python scripts/verify_carnet_smoke.py` | Carnet storage/API core |
 | `python scripts/verify_all_agent_maps.py` | All of the above |
@@ -91,6 +93,17 @@ Setup notes: [musique-spotify.md](musique-spotify.md). Live Spotify OAuth/playba
 | Dessiner fluid editing (`assets/hq-sketch-input.js`: typed dimensions while drawing, click-click shapes, automatic H / V constraints, alignment guides, double-click outline, box select, right-click / long-press ring, `?` sheet, Space repeats, remembered values, « 2D + 3D », push / pull with instant preview) | `node tests/check_hq_sketch_input.mjs`. Browser (throwaway, Python with OCP): `python tests/visual_hq_sketch_fluid_playwright.py` |
 | Dessiner sketch on a picked face (« Esquisser sur la face »: sketch plane / height / outward side from the face, face outline guide, boss outward, pocket into the part) | `node tests/check_hq_sketch_v6.mjs`, `test_hq_solid_occ.V6FormatTests`. Browser (throwaway, Python with OCP): `python tests/visual_hq_sketch_face_playwright.py` |
 | Dessiner v6 (exact solids: sketches on planes, arcs, constraint solver, boss / cut, congé / chanfrein, sweep, loft, suppress / reorder / rollback, STEP, mass) | Needs `requirements-occ.txt` (a venv works: `python -m venv --system-site-packages <dir>` then install it). `python -m unittest tests.test_hq_solid_occ -v` (format tests run everywhere; geometry tests skip without OCP) + `node tests/check_hq_sketch_v6.mjs`. Browser (throwaway server run by that Python): `python tests/visual_hq_dessiner_v6_playwright.py` |
+| Dessiner « Valider le dessin » + « Réparer » (rapport lecture seule : points, objets et contraintes introuvables, esquisses sur une face disparue, lignes de longueur nulle, cotes sans cercle ; réparation bornée qui ne retire que le vide, `S.diagnose` / `S.repair` dans `assets/hq-sketch-core.js`) | `node tests/check_hq_sketch_validate.mjs` |
+| Dessiner rendu mesuré (anneau d'images, budget 500 objets ≤ 6 ms de JS, calque statique + calque transparent, culling, LOD sous-pixel, index de hit-test équivalent au balayage linéaire) | `node tests/check_hq_dessiner_perf.mjs`. Navigateur : `window.hqDessinerPerf()` (HUD avec `?perfhud=1`) |
+| Dessiner cotes ⌀ / R (leader, valeur réelle, drapeau de référence, tolérance, export DXF en `%%c`) | `node tests/check_hq_sketch_dims.mjs` |
+| Dessiner paramètres et cotes pilotantes (`doc.params` + langage d'expressions dans `assets/hq-sketch-core.js` : dépendances, cycles, virgule décimale, `dim.drive` résolu par une contrainte `distance` / `angle` temporaire, libellé réécrit, échec signalé sans demi-application) | `node tests/check_hq_sketch_params.mjs` + `python -m unittest tests.test_hq_drawings_params -v` |
+| Dessiner arbre de fonctions (`S.featureRows` / `activeFeatures` : ordre, répression, point de retour, erreurs dites — profil vide ou disparu, source d'une répétition) | `node tests/check_hq_sketch_features.mjs` + `node tests/check_hq_sketch_v6.mjs` |
+| Dessiner tracé reconnu (`S.recognizeStroke` / `applyStrokeShape` : moindres carrés de ligne, Kasa pour le cercle, arc déduit de la couverture, polyligne RDP, accroche H / V et aux points existants) | `node tests/check_hq_sketch_recognize.mjs` |
+| Dessiner atelier 3D (`assets/hq-dessiner.js` + `assets/hq-solid-view.js` : onglets Pièce · Opération · Propriétés, opérations offertes seulement si la sélection les nourrit (raison du refus), arbre compact (nom, valeur, œil, erreurs, glisser-déposer, point de retour), fantôme de l'opération en attente, vues iso / face / dessus / droite, double-clic sur une face, coupe Z, mesure deux points, pellicule d'historique (triangles et volume de chaque étape), pièces types plaque / équerre / entretoise, conseils au premier usage, dernier maillage conservé, reconstructions en file, toast Annuler) | `node tests/check_hq_sketch_features.mjs` + `node tests/check_hq_sketch_params.mjs` + `node tests/check_hq_sketch_v6.mjs` |
+| Dessiner noms et valeurs pilotées de fonction (`name` ≤ 40 sans caractère de contrôle, `driven` version 6 borné aux champs numériques et résolu avant reconstruction, côté client et côté serveur) | `node tests/check_hq_sketch_features.mjs` + `python -m unittest tests.test_hq_drawings_3d_names -v` |
+| Dessiner partagé (`hq_drawings_live.py` + `GET`/`POST /api/drawings/live` : révisions par dessin, conflit 409 qui renvoie la tête du serveur, présence avec sélection / curseur qui expire, plafonds et clés refusées) | `python -m unittest tests.test_hq_drawings_live -v` |
+| Dessiner invariants aléatoires (séquences d'opérations semées : `validateDoc` après chaque édition, identifiants uniques, extrémités d'arc sur le cercle, Annuler/Rétablir identiques, contraintes cassées refusées) | `node tests/check_hq_sketch_fuzz.mjs` |
+| Dessiner exports et brouillons (`hq_drawings.py` : calques DXF par esquisse, cotes ⌀/R, aller-retour DXF, fiche d'atelier PDF A4 générée à la demande via `kind=pdf`, brouillons bornés K/TTL/orphelins) | `python -m unittest tests.test_hq_drawings_export -v` |
 | Dessiner 3D v5 (revolve, holes, shell, patterns, editable features, 3D history, AR, Carnet 3D view) | Needs manifold3d: run with the bridge's Python (`C:\Python313\python.exe` here). `python -m unittest tests.test_hq_solid_ops tests.test_hq_usdz -v` + `node tests/check_hq_solid_v5.mjs`. Browser (throwaway, server on that Python): see the header of `tests/visual_hq_solid_v5_playwright.py` (seed → server → `save` → run) |
 | Intel / reasoning | `python -m unittest tests.test_hq_carnet_intel tests.test_hq_carnet_reasoning -v` |
 
@@ -101,9 +114,13 @@ Setup notes: [musique-spotify.md](musique-spotify.md). Live Spotify OAuth/playba
 | If you changed… | Run |
 |-----------------|-----|
 | Vault / HTTP | `python -m unittest tests.test_hq_forge_vault tests.test_hq_forge_http -v` |
+| Galerie : restauration (413/507 avant écriture, dédoublonnage SHA-256, vérification sans import), sauvegarde complète et son marqueur, export d'une sélection, corbeille vidée des seuls rejets | `python -m unittest tests.test_hq_forge_gallery tests.test_hq_forge_http -v` |
+| Lot multi-appareils : file, annulation, pause / reprise sans interrompre la tâche en cours | `python -m unittest tests.test_hq_forge_fleet -v` |
+| Onglet Forge — budget de chargement (poids gz des `assets/hq-forge*`, compilation JS) | `node tests/check_hq_forge_budget.mjs` |
 | Jobs / transport | `python -m unittest tests.test_hq_forge_jobs tests.test_hq_forge_transport_http -v` |
-| « Forge peint » (sketch → img2img) | `python -m unittest tests.test_hq_forge_sketch -v` + `node tests/check_hq_sketch_paint_lift.mjs` (also the pad's sketch-to-3D gesture). Browser (throwaway + fake Forge `HQ_FORGE_MOCK=ready HQ_FORGE_MOCK_DELAY=1.5`): `python tests/visual_hq_sketch_3d_paint_playwright.py` |
+| « Forge peint » (sketch → img2img) | `python -m unittest tests.test_hq_forge_sketch -v` + `node tests/check_hq_sketch_paint_lift.mjs` + `node tests/check_hq_sketch_palette.mjs` (also the pad's sketch-to-3D gesture). Browser (throwaway + fake Forge `HQ_FORGE_MOCK=ready HQ_FORGE_MOCK_DELAY=1.5`): `python tests/visual_hq_sketch_3d_paint_playwright.py` |
 | Constellation de graines (seed previews) | `python -m unittest tests.test_hq_forge_preview tests.test_hq_forge_http -v` |
+| Génération refusée avant envoi par le quota : galerie pleine (images ou octets), un emplacement pour deux images, puis deux emplacements pour deux images (Générer revient) | `python tests/visual_forge_quota_playwright.py` |
 
 ---
 
@@ -111,7 +128,9 @@ Setup notes: [musique-spotify.md](musique-spotify.md). Live Spotify OAuth/playba
 
 | Zone | Commande |
 |------|----------|
-| Validation, simulation, propriétaire, reprise, HTTP RoArm, caméra et approbation des scripts | `python -m unittest tests.test_hq_robotics tests.test_hq_robotics_http -v` |
+| Validation, simulation, propriétaire, reprise, HTTP RoArm, caméra et approbation des scripts | `python -m unittest tests.test_hq_robotics tests.test_hq_robotics_http tests.test_hq_robotics_editor -v` |
+| Vue 3D : cinématique inverse, test de recouvrement et formes des trajectoires (comparées à celles du serveur) | `node tests/check_hq_robotics_3d.mjs` |
+| E-stop, keep-out et préréglages ONVIF contre des serveurs loopback | `python scripts/verify_robotics_loopback.py` |
 | Navigation, responsive, gestes, désarmement et cycle du flux avec Chromium | Définir `HQ_ROBOTICS_BROWSER=1`, puis relancer la commande ci-dessus |
 
 Les tests utilisent un état temporaire et des périphériques simulés. [Guide Robotique](robotics.md)
@@ -134,14 +153,26 @@ Architecture index: [household/README.md](household/README.md). `*.v1.json` = cu
 | If you changed… | Run |
 |-----------------|-----|
 | Art API | `python -m unittest tests.test_hq_companion_art -v` |
+| Chat aliveness (scripted 6-turn payload evidence, no model calls; live payload probe) | `python -m unittest tests.test_chat_aliveness -q` + `python scripts/verify_chat_aliveness.py` + `python scripts/verify_live_chat_prompt.py` |
 | Character / memory / voice | `python -m unittest tests.test_hq_companion_character tests.test_hq_companion_memory -v` |
 | Else image chip (memory/thread/API/handoff) | `python -m unittest tests.test_hq_else_chip -v` |
 | Else chip client contracts (moods/voice/DND/prefs) | `python -m unittest tests.test_hq_else_chip_client -v` |
+| Per-assistant sound stash (`hq-assistant-sfx.js`) | `node tests/check_assistant_sfx.mjs` |
 | Sister dialogue (Else ↔ Transferania) | `python -m unittest tests.test_hq_sister_dialogue -v` |
 | Sister UI director (JS helpers) | `python -m unittest tests.test_hq_sister_ui -v` |
 | Musique and Musica (privacy, handles, chained tools, cards, Mixer, taste, radar, Spotify and voice route) | `python -m unittest tests.test_hq_musica tests.test_hq_music tests.test_hq_music_mixer tests.test_hq_music_ui tests.test_hq_music_radar tests.test_hq_spotify -v` |
+| Musica chip dance beat engine (`assets/hq-musica-beat.js`: tempo folding, shared clock and lock, tap tempo, live tempo / phase / drops, energy curve) and the beat-grid store | `node tests/check_musica_beat.mjs` and `python -m unittest tests.test_hq_musica -v` |
+| Musica chip song identity, wiring (`currentSong()` and `syncBeatKey()` must both go through `assets/hq-now-playing.js`, and speech payloads may not read the raw Spotify snapshot) | `node tests/check_musica_song_identity.mjs` |
+| Shared now-playing identity (`assets/hq-now-playing.js`: golden local/Spotify keys, local-over-Spotify precedence, stability clock, speech filter that rejects another track's title, blind-match conceal flag) and its consumers (`hq-musica-chip.js`, `hq-music.js` DJ/tournament wiring) | `node tests/check_song_identity.mjs` |
+| Musica speech identity on the server (`dance_prompt_context` / `ambient_now_playing` never name a track when none is known, speech trace ring + routes, play-memory source) | `python -m unittest tests.test_hq_musica.SpeechIdentityTests -v` |
+| Owner title overrides (`musica_song_titles.json` behind `GET/POST /api/musica/song-titles`, keyed like the beat grid, used by `dance_prompt_context`) | `python -m unittest tests.test_hq_musica.SongTitleOverrideTests -v` |
+| DJ page browser smoke (on-air strip names the song through the shared identity, blind concealment without the Musique page, local playback steps the show aside; stubbed APIs on a throwaway HQ) | `python tests/visual_dj_page_playwright.py` |
+| Chip touch holds (head and tail spanks fire at ~0.55 s; a ~1.25 s hold opens the title editor; cheek/thigh squeezes at 280 ms, keeps the editor at 1.25 s and releases on lift; drag past threshold, second finger and pointercancel suppress both; 390x844 touch viewport) | `python tests/visual_musica_chip_touch_playwright.py` |
+| Load-time script dependencies (a page script that reads another module's global while it loads, e.g. `hq-musica-chip.js` → `hq-musica-beat.js`; the page must load the provider first, statically or earlier in the lazy list) | `node tests/check_hq_script_deps.mjs` — regenerate the table with `--write-doc` into `docs/script-order.md` |
+| Type scale (six steps 11/13/15/17/20/26 across `assets/*.css`, BASE_CSS and inline styles; `em` only in the notebook's document prose, `pt` only in print, display art ≥ 38px) | `node tests/check_hq_scale.mjs` — for what the cascade actually paints, paste `tools/hq_scale_audit.js` into the console |
 | DJ Musica Chatterbox voice (engine choice, moods, cache, fallback, A/B) | `python -m unittest tests.test_hq_voice_chatterbox -v` |
-| DJ Musica show engine (segments, drops mix with ffmpeg, observe / advance / skips, steering, schedules, jingles, guests) | `python -m unittest tests.test_hq_music_dj -v` |
+| DJ Musica show engine (segments, drops mix with ffmpeg — loudness + sidechain bed, observe / advance / skips, steering, schedules, jingles, guests) and the pipeline work (prep stage timings, busy / queued / cancelled preparations, polled-state snapshot, cache size budget, reactive replan after two mood skips) | `python -m unittest tests.test_hq_music_dj -v` |
+| DJ Musica episode export (one MP3 with chapter marks, reuse, cache protection) and Rembobiner text search + their routes | `python -m unittest tests.test_hq_music_dj_export -v` |
 | Temp-root janitor (`tests/hq_temp_janitor.py`: stale `%TEMP%\hq-*` test copies, never follows links) | `python -m unittest tests.test_hq_temp_janitor -v` |
 | DJ Musica Rembobiner (episode archive, replay, drops spared by the cache prune), Le Duel (contenders, instant vote and streamed reaction, champion, Panthéon) and the mood dial | `python -m unittest tests.test_hq_music_dj_duel -v` |
 | Musica voice worker (pairing, bearer auth, job queue, breaker and fallbacks, reference clip, real worker script against a fake HQ and daemon) | `python -m unittest tests.test_hq_voice_remote -v` |
@@ -162,6 +193,8 @@ Architecture index: [household/README.md](household/README.md). `*.v1.json` = cu
 | Companion Live2D, pull, idle throttling | `python scripts/verify_animation_pipeline.py` (includes `test_hq_motion_coordinator`, `test_hq_motion_perf14`, `test_hq_motion_perf16`) |
 | Animation / motion perf | same (`test_hq_avatar_idle_perf12`, `test_hq_dangling_perf15`, `test_hq_motion_tools`) |
 | Playwright Full/Lite/Parked + navigation/request budgets | `python tests/visual_hq_motion_fps_playwright.py` |
+| Rainy sky (weather pinned): Full/Lite budget, 2 sheet animations (0 in Lite), rain-vs-cloudy fps within 15 % of its own baseline | `python tests/visual_hq_rain_sky_playwright.py` |
+| Home background grain / full-screen blend layer | `python scripts/verify_home_bg_composite_budget.py` |
 | Home FX idle (clock, stars, pause) | same (`test_hq_idle_perf11`) |
 | Asset delivery / gzip | `python -m unittest tests.test_asset_delivery tests.test_perf_gzip_cache -v` |
 | Page load perf | `python -m unittest tests.test_hq_pageload_perf9 -v` |
@@ -175,3 +208,69 @@ Workflow for agents: [agent-animation-pipeline.md](agent-animation-pipeline.md).
 Only when the Maître asks or before release: `python -m unittest discover -s tests -p "test_*.py"` (slow).
 
 - `tests/test_hq_voice_phonon.py`, `tests/check_hq_voice_studio.mjs` — Phonon engine routing, cache isolation, fallbacks, studio UI.
+
+---
+
+## Assistant chat (Culinia / Forgia / Securia / Inventoria)
+
+| If you changed… | Run |
+|-----------------|-----|
+| thread state, clear epoch, cancel job, Securia tool gating | `python -m unittest tests.test_hq_securia tests.test_hq_forgia tests.test_hq_culinia tests.test_hq_musica -v` |
+| Inventoria chat turn, session `rev` merge, cancel | `python -m unittest tests.test_hq_inventoria_ai tests.test_hq_inventoria -v` |
+| Inventoria auto-apply/Undo, quick, barcode, nicknames, usual amounts, alert buttons | `python -m unittest tests.test_hq_inventoria_fast -v` |
+| Inventoria where-is, parts/recipes, cooked, prices, use-soon, spot-checks, filament, digest | `python -m unittest tests.test_hq_inventoria_links -v` |
+| Inventoria item sheet, minimum, history, spending, recipes, barcodes list, duplicate-safe retries | `python -m unittest tests.test_hq_inventoria_suivi -v` |
+| Inventoria Suivi tab, item sheet, offline queue, haptics, language, calm/voice/guess-fix/shop mode/quiet settings (offline DOM) | `node tests/check_inventoria_suivi_ui.mjs` (`HQ_UI_PROVE=1` proves each case) |
+| Inventoria feel: calm line, streak, usual/checked marks, voice, ask budget (quiet hours, cap, snooze) | `python -m unittest tests.test_hq_inventoria_feel -v` |
+| Inventoria language layer (dictionary, server-label patterns, translate/revert) | `node tests/check_inventoria_i18n.mjs` |
+| Inventoria panel in Chromium: tabs, Suivi, sheet, offline, slow-network ack, shop mode, calm line, discretion, no French in the English panel (throwaway server) | `python tests/visual_inventoria_playwright.py [--shots dir]` |
+| Inventoria chip cards, Undo toast, deep links (offline DOM) | `node tests/check_assistant_chat_ui.mjs` (`HQ_UI_PROVE=1` proves each case is load-bearing) |
+| the rules themselves | read `docs/assistant-chat-contract.md` (§7 lists what is still open) |
+| Elsea, Atelier 3D (printers, cameras, models, MakerWorld) | `python -m unittest tests.test_hq_elsea tests.test_hq_print3d tests.test_hq_print3d_http tests.test_hq_print3d_filament tests.test_hq_print3d_errors tests.test_hq_print3d_watch tests.test_hq_makerworld_alerts -v` · `node tests/check_hq_print3d.mjs` (STL preview abort, poll guard, tab gating, stale replies, camera/alerts node reuse, empty states, price form, a11y, upload progress/cancel/retry, paging, tile reuse, 304 and 401, poll budget, offline since, tab underline/pane fade, progress tick gating, busy buttons, camera live, history enter) |
+
+### Store binding
+
+Every assistant test module must bind the stores it touches: `tests/hq_assistant_state.py`
+is the shared binder, and it now enforces that.
+
+| If you added or changed… | Run |
+|--------------------------|-----|
+| a test that reads personhood, visit or relationship data | `python -m unittest tests.test_hq_personhood tests.test_hq_assistant_visits -v` |
+| a module-level `set_up`/`tear_down` binding | same module: `tear_down` fails the run when a store wrote the checkout |
+| a module that binds per test | put `hq_assistant_state.guard(self)` in `setUp`; it fails that test if a store writes the checkout |
+| a read of the wrong root | call `hq_assistant_state.assert_stores_bound(root)`; it names every store that still resolves elsewhere |
+
+An unbound store resolves to the checkout (`tests/hq_assistant_state.LIVE_ROOT`), so a
+test that forgot to bind reads the Master's real data or overwrites it.
+
+**Omitting the helper no longer buys silence.** `conftest.py` arms `tests/hq_store_guard.py`
+for the whole pytest session, whatever the module does: it hooks the real store read and
+write paths (`Path.read_text`/`read_bytes`/`open`, `Path.unlink`, `os.replace`/`unlink`) and
+fails the test that touched the checkout, naming the store file and the test node. Any
+create, rewrite or delete inside a `.hq-*` store folder fails; reads count while a test
+runs, and reads at import/collection time are listed at the end of the run without failing
+it (a module may import an assistant package before it binds). `tests/__init__.py` also
+snapshots the checkout's store files, so a `python -m unittest` run names on stderr any
+file a test wrote there.
+
+## Playground
+
+| If you changed… | Run |
+|-----------------|-----|
+| `assets/hq-playground.js`, `hq-playground.css` (échiquier, règles, clavier, assistantes) | `node tests/check_hq_playground.mjs` + `node tests/check_hq_playground_report.mjs` (rejoue la série et la preuve de traits de `docs/hq-playground-growth-report.md` et échoue si l'un des deux blocs cités a dérivé) |
+| Nav / lazy load Playground in `iphone_bridge.py` | `python scripts/verify_bridge_smoke.py` + `python -m unittest tests.test_hq_ux -v` |
+
+## UX / tooltips
+
+| If you changed… | Run |
+|-----------------|-----|
+| `assets/hq.js` tooltip controller, dynamic Forge/Robotique controls, or `tests/check_hq_dynamic_help.mjs` | `python -m unittest tests.test_hq_ux -v` (includes `node tests/check_hq_dynamic_help.mjs`) |
+
+CI: `.github/workflows/ux-tooltips.yml`.
+
+## Navigation
+
+| If you changed… | Run |
+|-----------------|-----|
+| `assets/hq-nav-badges.js` (Carnet / Calendrier / Forge / Sécurité badge sources, the single dot Plus folds them into on a phone, the Calendrier next-event tooltip) | `node tests/check_hq_nav_badges.mjs` |
+| `assets/hq-nav-order.js` (section hairlines, rail collapse), `assets/hq-nav-plus.js` (measured `--nav-h`, Plus icons / Récemment ouvert / Système fold), nav CSS in `iphone_bridge.py` | `node tests/check_hq_nav_badges.mjs` + `node tests/check_hq_nav_rail.mjs` + `node tests/check_hq_chrome.mjs` + `node tests/check_hq_polish.mjs` |

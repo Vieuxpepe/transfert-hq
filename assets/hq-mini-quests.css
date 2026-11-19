@@ -6,7 +6,7 @@
 .mq-item{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px 12px;align-items:center;padding:10px 0;border-top:1px solid var(--line)}
 .mq-item:first-child{border-top:0;padding-top:0}
 .mq-copy{min-width:0}
-.mq-copy strong{display:block;font-size:1rem;font-weight:800;letter-spacing:-.01em;color:var(--text)}
+.mq-copy strong{display:block;font-size:var(--text-md);font-weight:800;letter-spacing:-.01em;color:var(--text)}
 .mq-copy p{margin:2px 0 0;font-size:var(--text-sm,.82rem);color:var(--muted);line-height:1.35}
 .mq-actions{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end}
 .mq-actions button{min-height:44px}

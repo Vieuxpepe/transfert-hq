@@ -136,6 +136,8 @@
       after({ vt: true });
       finishHandled();
     };
+    // A transition skipped (hidden tab, a newer view change) rejects `ready`; the view is applied anyway.
+    if (vt && vt.ready) vt.ready.catch(() => {});
     if (vt && vt.finished) vt.finished.then(done, done);
     else done();
   }

@@ -1,5 +1,7 @@
 @echo off
-cd /d C:\Transfert
+rem Visible-window start: useful when the hidden start failed and you want to read the error.
+rem It uses the same launcher as the logon task, so the duplicate guard and the log files apply here too.
+cd /d "%~dp0"
 echo.
 echo ========================================
 echo  Transfert Bridge v3
@@ -15,9 +17,9 @@ if defined TSIP (
 echo  PIN: see bridge_config.json
 echo  Folders: Inbox / Uni / Print
 echo.
-echo  If already running, this window will exit quickly.
+echo  If already running, this window exits quickly (see bridge_stdout.log).
 echo ========================================
 echo.
-py -3 C:\Transfert\iphone_bridge.py
+call "%~dp0start_bridge_logged.cmd"
 if errorlevel 1 pause
 pause

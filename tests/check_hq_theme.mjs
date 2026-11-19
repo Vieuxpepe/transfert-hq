@@ -12,15 +12,30 @@ assert.deepEqual(T.inkBox({ offsetLeft: 10, offsetTop: 20, offsetWidth: 140, off
 
 const css = readFileSync(new URL("../assets/hq-theme.css", import.meta.url), "utf8");
 const [darkPart, lightPart] = css.split("@media (prefers-color-scheme: light)");
-const accents = (part) => [...part.matchAll(/([^{}]+)\{--accent:(#[0-9a-f]{6})/g)]
-  .flatMap((m) => [...m[1].matchAll(/data-view="([a-z]+)"/g)].map((v) => [v[1], m[2]]));
-const dark = accents(darkPart);
-const light = accents(lightPart.split("::selection")[0]);
+// One source of truth: :root{--view-<page>:#hex}. No rule below repeats a page colour.
+const viewColors = (part) => {
+  const seen = new Map();
+  for (const m of part.matchAll(/--view-([a-z0-9]+):(#[0-9a-f]{6})/g)) if (!seen.has(m[1])) seen.set(m[1], m[2]);
+  return [...seen];
+};
+const dark = viewColors(darkPart);
+const light = viewColors(lightPart.split("::selection")[0]);
+const darkHex = new Map(dark);
 const bridge = readFileSync(new URL("../iphone_bridge.py", import.meta.url), "utf8");
 const views = new Set([...bridge.matchAll(/data-nav="([a-z]+)"/g)].map((m) => m[1]));
+// every [data-view] rule must read a token, and read one that carries that page's colour
+const wired = [];
+for (const rule of css.matchAll(/([^{}]+)\{--accent:var\((--view-[a-z0-9]+)\)/g)) {
+  for (const v of rule[1].matchAll(/data-view="([a-z]+)"/g)) wired.push([v[1], rule[2].replace("--view-", "")]);
+}
 for (const v of views) {
-  assert.ok(dark.some(([k]) => k === v), "dark accent for " + v);
+  assert.ok(darkHex.has(v), "dark accent for " + v);
   assert.ok(light.some(([k]) => k === v), "light accent for " + v);
+  const entries = wired.filter(([dv]) => dv === v);
+  assert.ok(entries.length >= 1, v + " has a [data-view] accent rule");
+  for (const [, token] of entries) {
+    assert.equal(darkHex.get(token), darkHex.get(v), `${v} reads --view-${token}, which is its own colour`);
+  }
 }
 // dark: on the cards (#161d26, #1c2530) and under the dark button text (#04140e); light: on white, #e8eef4 and #f0f3f6, under white text
 for (const [v, c] of dark) for (const bg of ["#161d26", "#1c2530", "#04140e"]) assert.ok(T.contrast(c, bg) >= 4.5, `dark ${v} ${c} on ${bg}: ${T.contrast(c, bg).toFixed(2)}`);
@@ -45,10 +60,17 @@ assert.ok(/--hq-spring:/.test(css), "motion tokens live in theme");
 assert.ok(/runViewChange/.test(src), "view transitions hook");
 assert.ok(/hqViewTransitionHold|vtBlocked/.test(src), "calendar morph can block root VT");
 assert.ok(/__hqViewMotionHandled/.test(src), "panel fade fallback when theme bypassed");
-assert.ok(bridge.includes('<link rel="stylesheet" href="/assets/hq-theme.css"/>') && bridge.includes('<script src="/assets/hq-theme.js"></script>'));
+assert.ok(bridge.includes('<link rel="stylesheet" href="/assets/hq-theme.css"/>') && /<script src="\/assets\/hq-theme\.js"( defer)?><\/script>/.test(bridge));
 assert.ok(bridge.includes("hq-chrome.css") && bridge.includes("hq-chrome.js"), "chrome motion layer");
 assert.ok(bridge.includes("hq-polish.css") && bridge.includes("hq-polish.js"), "visual polish layer");
 assert.ok(bridge.includes("hq-lecteur.css") && bridge.includes("hq-lecteur.js"), "lecteur motion layer");
 assert.ok(bridge.includes("hq-dessiner-motion"), "dessiner motion layer");
 assert.ok(/rel="preload" href="\/assets\/hq-font-inter\.woff2" as="font"/.test(bridge), "the text font is preloaded");
+// radii and elevation are tokens in BASE_CSS, so a card cannot grow a fourth shadow
+for (const token of ["--r-sm:", "--r-lg:", "--r-pill:", "--elev-1:", "--elev-2:"]) assert.ok(bridge.includes(token), "token " + token);
+// a view sheet that is only fetched when the view opens must be listed in the lazy map
+for (const f of ["hq-carnet.css", "hq-forge.css", "hq-dessiner.css", "hq-projects.css", "hq-inventory.css", "hq-engine.css", "hq-security.css"]) {
+  assert.ok(!bridge.includes('<link rel="stylesheet" href="/assets/' + f + '"/>'), f + " is not fetched on every page");
+  assert.ok(bridge.includes("'" + f + "'"), f + " is in the lazy map");
+}
 console.log("check_hq_theme: ok");

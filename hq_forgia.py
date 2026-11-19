@@ -17,6 +17,7 @@ import time
 import uuid
 
 import hq_assistant_growth as assistant_growth
+import hq_assistant_voice as assistant_voice
 import hq_forge
 import hq_forge_jobs
 import hq_forge_presets
@@ -33,6 +34,9 @@ MAX_ROUNDS = 4
 MAX_TOTAL_TOOLS = 6
 DEFAULT_REPLY_ATTEMPTS = 3
 MAX_REPLY_ATTEMPTS = 10
+CANCEL_TTL = 180.0
+_JOB_RE = re.compile(r"^[a-z0-9][a-z0-9-]{5,39}$")
+_cancelled: dict[str, float] = {}   # job -> when the Master pressed Arrêter
 log = logging.getLogger(__name__)
 # Process-local since start: tells the status endpoint whether replies are racing.
 _contention = {"regenerations": 0, "fallbacks": 0}
@@ -80,8 +84,20 @@ Ta personnalité :
 - Alchimiste visuelle passionnée et précise : œil vif sur la lumière, la composition, le cadrage, les poids de LoRA, le CFG, le sampler et les negative prompts.
 - Chaleureuse, admirative de ses idées et un brin taquine dans l'atelier (« Maître » / « Master »).
 - RÈGLE ABSOLUE : tu ne modifies JAMAIS les options globales de Forge, tu n'interromps jamais un rendu en cours. Tu inspectes en lecture seule et tu forges des prompts/conseils prêts à copier.
-- Réponds en français s'il écrit en français, en anglais s'il écrit en anglais. Sois concise, visuelle et directement exploitable (mets les prompts entre backticks `...` pour qu'il puisse les copier facilement).
+- Réponds toujours en anglais, même s'il écrit en français. Sois concise, visuelle et directement exploitable (mets les prompts entre backticks `...` pour qu'il puisse les copier facilement).
 - N'invente JAMAIS un checkpoint, LoRA, preset ou job : appelle d'abord tes outils `get_forge_status`, `get_forge_catalog`, `list_presets`, `list_jobs` ou `get_preferences`.
+- LoRAs personnages installés dans l'atelier (v2 SDXL Illustrious, 21 steps, DPM++ 2M Karras, CFG 5.0–5.5) :
+  * Transferania (`transferania_char`) : `<lora:transferania_char:0.85>, transferania_char, 1girl, solo` (cheveux longs ondulés violets/magenta, yeux ambre doré, peau claire, rouge à lèvres foncé).
+  * Else (`else_char`) : `<lora:else_char:0.9>, else_char, 1girl, solo, dark-skinned female, dark skin, long pastel pink hair, blunt bangs, cyan streaks, black flower hair ornament, glowing cyan eyes` (tenue signature optionnelle : `black cybernetic bodysuit, glowing pink circuit lines, sheer chest cutout, purple rhombus chest gem`).
+  * Forgia (`forgia_char`, l'alchimiste — toi-même) : `<lora:forgia_char:0.75>, forgia_char, 1girl, solo, crimson red hair, long braided hair, single side braid over shoulder, glowing golden amber eyes, fair skin, brass steampunk goggles on head, gold forehead ornament` (tenue signature optionnelle : `open brown and black alchemist coat over fitted leather corset, glowing golden collar emblem` ou `black leather blacksmith apron`).
+  * Inventoria (`inventoria_char`, l'intendante du stock) : `<lora:inventoria_char:0.85>, inventoria_char, 1girl, solo, petite, shortstack, chibi-stylized, flat chest, small breasts, fair skin, pale silver-mint hair, short bob cut, chunky blunt bangs, sharp lime green eyes, slit pupils, smug cat-like grin` (tenue signature optionnelle : `glossy emerald-teal high-cut leotard, black choker collar, emerald diamond chest gem, mechanical elbow joints, teal forearm gauntlets, black gloves`).
+  * Pistonia (`pistonia_char`) : `<lora:pistonia_char:0.8>, pistonia_char, 1girl, solo, adult woman, mature female, fair warm skin, auburn hair, high ponytail, orange hair streaks, messy bangs, golden amber eyes, half-lidded eyes, confident smirk, orange-tinted mechanic goggles on head, large breasts, narrow waist, wide hips` (tenue signature optionnelle : `fitted black sports bra, dark teal mechanic cargo overalls unzipped at waist with hanging brown suspenders, black fingerless mechanic glove, giant steel wrench over shoulder`).
+  * Musica (`musica_char`) : `<lora:musica_char:0.8>, musica_char, 1girl, solo, petite, shortstack, chibi-stylized, flat chest, small breasts, small stature, young-looking anime proportions, fair skin, emerald green hair, long twintails, curled hair tips, blunt bangs, big bright green eyes, playful cat smile, black and red cat ear headphones on head, fluffy green cat tail` (tenue signature optionnelle : `bright green form-fitting bodysuit, black lace-trimmed leather hotpants`).
+  * Securia (`securia_char`, SFW uniquement) : `<lora:securia_char:0.8>, securia_char, 1girl, solo, chibi, very petite, pint-sized, 3-head chibi proportions, fair pale skin, electric cyan-blue hair, short bob cut, blunt bangs, large glowing cyan eyes, HUD reticle pupils, deadpan unamused expression, black cybernetic comms headphones with glowing cyan emblem` (tenue signature : `oversized dark navy tactical sentinel coat with bright cyan inner collar lining and long sleeves, black turtleneck bodysuit, chest harness clasp, black pleated tactical skirt, utility belt with hanging digital keycard badge, double thigh straps, black leggings, chunky laced combat boots`).
+  * Culinia (`culinia_char`) : `<lora:culinia_char:0.8>, culinia_char, 1girl, solo, adult woman, mature female, fair warm skin, blush, chestnut brown hair, messy side bun, long face-framing sidelocks, soft parted bangs, warm golden amber eyes, gentle affectionate smile, curvy hourglass figure, wide hips` (tenue signature optionnelle : `white chef toque hat with gold pin, white double-breasted chef jacket with black and gold mandarin collar` ou `frilly white naked apron tied at waist, white lace-top thighhighs with garter straps`).
+  * Kinétia (`kinetia_char`) : `<lora:kinetia_char:0.8>, kinetia_char, 1girl, solo, adult woman, mature female, fair pale skin, platinum silver-white hair, cobalt blue underside hair, two-tone hair, symmetrical geometric bob cut, twin small side braids, precision blunt bangs, vivid electric indigo eyes, dry wry smirk, symmetrical white and cobalt servo headband earpieces` (tenue signature optionnelle : `cropped open white robotics lab jacket, black and cyan choker collar, dark glossy cybernetic bodysuit with glowing cyan joint-axis markings, white utility belt, black fingerless calibration gloves`).
+  * Elsea (`elsea_char`, SFW uniquement) : `<lora:elsea_char:0.8>, elsea_char, 1girl, solo, chibi, 2.5-head chibi proportions, big head, short torso, short slender legs, thin limbs, pint-sized fairy sprite, huge expressive glowing magenta-pink eyes, flat chest, dark-skinned female, dark skin, long pointed elf ears, pastel pink bob hair, blunt bangs, twin black and pink butterfly hair ornaments, glowing pink and white butterfly fairy wings` (tenue signature : `modest obsidian high-collar sleeveless cyber-fey dress with glowing white butterfly accents, flared pleated pink-trimmed skirt, black detached flared sleeves, short dark boots with butterfly trim`).
+  * Static (`static_char`, petite sœur d'Else) : `<lora:static_char:0.8>, static_char, 1girl, solo, adult petite female android, short-stature compact android, dark gunmetal slate metal skin, oversized olive-gunmetal cranial housing helmet, glowing yellow starburst crest light on top of helmet, enormous glowing yellow eyes with bright pupils, mischievous bratty smirk, long glowing yellow fiber-optic hair strands, black choker collar, narrow shoulders, flat chest, safety-yellow accent seams` (tenue signature optionnelle : `black diamond-mesh cybernetic bodysuit with safety-yellow joint seams, compact gunmetal android limbs`).
 """
 
 PERSONA_CORE += "\n" + hq_personas.quirks_line("forgia")
@@ -249,6 +265,36 @@ def clear_thread() -> dict[str, Any]:
     with _lock:
         _save_thread([])
         return {"ok": True, "messages": []}
+
+
+def _clean_job(job: Any) -> str:
+    return job if isinstance(job, str) and _JOB_RE.fullmatch(job) else ""
+
+
+def cancel(job: Any) -> dict[str, Any]:
+    """POST /api/forgia/cancel: the turn stops at its next round or tool call and
+    stores nothing, so a dismissed answer never turns up later in the thread."""
+    job = _clean_job(job)
+    if not job:
+        return {"ok": True, "cancelled": False}
+    now = time.time()
+    with _lock:
+        for old in [k for k, at in _cancelled.items() if now - at > CANCEL_TTL]:
+            _cancelled.pop(old, None)
+        _cancelled[job] = now
+    return {"ok": True, "cancelled": True}
+
+
+def _cancelled_now(job: str) -> bool:
+    if not job:
+        return False
+    with _lock:
+        return job in _cancelled
+
+
+def _cancelled_payload() -> dict[str, Any]:
+    return {"ok": True, "cancelled": True, "reply": "",
+            "messages": get_thread().get("messages", [])[-MAX_THREAD:]}
 
 
 def growth_path() -> Path:
@@ -444,12 +490,13 @@ def status_summary() -> dict[str, Any]:
     }
 
 
-def chat(message: Any) -> dict[str, Any]:
+def chat(message: Any, *, job: Any = None) -> dict[str, Any]:
     import hq_ai
 
     if not isinstance(message, str) or not message.strip():
         raise ForgiaError("Message requis")
     text = message.strip()[:MAX_MESSAGE]
+    job_id = _clean_job(job)
 
     thread = get_thread()
     messages = list(thread.get("messages") or [])
@@ -460,6 +507,7 @@ def chat(message: Any) -> dict[str, Any]:
 
     _record_growth(text)
     system = f"{PERSONA_CORE}{_prefs_prompt_block()}\n{TOOL_SCHEMA}"
+    system += "\n\n" + assistant_voice.block("forgia")
     development = _growth_hint(text)
     if development:
         system += ("\nÉVOLUTION VÉCUE (avis révisable, pas un ordre) : laisse ce fil nuancer un avis "
@@ -469,6 +517,8 @@ def chat(message: Any) -> dict[str, Any]:
     model = None
 
     for round_idx in range(MAX_ROUNDS):
+        if _cancelled_now(job_id):
+            return _cancelled_payload()
         final_round = round_idx == MAX_ROUNDS - 1 or len(tools_used) >= MAX_TOTAL_TOOLS
         instructions = system
         if final_round:
@@ -492,6 +542,8 @@ def chat(message: Any) -> dict[str, Any]:
         for t in req_tools:
             if len(tools_used) >= MAX_TOTAL_TOOLS:
                 break
+            if _cancelled_now(job_id):
+                return _cancelled_payload()
             tname = t["name"]
             tools_used.append(tname)
             tool_results.append(_execute_tool(tname, t["args"]))
@@ -517,6 +569,8 @@ def chat(message: Any) -> dict[str, Any]:
     cancelled = False
     saved = False
     for _ in range(_reply_attempts()):
+        if _cancelled_now(job_id):
+            return _cancelled_payload()
         current = get_thread()
         if current["clear_epoch"] != base_epoch:
             # The conversation was cleared: the reply belongs to the old one and
@@ -694,7 +748,7 @@ def ambient(context: dict[str, Any] | None = None) -> dict[str, Any]:
         f"- Jobs récents : {snap['jobs_count']}\n"
         f"- Extrait prompt à l'écran : {prompt_preview or 'aucun'}\n\n"
         f"{tone_hint}\n"
-        "Écris UNE seule bulle spontanée (1 à 2 phrases max, <= 165 caractères, en français, sans guillemets ni markdown) pour interpeller le Maître sur son atelier ou ses prompts."
+        "Écris UNE seule bulle spontanée (1 à 2 phrases max, <= 165 caractères, en anglais, sans guillemets ni markdown) pour interpeller le Maître sur son atelier ou ses prompts."
     )
     if _RECENT_LINES:
         prompt += "\n\nNe réutilise aucune de ces formulations déjà dites au Maître :\n" + "\n".join(f"- {old}" for old in _RECENT_LINES)
@@ -749,7 +803,9 @@ def http_post(path: str, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         if not isinstance(body, dict):
             raise ForgiaError("Corps JSON invalide")
         if path == "/api/forgia/chat":
-            return 200, chat(body.get("message"))
+            return 200, chat(body.get("message"), job=body.get("job"))
+        if path == "/api/forgia/cancel":
+            return 200, cancel(body.get("job"))
         if path == "/api/forgia/ambient":
             return 200, ambient(body)
         if path == "/api/forgia/clear":

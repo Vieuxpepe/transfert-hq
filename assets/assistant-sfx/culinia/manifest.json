@@ -1,0 +1,29 @@
+{
+  "assistant": "culinia",
+  "samples": {
+    "open": [
+      {
+        "url": "/assets/assistant-sfx/culinia/open.d176f0a7.ogg",
+        "duration_ms": 280
+      }
+    ],
+    "think": [
+      {
+        "url": "/assets/assistant-sfx/culinia/think.b2622486.ogg",
+        "duration_ms": 410
+      }
+    ],
+    "reply": [
+      {
+        "url": "/assets/assistant-sfx/culinia/reply.6317fbfb.ogg",
+        "duration_ms": 540
+      }
+    ],
+    "error": [
+      {
+        "url": "/assets/assistant-sfx/culinia/error.1845bd94.ogg",
+        "duration_ms": 270
+      }
+    ]
+  }
+}

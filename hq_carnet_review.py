@@ -347,6 +347,16 @@ def _frozen_ctx(live: intel.Ctx, snap: dict):
     return ctx, sources, live.state
 
 
+def live_pages() -> list[dict]:
+    """The live (not deleted) pages exactly as the notebook holds them. READ-ONLY: the "by meaning" suggestions
+    (``hq_carnet_semantic``, ``hq_carnet_digest``) read these and write only their own sidecar files, never the notebook."""
+    return [p for p in _load_state()["pages"] if p["deleted_at"] is None]
+
+
+def page_title(page: dict) -> str:
+    return _hc().derive_title(rich.flat_text(page["content"]))
+
+
 def ask(data: Any) -> dict:
     """``{action: "ask", question, scope: {kind, id?}, limit?}`` -> evidence cards. Read-only: writes nothing, stores nothing."""
     hc = _hc()

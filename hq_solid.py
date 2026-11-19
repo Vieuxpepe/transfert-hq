@@ -64,7 +64,7 @@ def _point_inside(p, ring):
 
 def _check_ring(ring):
     n = len(ring)
-    if n < 3 or abs(_area(ring)) <= EPS:
+    if n < 3 or not all(math.isfinite(x) and math.isfinite(y) for x, y in ring) or abs(_area(ring)) <= EPS:
         raise SolidError("Profil fermé de surface non nulle requis")
     for i, (a, b) in enumerate(_edges(ring)):
         if math.dist(a, b) <= EPS:
@@ -76,9 +76,66 @@ def _check_ring(ring):
                 raise SolidError("Profil croisé ou auto-intersecté")
 
 
+def spline_polyline(pts, closed, steps: int = 12):
+    """Catmull-Rom samples of a spline, matching hq-sketch-core.js `splineSamples` and the canvas curve.
+
+    A closed curve includes its wrap span and does not repeat its first point; an open one ends on its last point.
+    """
+    pts = [(float(p[0]), float(p[1])) for p in (pts or [])]
+    if len(pts) < 2:
+        return []
+    closed = bool(closed) and len(pts) >= 3
+    n = len(pts)
+    spans = n if closed else n - 1
+
+    def at(i):
+        return pts[i % n]
+
+    out = []
+    for i in range(spans):
+        p1, p2 = at(i), at(i + 1)
+        p0 = at(i - 1) if closed else (pts[i - 1] if i > 0 else p1)
+        p3 = at(i + 2) if closed else (pts[i + 2] if i + 2 < n else p2)
+        for k in range(max(1, int(steps))):
+            t = k / max(1, int(steps))
+            t2, t3 = t * t, t * t * t
+            out.append((0.5 * (2 * p1[0] + (-p0[0] + p2[0]) * t + (2 * p0[0] - 5 * p1[0] + 4 * p2[0] - p3[0]) * t2 + (-p0[0] + 3 * p1[0] - 3 * p2[0] + p3[0]) * t3),
+                        0.5 * (2 * p1[1] + (-p0[1] + p2[1]) * t + (2 * p0[1] - 5 * p1[1] + 4 * p2[1] - p3[1]) * t2 + (-p0[1] + 3 * p1[1] - 3 * p2[1] + p3[1]) * t3)))
+    if not closed:
+        out.append(pts[-1])
+    return out
+
+
+def ellipse_ring(cx, cy, rx, ry, steps: int = 96):
+    return [(cx + rx * math.cos(2 * math.pi * k / steps), cy + ry * math.sin(2 * math.pi * k / steps)) for k in range(steps)]
+
+
+def curve_kind(o):
+    """Return 'ellipse' or 'spline' when o can form a closed profile alone, '' for any other object type.
+
+    A malformed curve is refused here rather than at the mesher, so every caller (legacy, OCC, save validation)
+    gives the same reason.
+    """
+    kind = o.get("type")
+    if kind == "ellipse":
+        rx, ry = o.get("rx"), o.get("ry")
+        if not (isinstance(rx, (int, float)) and isinstance(ry, (int, float))
+                and math.isfinite(rx) and math.isfinite(ry) and rx > 0 and ry > 0):
+            raise SolidError("Ellipse invalide")
+        return "ellipse"
+    if kind == "spline":
+        pts = o.get("pts")
+        if not o.get("closed"):
+            raise SolidError("Une spline ouverte ne forme pas un profil fermé")
+        if not isinstance(pts, list) or len(pts) < 3:
+            raise SolidError("Une spline fermée demande au moins trois points")
+        return "spline"
+    return ""
+
+
 def _profile(doc, ids):
     if not isinstance(ids, list) or not ids or len(ids) > MAX_PROFILE_EDGES:
-        raise SolidError("Sélectionne un contour fermé (lignes ou cercle)")
+        raise SolidError("Sélectionne un contour fermé (lignes, cercle, ellipse ou spline fermée)")
     if len(set(ids)) != len(ids):
         raise SolidError("Profil avec objets en double")
     objects = {o["id"]: o for o in doc["objects"]}
@@ -86,15 +143,30 @@ def _profile(doc, ids):
     chosen = [objects.get(i) for i in ids]
     if any(o is None for o in chosen):
         raise SolidError("Profil avec objet supprimé")
+    if any(o.get("construction") for o in chosen):
+        raise SolidError("La géométrie de construction ne forme pas un profil 3D")
+    kinds = [curve_kind(o) for o in chosen]
     if len(chosen) == 1 and chosen[0]["type"] == "circle":
         o = chosen[0]
+        if not (o.get("r", 0) > 0):
+            raise SolidError("Cercle invalide")
         cx, cy = points[o["center"]]
-        ring = [(cx + o["r"] * math.cos(2 * math.pi * k / CIRCLE_STEPS),
-                 cy + o["r"] * math.sin(2 * math.pi * k / CIRCLE_STEPS)) for k in range(CIRCLE_STEPS)]
+        ring = ellipse_ring(cx, cy, o["r"], o["r"], CIRCLE_STEPS)
+        _check_ring(ring)
+        return ring
+    if any(kinds):
+        if len(chosen) != 1:
+            raise SolidError("Une ellipse ou une spline fermée forme seule son contour")
+        o = chosen[0]
+        if kinds[0] == "ellipse":
+            cx, cy = points[o["center"]]
+            ring = ellipse_ring(cx, cy, o["rx"], o["ry"])
+        else:
+            ring = spline_polyline([points[i] for i in o["pts"]], True)
         _check_ring(ring)
         return ring
     if any(o["type"] != "line" for o in chosen):
-        raise SolidError("Seules les lignes de construction et les cercles forment un profil 3D")
+        raise SolidError("Seules les lignes forment un profil 3D (un cercle, une ellipse ou une spline fermée suffit)")
     graph = {}
     for o in chosen:
         a, b = o["p1"], o["p2"]

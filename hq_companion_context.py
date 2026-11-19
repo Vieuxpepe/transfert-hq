@@ -51,6 +51,13 @@ def page_kind(text):
                          ("POINT À ÉCLAIRCIR", "personhood"), ("POINT ANCIEN À ÉCLAIRCIR", "personhood"),
                          ("VISITE RÉCENTE AVEC", "personhood"), ("VISITE ANCIENNE AVEC", "personhood"),
                          ("SUJET RÉCENT", "personhood"), ("SUJET ANCIEN", "personhood"),
+                         # The ledger read back: the corrections themselves, so it
+                         # shares the protected correction bytes, not her one line.
+                         ("RÉPARATIONS DU JOURNAL", "correction"),
+                         # The object each sister keeps: a ritual, or his list.
+                         ("RITUEL QUI S'ACCUMULE", "personhood"), ("LISTE TENUE", "personhood"),
+                         # What she used to say and says now: her own history, dated.
+                                                   ("RÉPARATION", "personhood"), ("CHAPITRE CLOS", "personhood"),
                          ("NOTE SUR MOI", "personhood"),
                          ("VALEUR APPRISE", "personhood")):
         if head.startswith(prefix):

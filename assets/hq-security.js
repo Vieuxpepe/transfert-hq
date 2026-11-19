@@ -223,7 +223,8 @@
     tabNav.innerHTML =
       '<button type="button" class="hq-sec-tab-btn active" data-sec-tab="traffic">Trafic HTTP en direct</button>' +
       '<button type="button" class="hq-sec-tab-btn" data-sec-tab="events">Événements de Sécurité</button>' +
-      '<button type="button" class="hq-sec-tab-btn" data-sec-tab="sessions">Sessions Actives</button>';
+      '<button type="button" class="hq-sec-tab-btn" data-sec-tab="sessions">Sessions Actives</button>' +
+      '<button type="button" class="hq-sec-tab-btn" data-sec-tab="digest">Rapport &amp; Registre</button>';
     feedCard.appendChild(tabNav);
 
     var tableWrap = el('div', 'hq-sec-table-wrap');
@@ -694,7 +695,7 @@
         var timeStr = (r.timestamp || '').split('T')[1] || r.timestamp || '';
         var detail = r.pin_hint ? '<span style="color:#f59e0b">Tentative PIN: ' + esc(r.pin_hint) + '</span>' : esc(r.role || 'anonyme');
         html += '<tr>' +
-          '<td style="font-family:monospace;font-size:0.75rem">' + esc(timeStr) + '</td>' +
+          '<td style="font-family:monospace;font-size:13px">' + esc(timeStr) + '</td>' +
           '<td>' + getProvBadge(r.provenance) + '</td>' +
           '<td style="font-family:monospace">' + esc(r.ip) + '</td>' +
           '<td><strong style="color:var(--text)">' + esc(r.method) + '</strong></td>' +
@@ -723,9 +724,9 @@
         var timeStr = (e.timestamp || '').split('T')[1] || e.timestamp || '';
         var sevColor = e.severity === 'critical' ? '#ef4444' : e.severity === 'warning' ? '#f59e0b' : '#38bdf8';
         html += '<tr>' +
-          '<td style="font-family:monospace;font-size:0.75rem">' + esc(timeStr) + '</td>' +
+          '<td style="font-family:monospace;font-size:13px">' + esc(timeStr) + '</td>' +
           '<td><strong style="color:#f0f6fc">' + esc(e.event) + '</strong></td>' +
-          '<td><span style="color:' + sevColor + ';font-weight:700;text-transform:uppercase;font-size:0.7rem">' + esc(e.severity) + '</span></td>' +
+          '<td><span style="color:' + sevColor + ';font-weight:700;text-transform:uppercase;font-size:11px">' + esc(e.severity) + '</span></td>' +
           '<td>' + getProvBadge(e.source_class) + '</td>' +
           '<td>' + esc(e.actor_role) + '</td>' +
           '<td>' + esc(e.result) + '</td>' +
@@ -778,6 +779,114 @@
             notify('Erreur révocation : ' + err.message, true);
           }
         });
+      });
+
+    } else if (tab === 'digest') {
+      container.innerHTML = '<div style="padding:24px;text-align:center;color:#64748b">Génération du rapport périodique Securia en cours…</div>';
+      api('/api/securia/digest').then(function (dig) {
+        if (state.currentTab !== 'digest') return;
+        renderDigestTab(container, dig);
+      }).catch(function (e) {
+        if (state.currentTab !== 'digest') return;
+        container.innerHTML = '<div style="padding:24px;text-align:center;color:#ef4444">Erreur rapport Securia : ' + esc(e.message) + '</div>';
+      });
+    }
+  }
+
+  function renderDigestTab(container, dig) {
+    var def = dig.deflected_summary || {};
+    var q = dig.quota_guard || {};
+    var qu = dig.quarantine_registry || {};
+    var entries = qu.entries || [];
+    var scoreCol = dig.health_score >= 90 ? '#10b981' : dig.health_score >= 70 ? '#f59e0b' : '#ef4444';
+
+    var html = '<div style="padding:16px;display:flex;flex-direction:column;gap:18px;">';
+
+    // Header banner
+    html += '<div style="display:flex;justify-content:space-between;align-items:center;background:rgba(15,23,42,0.6);border:1px solid rgba(56,189,248,0.25);border-radius:12px;padding:14px 18px;flex-wrap:wrap;gap:10px;">' +
+      '<div>' +
+        '<div style="font-size:13px;color:#7dd3fc;text-transform:uppercase;font-weight:700">Fenêtre d\'analyse : ' + esc(dig.window || '7 jours') + '</div>' +
+        '<div style="font-size:17px;font-weight:700;margin-top:2px;color:#f0f9ff">' + esc(dig.securia_assessment || '') + '</div>' +
+      '</div>' +
+      '<div style="text-align:right">' +
+        '<span style="font-size:26px;font-weight:800;color:' + scoreCol + '">' + esc(dig.health_score) + '%</span>' +
+        '<div style="font-size:13px;color:#94a3b8;font-weight:600">' + esc(dig.health_status || 'Santé') + '</div>' +
+      '</div>' +
+    '</div>';
+
+    // Observed security counters. No UA filter, decoy route or canary token is
+    // installed, so these read 0 and the subtitles say so.
+    html += '<div>' +
+      '<h4 style="margin:0 0 10px;font-size:13px;color:#38bdf8;text-transform:uppercase;letter-spacing:0.04em">Compteurs observés dans le journal</h4>' +
+      '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;">' +
+        '<div class="hq-sec-kpi"><span class="hq-sec-kpi-label">Total Dévié</span><span class="hq-sec-kpi-val" style="color:#38bdf8">' + esc(def.total_deflected || 0) + '</span><span class="hq-sec-kpi-sub">somme des compteurs ci-dessous</span></div>' +
+        '<div class="hq-sec-kpi"><span class="hq-sec-kpi-label">Scanners d\'attaque</span><span class="hq-sec-kpi-val" style="color:#ef4444">' + esc(def.scanners_blocked || 0) + '</span><span class="hq-sec-kpi-sub">aucun filtre UA installé</span></div>' +
+        '<div class="hq-sec-kpi"><span class="hq-sec-kpi-label">Scrapers d\'IA</span><span class="hq-sec-kpi-val" style="color:#f59e0b">' + esc(def.ai_scrapers_blocked || 0) + '</span><span class="hq-sec-kpi-sub">aucun filtre UA installé</span></div>' +
+        '<div class="hq-sec-kpi"><span class="hq-sec-kpi-label">Leurres / Decoys</span><span class="hq-sec-kpi-val" style="color:#a855f7">' + esc(def.honeypot_decoys_tripped || 0) + '</span><span class="hq-sec-kpi-sub">aucune route leurre installée</span></div>' +
+        '<div class="hq-sec-kpi"><span class="hq-sec-kpi-label">Traversées / Path</span><span class="hq-sec-kpi-val" style="color:#ec4899">' + esc(def.path_traversals_neutralized || 0) + '</span><span class="hq-sec-kpi-sub">aucune sonde ../ journalisée</span></div>' +
+        '<div class="hq-sec-kpi"><span class="hq-sec-kpi-label">Jetons Canaris</span><span class="hq-sec-kpi-val" style="color:#eab308">' + esc(def.honeytokens_tripped || 0) + '</span><span class="hq-sec-kpi-sub">aucun jeton canari installé</span></div>' +
+      '</div>' +
+    '</div>';
+
+    // Quotas IA
+    html += '<div>' +
+      '<h4 style="margin:0 0 10px;font-size:13px;color:#38bdf8;text-transform:uppercase;letter-spacing:0.04em">Supervision Quotas &amp; Anti-DDoS IA</h4>' +
+      '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;">' +
+        '<div class="hq-sec-kpi"><span class="hq-sec-kpi-label">Requêtes Supervisées</span><span class="hq-sec-kpi-val">' + esc(q.tracked_requests || 0) + '</span><span class="hq-sec-kpi-sub">appels d\'inférence</span></div>' +
+        '<div class="hq-sec-kpi"><span class="hq-sec-kpi-label">Économie Cache / Dédup</span><span class="hq-sec-kpi-val" style="color:#10b981">' + esc(q.cache_hits_saved || 0) + '</span><span class="hq-sec-kpi-sub">requêtes redondantes évitées</span></div>' +
+        '<div class="hq-sec-kpi"><span class="hq-sec-kpi-label">Identités Sous Quota</span><span class="hq-sec-kpi-val">' + esc(q.active_identities || 0) + '</span><span class="hq-sec-kpi-sub">clients actifs</span></div>' +
+      '</div>' +
+    '</div>';
+
+    // Quarantine Registry
+    html += '<div>' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px;">' +
+        '<h4 style="margin:0;font-size:13px;color:#38bdf8;text-transform:uppercase;letter-spacing:0.04em">Registre de Quarantaine &amp; Pénitence (' + esc(qu.active_count || 0) + ' IP actives · ' + esc(qu.recidivists_count || 0) + ' récidivistes)</h4>' +
+        '<button type="button" class="hq-securia-btn hq-securia-btn-secondary" id="hq-sec-btn-prune-penitence">Purger les peines échues</button>' +
+      '</div>';
+
+    if (!entries.length) {
+      html += '<div style="padding:18px;text-align:center;background:rgba(255,255,255,0.03);border-radius:10px;color:#64748b;font-size:13px">Aucune IP en quarantaine actuellement. Périmètre complètement purgé.</div>';
+    } else {
+      html += '<table class="hq-sec-table"><thead><tr>' +
+        '<th>IP</th><th>Motif</th><th>Mise en quarantaine</th><th>Durée</th><th>Récidive</th>' +
+        '</tr></thead><tbody>';
+      for (var m = 0; m < entries.length; m++) {
+        var it = entries[m];
+        var isRec = it.recidivist || (it.offenses && it.offenses > 1);
+        html += '<tr>' +
+          '<td style="font-family:monospace;font-weight:700">' + esc(it.ip) + '</td>' +
+          '<td style="color:#94a3b8">' + esc(it.reason || '-') + '</td>' +
+          '<td style="font-family:monospace;font-size:13px">' + esc((it.blocked_at || '').replace('T', ' ')) + '</td>' +
+          '<td>' + (it.duration_sec ? Math.round(it.duration_sec / 60) + ' min' : '<span style="color:#ef4444;font-weight:700">Permanent</span>') + '</td>' +
+          '<td>' + (isRec ? '<span style="background:rgba(239,68,68,0.2);color:#ef4444;padding:2px 6px;border-radius:4px;font-weight:700;font-size:11px">RÉCIDIVISTE (' + esc(it.offenses) + ')</span>' : '<span style="color:#10b981;font-size:11px">1re infraction</span>') + '</td>' +
+          '</tr>';
+      }
+      html += '</tbody></table>';
+    }
+    html += '</div></div>';
+
+    container.innerHTML = html;
+
+    var pruneBtn = doc.getElementById('hq-sec-btn-prune-penitence');
+    if (pruneBtn) {
+      pruneBtn.addEventListener('click', async function () {
+        pruneBtn.disabled = true;
+        pruneBtn.textContent = 'Purge en cours…';
+        try {
+          var headers = { 'Content-Type': 'application/json' };
+          if (typeof win.hqCsrfToken === 'function') {
+            var tok = win.hqCsrfToken();
+            if (tok) headers['X-CSRF-Token'] = tok;
+          }
+          var rep = await api('/api/securia/prune-quarantine', { method: 'POST', headers: headers, body: '{}' });
+          notify('Securia : ' + rep.purged_count + ' IP expirée(s) purgée(s). ' + rep.retained_count + ' IP maintenue(s).', false);
+          updateFeedTable();
+        } catch (e) {
+          notify('Erreur purge Securia : ' + e.message, true);
+          pruneBtn.disabled = false;
+          pruneBtn.textContent = 'Purger les peines échues';
+        }
       });
     }
   }

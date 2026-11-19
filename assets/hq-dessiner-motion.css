@@ -7,14 +7,14 @@
 @keyframes sk-ripple{to{transform:scale(2.2);opacity:0}}
 
 .sk-tool.sk-motion-pop{animation:sk-tool-pop .38s var(--hq-spring)}
-.sk-stage.sk-motion-enter,.sk-3d-stage.sk-motion-enter{animation:sk-mode-slide .34s var(--hq-out)}
+.sk-bar.sk-motion-enter,.sk-stage.sk-motion-enter,.sk-3d-stage.sk-motion-enter{animation:sk-mode-slide .34s var(--hq-out)}
 .sk-stage.sk-motion-flip,.sk-3d-stage.sk-motion-flip{animation:sk-view-flip .52s var(--hq-out)}
 .sk-btn.sk-save.sk-motion-stamp{animation:sk-save-stamp .55s var(--hq-out)}
 .sk-motion-ripple{position:absolute;border-radius:50%;pointer-events:none;transform:scale(0);opacity:.3;
   background:color-mix(in srgb,var(--accent) 50%,transparent);width:var(--sr,64px);height:var(--sr,64px);margin-left:calc(var(--sr,64px)/-2);margin-top:calc(var(--sr,64px)/-2)}
 
 @media (prefers-reduced-motion:reduce){
-  .sk-tool.sk-motion-pop,.sk-stage.sk-motion-enter,.sk-3d-stage.sk-motion-enter,.sk-stage.sk-motion-flip,.sk-3d-stage.sk-motion-flip,
+  .sk-bar.sk-motion-enter,.sk-tool.sk-motion-pop,.sk-stage.sk-motion-enter,.sk-3d-stage.sk-motion-enter,.sk-stage.sk-motion-flip,.sk-3d-stage.sk-motion-flip,
   .sk-btn.sk-save.sk-motion-stamp{animation:none}
   .sk-motion-ripple{display:none}
 }

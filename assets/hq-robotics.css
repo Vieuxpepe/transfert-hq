@@ -3,9 +3,12 @@
   --rb-muted: var(--muted, #a7b5bf);
   --rb-line: var(--line, #2c3a48);
   --rb-panel: var(--panel, #111b25);
-  --rb-surface: color-mix(in srgb, var(--rb-panel) 94%, var(--rb-ink));
-  --rb-monitor: #0b171e;
+  --rb-surface: color-mix(in srgb, var(--rb-panel) 93%, var(--rb-ink));
+  --rb-monitor: #091319;
   --rb-active: #117f6c;
+  --rb-glow: rgba(115, 237, 206, .18);
+  /* Height of the sticky section bar; the status strip parks directly under it. */
+  --rb-nav-h: 56px;
   color: var(--rb-ink);
   font-family: var(--font, system-ui);
   max-width: 1400px;
@@ -17,8 +20,8 @@
 #hq-robotics-app :where(h1, h2, p, dl, dd) { margin: 0; }
 #hq-robotics-app :where(p, output) { overflow-wrap: anywhere; }
 #hq-robotics-app :is(h1, h2) { font-family: inherit; }
-#hq-robotics-app h1 { font-size: clamp(1.75rem, 4vw, 2.4rem); font-weight: 760; letter-spacing: -.055em; }
-#hq-robotics-app h2 { font-size: 1rem; font-weight: 730; letter-spacing: -.018em; }
+#hq-robotics-app h1 { font-size: var(--text-2xl); font-weight: 760; letter-spacing: -.055em; }
+#hq-robotics-app h2 { font-size:var(--text-lg); font-weight: 740; letter-spacing: -.018em; }
 
 .rb-head, .rb-head-actions, .rb-card-head, .rb-actions, .rb-tabs, .rb-camera-actions {
   display: flex;
@@ -29,29 +32,39 @@
 .rb-head { justify-content: space-between; margin-bottom: 15px; }
 .rb-head p, .rb-card-head > span, .rb-readings, .rb-safety p, .rb-config p {
   color: var(--rb-muted);
-  font-size: .82rem;
+  font-size:var(--text-sm);
 }
 .rb-head p span { padding-inline: 4px; opacity: .75; }
 
 .rb-status {
   position: sticky;
-  top: 8px;
-  z-index: 3;
+  top: var(--rb-nav-h);
+  z-index: 6;
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr)) minmax(max-content, 1.35fr);
   gap: 1px;
   margin-bottom: 12px;
-  border: 1px solid var(--rb-line);
-  border-radius: 12px;
-  background: var(--rb-line);
+  border: 1px solid color-mix(in srgb, var(--rb-line) 78%, #73edce 22%);
+  border-radius: 13px;
+  background: color-mix(in srgb, var(--rb-line) 86%, #73edce 14%);
+  box-shadow: 0 10px 26px -10px rgba(0, 0, 0, .48), inset 0 1px 0 rgba(255, 255, 255, .06);
   overflow: hidden;
 }
-.rb-status > div { min-width: 0; background: var(--rb-panel); }
+.rb-status > div {
+  min-width: 0;
+  background: color-mix(in srgb, var(--rb-panel) 95%, #0d2229);
+}
 .rb-status-device { display: grid; gap: 3px; align-content: center; padding: 9px 12px; }
-.rb-status-device > span { color: var(--rb-muted); font-size: .72rem; font-weight: 600; }
-.rb-status strong { font-size: .83rem; }
+.rb-status-device > span {
+  color: var(--rb-muted);
+  font-size: var(--text-xs);
+  font-weight: 680;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+.rb-status strong { font-size: var(--text-sm); font-variant-numeric: tabular-nums; }
 .rb-status-safety { display: flex; align-items: center; justify-content: space-between; gap: 9px; padding: 6px 8px 6px 12px; }
-.rb-status-safety strong { white-space: nowrap; }
+.rb-status-safety strong { flex: 0 0 auto; white-space: nowrap; }
 .rb-status-safety strong, .rb-status [data-state="live"], .rb-card-head [data-state="moving"] {
   display: inline-flex;
   align-items: center;
@@ -65,26 +78,54 @@
   background: currentColor;
 }
 .rb-status-safety strong::before { background: var(--rb-muted); }
-.rb-status [data-state="armed"]::before, .rb-status [data-state="live"]::before { background: #168f75; }
-.rb-status [data-state="stop"]::before { background: #db4760; }
-.rb-card-head [data-state="moving"]::before { background: #be7a24; }
+.rb-status [data-state="armed"]::before, .rb-status [data-state="live"]::before {
+  background: #1ce0b8;
+  box-shadow: 0 0 8px rgba(28, 224, 184, .65);
+}
+.rb-status [data-state="stop"]::before {
+  background: #ff4d6a;
+  box-shadow: 0 0 8px rgba(255, 77, 106, .65);
+}
+.rb-card-head [data-state="moving"]::before {
+  background: #ffae42;
+  box-shadow: 0 0 8px rgba(255, 174, 66, .6);
+}
 
 .rb-workspace {
   display: grid;
   grid-template-columns: minmax(0, 1.28fr) minmax(0, 1fr);
-  grid-template-areas: "camera motion" "telemetry motion" "presets presets" "records records" "library library" "config history";
-  grid-template-rows: auto 1fr;
+  /* Balance Moniteur + Télémétrie in the left column beside Pilotage in the right column. */
+  grid-template-areas:
+    "camera motion"
+    "telemetry motion"
+    "workbench workbench"
+    "presets records"
+    "library library"
+    "config history";
+  grid-template-rows: auto auto;
   align-items: start;
-  gap: 12px;
+  gap: 14px;
 }
 .rb-card {
   min-width: 0;
+  contain: layout style;
   padding: clamp(12px, 1.6vw, 18px);
-  border: 1px solid var(--rb-line);
+  border: 1px solid color-mix(in srgb, var(--rb-line) 84%, #73edce 16%);
   border-radius: 14px;
-  background: var(--rb-panel);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--rb-panel) 95%, #73edce 5%) 0%, var(--rb-panel) 120px);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .055), 0 10px 28px -12px rgba(0, 0, 0, .4);
 }
 .rb-card-head { justify-content: space-between; margin-bottom: 12px; }
+.rb-card-head > span:not(.rb-tabs) {
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--rb-line) 75%, transparent);
+  background: var(--rb-surface);
+  font-size:var(--text-xs);
+  font-weight: 620;
+  font-variant-numeric: tabular-nums;
+}
 .rb-camera { grid-area: camera; }
 .rb-motion { grid-area: motion; }
 .rb-telemetry { grid-area: telemetry; }
@@ -92,15 +133,15 @@
 .rb-library { grid-area: library; }
 .rb-library[hidden] { display: none; }
 .rb-library-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 10px; }
-.rb-library-empty { margin: 0; color: var(--rb-muted); font-size: .86rem; }
+.rb-library-empty { margin: 0; color: var(--rb-muted); font-size: var(--text-sm); }
 .rb-library .rb-ai-script {
   display: grid; gap: 6px; padding: 10px; overflow-wrap: anywhere;
   border: 1px solid var(--rb-line); border-radius: 10px; background: var(--rb-surface);
 }
 .rb-library .rb-ai-script summary { min-height: 44px; align-content: center; cursor: pointer; }
-.rb-library .rb-ai-stage, .rb-lib-meta { margin: 0; color: var(--rb-muted); font-size: .78rem; }
-.rb-lib-summary { margin: 0; font-size: .86rem; }
-.rb-ai-script .rb-lib-meta { margin: 0; font-size: .78rem; opacity: .8; }
+.rb-library .rb-ai-stage, .rb-lib-meta { margin: 0; color: var(--rb-muted); font-size: var(--text-sm); }
+.rb-lib-summary { margin: 0; font-size: var(--text-sm); }
+.rb-ai-script .rb-lib-meta { margin: 0; font-size: var(--text-sm); opacity: .8; }
 .rb-lib-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .rb-lib-trace { width: 100%; height: 64px; border-radius: 7px; background: var(--rb-panel); }
 .rb-lib-trace polyline { fill: none; stroke: #73edce; stroke-width: 1.6; vector-effect: non-scaling-stroke; }
@@ -111,15 +152,15 @@
 .rb-lib-json {
   width: 100%; box-sizing: border-box; resize: vertical; padding: 8px;
   border: 1px solid rgba(160, 185, 190, .35); border-radius: 7px;
-  background: rgba(0, 0, 0, .3); color: inherit; font: 12px/1.45 ui-monospace, monospace; tab-size: 2;
+  background: rgba(0, 0, 0, .3); color: inherit; font: var(--text-sm)/1.45 ui-monospace, monospace; tab-size: 2;
 }
 .rb-lib-json[readonly] { opacity: .75; }
 .rb-lib-code summary { min-height: 44px; display: grid; align-content: center; cursor: pointer; }
-.rb-lib-axes { fill: #a2bdbf; font: 5px ui-monospace, monospace; }
+.rb-lib-axes { fill: #a2bdbf; font: var(--text-xs) ui-monospace, monospace; }
 .rb-ai-script .rb-lib-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .rb-ai-script .rb-lib-actions button, .rb-ai-script .rb-lib-star { min-height: 44px; min-width: 44px; }
 .rb-ai-script .rb-lib-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.rb-ai-script .rb-lib-summary { margin: 0; font-size: .86rem; }
+.rb-ai-script .rb-lib-summary { margin: 0; font-size: var(--text-sm); }
 .rb-lib-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .rb-lib-actions button, .rb-lib-star { min-height: 44px; min-width: 44px; }
 .rb-config { grid-area: config; }
@@ -132,11 +173,11 @@
   gap: 8px;
   margin-top: 10px;
 }
-.rb-record-save label { display: grid; gap: 4px; min-width: 0; color: var(--rb-muted); font-size: .79rem; }
+.rb-record-save label { display: grid; gap: 4px; min-width: 0; color: var(--rb-muted); font-size: var(--text-sm); }
 .rb-record-tools { display: flex; align-items: end; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
-.rb-record-search { display: grid; gap: 4px; flex: 1 1 200px; color: var(--rb-muted); font-size: .78rem; }
+.rb-record-search { display: grid; gap: 4px; flex: 1 1 200px; color: var(--rb-muted); font-size: var(--text-sm); }
 .rb-record-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; margin-top: 10px; }
-.rb-record-tags { margin: -1px 0 0; color: var(--rb-muted); font-size: .74rem; overflow-wrap: anywhere; }
+.rb-record-tags { margin: -1px 0 0; color: var(--rb-muted); font-size: var(--text-xs); overflow-wrap: anywhere; }
 .rb-record {
   display: grid;
   gap: 6px;
@@ -146,9 +187,9 @@
   background: var(--rb-surface);
 }
 .rb-record-head { display: flex; justify-content: space-between; gap: 8px; overflow-wrap: anywhere; }
-.rb-record-head span { color: var(--rb-muted); font-size: .78rem; white-space: nowrap; }
+.rb-record-head span { color: var(--rb-muted); font-size:var(--text-sm); white-space: nowrap; }
 .rb-record .rb-actions { margin: 0; }
-.rb-record-empty { margin: 10px 0 0; color: var(--rb-muted); font-size: .86rem; }
+.rb-record-empty { margin: 10px 0 0; color: var(--rb-muted); font-size: var(--text-sm); }
 .rb-playback {
   display: grid;
   gap: 6px;
@@ -166,7 +207,7 @@
   gap: 8px;
 }
 .rb-playback-head strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rb-playback-head span, .rb-playback-foot { color: var(--rb-muted); font-size: .78rem; }
+.rb-playback-head span, .rb-playback-foot { color: var(--rb-muted); font-size:var(--text-sm); }
 .rb-playback-bar { height: 5px; border-radius: 99px; background: rgba(255,255,255,.09); overflow: hidden; }
 .rb-playback-bar i { display: block; height: 100%; width: 0; border-radius: inherit; background: #c9b8ff; transition: width .25s ease; }
 .rb-record-edit { display: grid; gap: 8px; margin-top: 8px; }
@@ -189,12 +230,12 @@
   padding: 5px 7px;
   border: 1px solid var(--rb-line);
   border-radius: 8px;
-  font-size: .78rem;
+  font-size: var(--text-sm);
 }
 .rb-record-step b { color: var(--rb-muted); font-variant-numeric: tabular-nums; }
 .rb-record-step span { overflow-wrap: anywhere; }
 .rb-record-step div { display: flex; gap: 4px; }
-.rb-record-step button { min-width: 30px; min-height: 30px; padding: 2px 6px; font-size: .78rem; }
+.rb-record-step button { min-width: 30px; min-height: 30px; padding: 2px 6px; font-size: var(--text-sm); }
 .rb-record-step button:disabled { opacity: .45; cursor: default; }
 .rb-plot canvas { touch-action: none; }
 .rb-plot canvas.is-aim { cursor: crosshair; }
@@ -206,31 +247,40 @@
   overflow: hidden;
   display: grid;
   place-items: center;
-  border: 1px solid #293f49;
-  border-radius: 10px;
+  border: 1px solid #2a4752;
+  border-radius: 12px;
   background: var(--rb-monitor);
+  box-shadow: inset 0 2px 14px rgba(0, 0, 0, .62), 0 1px 0 rgba(255, 255, 255, .05);
   color: #dbedee;
 }
-.rb-viewport video, .rb-video-idle, .rb-plot canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
-.rb-viewport video { object-fit: contain; }
+.rb-viewport video, .rb-video-boost, .rb-video-idle, .rb-plot canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.rb-viewport video, .rb-video-boost { object-fit: contain; }
+.rb-video-boost { pointer-events: none; filter: contrast(1.08) saturate(1.08); }
 .rb-viewport:fullscreen { border: 0; border-radius: 0; }
 .rb-plot, .rb-video-idle {
   background:
-    linear-gradient(90deg, #4d6c741c 1px, transparent 1px),
-    linear-gradient(#4d6c741c 1px, transparent 1px), var(--rb-monitor);
+    radial-gradient(circle at 50% 50%, rgba(17, 127, 108, .12), transparent 72%),
+    linear-gradient(90deg, rgba(115, 237, 206, .06) 1px, transparent 1px),
+    linear-gradient(rgba(115, 237, 206, .06) 1px, transparent 1px), var(--rb-monitor);
   background-position: center;
-  background-size: 24px 24px;
+  background-size: 100% 100%, 24px 24px, 24px 24px;
 }
 .rb-plot-caption, .rb-plot-key {
   position: absolute;
   z-index: 1;
   display: flex;
   gap: 10px;
-  font-size: .72rem;
+  font-size: var(--text-xs);
   color: #bfdbdd;
   pointer-events: none;
 }
 .rb-plot-caption { inset: 9px 10px auto; justify-content: space-between; }
+.rb-plot-caption > span {
+  padding: 2px 7px;
+  border-radius: 6px;
+  background: rgba(9, 19, 25, .74);
+  border: 1px solid rgba(115, 237, 206, .16);
+}
 .rb-plot-key { inset: auto auto 8px 10px; flex-wrap: wrap; max-width: calc(100% - 20px); row-gap: 4px; }
 .rb-plot-key > span { display: inline-flex; align-items: center; gap: 5px; }
 .rb-plot-key > span::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: #73edce; }
@@ -252,17 +302,23 @@
   align-items: baseline;
   justify-content: space-between;
   gap: 3px;
-  padding: 7px 9px;
-  background: var(--rb-surface);
-  border-radius: 7px;
+  padding: 8px 10px;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--rb-surface) 92%, #73edce 8%), var(--rb-surface));
+  border: 1px solid color-mix(in srgb, var(--rb-line) 78%, #73edce 22%);
+  border-radius: 9px;
 }
-.rb-coordinates dt, .rb-coordinates dd span { font-size: .73rem; color: var(--rb-muted); }
-.rb-coordinates dd { font: 650 .9rem ui-monospace, monospace; }
+.rb-coordinates dt {
+  font: 750 var(--text-xs) ui-monospace, monospace;
+  letter-spacing: .04em;
+  color: #73edce;
+}
+.rb-coordinates dd span { font-size: var(--text-xs); color: var(--rb-muted); }
+.rb-coordinates dd { font: 700 var(--text-md) ui-monospace, monospace; font-variant-numeric: tabular-nums; }
 .rb-coordinates dd span { margin-inline-start: 4px; font-weight: 500; }
 
 .rb-video-idle { display: grid; place-content: center; justify-items: center; gap: 5px; padding: 14px; text-align: center; }
-.rb-video-idle strong { font-size: 1rem; }
-.rb-video-idle span { color: #b3cbd2; font-size: .78rem; }
+.rb-video-idle strong { font-size: var(--text-md); }
+.rb-video-idle span { color: #b3cbd2; font-size: var(--text-sm); }
 .rb-video-note {
   position: absolute;
   z-index: 2;
@@ -273,7 +329,7 @@
   border-radius: 5px;
   background: #0b171ef2;
   color: #dbedee;
-  font-size: .72rem;
+  font-size: var(--text-xs);
 }
 /* Fullscreen HUD: STOP, stream health and the measured pose stay reachable when the video fills the screen. */
 .rb-video-hud {
@@ -287,7 +343,7 @@
   padding: 24px 10px 8px;
   background: linear-gradient(180deg, transparent, #071116d9 46%);
   color: #dbedee;
-  font-size: .72rem;
+  font-size: var(--text-xs);
   pointer-events: none;
 }
 .rb-video-hud > span { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
@@ -297,11 +353,11 @@
 }
 .rb-hud-live[data-state="live"] { color: #86e1cd; }
 .rb-hud-live[data-state="live"]::before { background: #73edce; opacity: 1; }
-.rb-hud-rate, .rb-hud-latency, .rb-hud-cells { color: #a8c6ca; font: 500 .72rem ui-monospace, monospace; }
+.rb-hud-rate, .rb-hud-latency, .rb-hud-cells { color: #a8c6ca; font: 500 var(--text-xs) ui-monospace, monospace; }
 .rb-hud-cells i { font-style: normal; opacity: .7; }
 #hq-robotics-app .rb-hud-stop { margin-inline-start: auto; pointer-events: auto; }
-#hq-robotics-app .rb-viewport:fullscreen .rb-hud-stop { min-height: 52px; padding-inline: 18px; font-size: .95rem; }
-.rb-viewport:fullscreen .rb-video-hud { padding: 46px 22px 18px; gap: 8px 16px; font-size: .88rem; }
+#hq-robotics-app .rb-viewport:fullscreen .rb-hud-stop { min-height: 52px; padding-inline: 18px; font-size: var(--text-md); }
+.rb-viewport:fullscreen .rb-video-hud { padding: 46px 22px 18px; gap: 8px 16px; font-size: var(--text-md); }
 
 .rb-lens {
   display: grid;
@@ -322,7 +378,7 @@
   border-radius: 8px;
   background: var(--rb-panel);
   color: var(--rb-ink);
-  font-size: .83rem;
+  font-size: var(--text-sm);
   box-shadow: none;
 }
 #hq-robotics-app :is(input, select) { width: 100%; padding-inline: 8px; }
@@ -349,29 +405,40 @@
 .rb-audio { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
 .rb-audio button { min-height: 44px; }
 .rb-audio button[aria-pressed="true"] { background: #0f6a5e; color: #fff; }
-.rb-audio [role="status"] { color: var(--rb-muted); font-size: .8rem; }
-.rb-quality { display: flex; gap: 6px; align-items: center; color: var(--rb-muted); font-size: .8rem; }
+.rb-audio [role="status"] { color: var(--rb-muted); font-size: var(--text-sm); }
+.rb-quality { display: flex; gap: 6px; align-items: center; color: var(--rb-muted); font-size: var(--text-sm); }
 .rb-quality select { width: auto !important; }
 
-.rb-safety { padding: 9px 10px; background: var(--rb-surface); border-radius: 9px; }
+.rb-safety {
+  padding: 10px 12px;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--rb-surface) 94%, #73edce 6%), var(--rb-surface));
+  border: 1px solid color-mix(in srgb, var(--rb-line) 82%, #73edce 18%);
+  border-radius: 10px;
+}
 .rb-safety .rb-actions { margin: 0; }
 .rb-safety p { margin-top: 6px !important; line-height: 1.38; }
 #hq-robotics-app .rb-lease {
   align-self: center;
-  color: var(--rb-muted);
-  font: 600 .74rem ui-monospace, monospace;
+  color: #73edce;
+  font: 650 var(--text-xs) ui-monospace, monospace;
   white-space: nowrap;
 }
-#hq-robotics-app .rb-hint { margin: 8px 0 0; color: var(--rb-muted); font-size: .76rem; line-height: 1.38; }
+#hq-robotics-app .rb-hint { margin: 8px 0 0; color: var(--rb-muted); font-size: var(--text-sm); line-height: 1.38; }
 .rb-hardware-note { border-inline-start: 2px solid #b96051; padding-inline-start: 7px; }
-.rb-tabs { gap: 2px; background: var(--rb-surface); border-radius: 9px; padding: 2px; }
+.rb-tabs {
+  gap: 3px;
+  background: color-mix(in srgb, var(--rb-panel) 65%, #060e14);
+  border: 1px solid color-mix(in srgb, var(--rb-line) 78%, transparent);
+  border-radius: 10px;
+  padding: 3px;
+}
 .rb-motion > .rb-tabs { margin-block: 11px; }
 #hq-robotics-app .rb-tabs button { flex: 1 0 auto; border-color: transparent; background: transparent; color: var(--rb-muted); }
 #hq-robotics-app .rb-tabs button[aria-pressed="true"] {
-  background: var(--rb-panel);
-  border-color: var(--rb-line);
+  background: color-mix(in srgb, var(--rb-panel) 88%, #73edce 12%);
+  border-color: color-mix(in srgb, var(--rb-active) 65%, var(--rb-line));
   color: var(--rb-ink);
-  box-shadow: inset 0 -2px var(--rb-active);
+  box-shadow: inset 0 -2px var(--rb-active), 0 2px 8px rgba(0, 0, 0, .25);
 }
 
 .rb-axis {
@@ -379,10 +446,14 @@
   grid-template-columns: minmax(0, 1fr) 44px minmax(74px, .95fr) 44px;
   align-items: center;
   gap: 6px;
-  margin-bottom: 5px;
+  margin-bottom: 6px;
+  padding: 5px 6px;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--rb-surface) 55%, transparent);
+  border: 1px solid color-mix(in srgb, var(--rb-line) 50%, transparent);
 }
-.rb-axis label { font-size: .85rem; font-weight: 630; }
-#hq-robotics-app .rb-axis button { padding: 0; touch-action: manipulation; font-size: 1.2rem; }
+.rb-axis label { font-size: var(--text-sm); font-weight: 660; }
+#hq-robotics-app .rb-axis button { padding: 0; touch-action: manipulation; font-size: var(--text-xl); }
 #hq-robotics-app .rb-axis button.is-pressed {
   background: #0f6a5e;
   border-color: #22867b;
@@ -390,8 +461,8 @@
   transform: translateY(1px);
 }
 .rb-axis-input { position: relative; }
-.rb-axis-input span { position: absolute; inset: 50% 7px auto auto; transform: translateY(-50%); font-size: .72rem; color: var(--rb-muted); pointer-events: none; }
-#hq-robotics-app .rb-axis-input input { padding-inline: 6px 25px; appearance: textfield; }
+.rb-axis-input span { position: absolute; inset: 50% 7px auto auto; transform: translateY(-50%); font-size: var(--text-xs); color: var(--rb-muted); pointer-events: none; }
+#hq-robotics-app .rb-axis-input input { padding-inline: 6px 25px; appearance: textfield; font-family: ui-monospace, monospace; font-weight: 640; }
 .rb-axis-input input::-webkit-inner-spin-button { appearance: none; }
 #hq-robotics-app input[type="number"], .rb-telemetry td { font-variant-numeric: tabular-nums; }
 .rb-tuning, .rb-preset-fields, .rb-settings-grid {
@@ -401,64 +472,76 @@
   gap: 8px;
   margin-top: 10px;
 }
-.rb-tuning { grid-template-columns: repeat(auto-fit, minmax(78px, 1fr)); }
+.rb-tuning { grid-template-columns: repeat(auto-fit, minmax(108px, 1fr)); }
 :is(.rb-tuning, .rb-preset-fields, .rb-settings-grid) label {
   display: grid;
   gap: 4px;
   min-width: 0;
   color: var(--rb-muted);
-  font-size: .79rem;
+  font-size: var(--text-sm);
 }
 .rb-settings-grid label.rb-check { display: flex; align-items: center; gap: 8px; grid-column: 1 / -1; min-height: 44px; }
 .rb-settings-grid label.rb-check input { flex: none; width: 22px; height: 22px; min-height: 0; padding: 0; margin: 0; accent-color: #1fa896; }
 .rb-motion-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
-.rb-motion-actions button:last-child { grid-column: 1 / -1; }
-.rb-pose output { display: block; margin-top: 8px; font-size: .82rem; color: var(--rb-muted); }
 
-.rb-telemetry table { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: .84rem; }
+.rb-pose output { display: block; margin-top: 8px; font-size: var(--text-sm); color: var(--rb-muted); }
+
+.rb-telemetry table { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: var(--text-sm); }
 .rb-telemetry thead th:first-child { width: 22%; }
 .rb-telemetry thead th:not(:first-child) { width: 19.5%; }
-.rb-telemetry :is(th, td) { padding: 6px 3px; border-bottom: 1px solid var(--rb-line); text-align: right; }
+.rb-telemetry :is(th, td) { padding: 7px 4px; border-bottom: 1px solid color-mix(in srgb, var(--rb-line) 75%, transparent); text-align: right; }
 .rb-telemetry th:first-child { text-align: left; }
-.rb-telemetry thead th { color: var(--rb-muted); font-size: .76rem; }
-.rb-telemetry tbody td:nth-child(2) { font-weight: 700; }
+.rb-telemetry thead th { color: var(--rb-muted); font-size: var(--text-xs); font-weight: 680; letter-spacing: .03em; text-transform: uppercase; }
+.rb-telemetry tbody td { font-family: ui-monospace, monospace; }
+.rb-telemetry tbody td:nth-child(2) { font-weight: 700; color: var(--rb-ink); }
 .rb-delta { color: var(--rb-muted); white-space: nowrap; }
 .rb-delta.is-off { color: #ffc176; font-weight: 700; }
-.rb-load { display: grid; justify-items: end; gap: 2px; }
-.rb-load > span:first-child { font-size: .76rem; color: var(--rb-muted); font-variant-numeric: tabular-nums; }
-.rb-load-track { display: block; width: 100%; height: 4px; border-radius: 99px; background: rgba(255,255,255,.1); overflow: hidden; }
-.rb-load-track i { display: block; width: 0; height: 100%; border-radius: inherit; background: #73edce; transition: width .2s ease; }
-.rb-load-track i.is-high { background: #ffc176; }
+.rb-load { display: grid; justify-items: end; gap: 3px; }
+.rb-load > span:first-child { font-size: var(--text-sm); color: var(--rb-muted); font-variant-numeric: tabular-nums; }
+.rb-load-track { display: block; width: 100%; height: 5px; border-radius: 99px; background: rgba(255,255,255,.09); overflow: hidden; }
+.rb-load-track i { display: block; width: 0; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #168f75, #73edce); transition: width .2s ease; }
+.rb-load-track i.is-high { background: linear-gradient(90deg, #d9822b, #ffc176); }
 .rb-load-track i.is-negative { background: #d8915a; }
 .rb-readings { margin-top: 9px; }
 .rb-readings output { background: none; }
-.rb-config { scroll-margin-top: 120px; }
-#hq-robotics-app summary { cursor: pointer; min-height: 44px; align-content: center; font-weight: 680; font-size: .9rem; }
+#hq-robotics-app summary { cursor: pointer; min-height: 44px; align-content: center; font-weight: 680; font-size: var(--text-md); }
 .rb-config fieldset { margin: 8px 0 0; padding: 0; border: 0; min-inline-size: 0; }
-.rb-config legend { font-size: .82rem; color: var(--rb-muted); }
+.rb-config legend { font-size: var(--text-sm); color: var(--rb-muted); }
 .rb-limit { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; }
-.rb-limit > span { grid-column: 1 / -1; font-size: .82rem; }
+.rb-limit > span { grid-column: 1 / -1; font-size: var(--text-sm); }
 .rb-sequence { margin-top: 8px; border-top: 1px solid var(--rb-line); }
-.rb-history ol, .rb-sequence ol { padding-inline-start: 22px; font-size: .85rem; }
-.rb-message:not(:empty) {
+.rb-history ol, .rb-sequence ol { padding-inline-start: 22px; font-size: var(--text-sm); }
+.rb-message {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
   position: sticky;
   z-index: 2;
-  bottom: max(5rem, calc(env(safe-area-inset-bottom) + 4rem));
+  /* Above the global floaters: the capture button (bottom right) and the Personnalité pill (bottom left). */
+  bottom: calc(var(--nav-h, 64px) + 80px + env(safe-area-inset-bottom, 0px));
   padding: 8px 12px;
   border: 1px solid var(--rb-line);
   border-radius: 8px;
   background: var(--rb-panel);
-  font-size: .85rem;
+  font-size: var(--text-sm);
   margin-top: 8px !important;
 }
 .rb-message.rb-error { border-color: #c74659; }
+@media (min-width: 900px) { .rb-message { bottom: max(120px, calc(env(safe-area-inset-bottom) + 108px)); } }
 
 @media (max-width: 1050px) {
   .rb-workspace {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-areas: "camera" "motion" "telemetry" "presets" "records" "library" "config" "history";
+    grid-template-areas: "camera" "motion" "telemetry" "workbench" "presets" "records" "library" "config" "history";
     grid-template-rows: auto;
   }
+}
+
+/* At tablet widths the four status cells pinch: the safety line and its STOP button overlapped, so
+   the strip stacks the safety row under the three readings, exactly as it already did on a phone. */
+@media (max-width: 1100px) {
+  .rb-status { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .rb-status-safety { grid-column: 1 / -1; padding: 3px 5px 3px 8px; }
 }
 
 @media (max-width: 620px) {
@@ -466,7 +549,7 @@
   body[data-view="robotique"] .view-tools { flex-wrap: wrap; gap: 4px; }
   .rb-status { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .rb-status-device { padding: 5px 7px; }
-  .rb-status-device strong { font-size: .75rem; }
+  .rb-status-device strong { font-size: var(--text-sm); }
   .rb-status-safety { grid-column: 1 / -1; padding: 3px 5px 3px 8px; }
   .rb-video-idle { padding: 30px 8px 5px; gap: 3px; }
   .rb-viewport:has(.rb-video-idle:not([hidden])) { min-height: 170px; }
@@ -476,10 +559,10 @@
   .rb-camera-actions button { flex: 1 1 auto; }
   .rb-record-save { grid-template-columns: minmax(0, 1fr); }
   .rb-record-tools { display: grid; grid-template-columns: minmax(0, 1fr); }
-  .rb-telemetry table { font-size: .76rem; }
+  .rb-telemetry table { font-size: var(--text-sm); }
   .rb-telemetry :is(th, td) { padding: 6px 2px; }
-  .rb-telemetry thead th { font-size: .68rem; }
-  .rb-load > span:first-child { font-size: .7rem; }
+  .rb-telemetry thead th { font-size: var(--text-xs); }
+  .rb-load > span:first-child { font-size: var(--text-xs); }
   .rb-video-hud .rb-hud-rate, .rb-video-hud .rb-hud-latency { display: none; }
 }
 
@@ -504,7 +587,7 @@
 
 .rb-night[hidden] { display: none; }
 .rb-night { display: flex; align-items: center; justify-content: center; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
-.rb-night span { color: var(--rb-muted); font-size: .8rem; margin-right: 4px; }
+.rb-night span { color: var(--rb-muted); font-size: var(--text-sm); margin-right: 4px; }
 .rb-night button { min-height: 44px; min-width: 56px; }
 
 /* Batch 3: joint sliders, editable sequence rows, PTZ pulse, homing and library ghosts. */
@@ -534,7 +617,7 @@
   gap: 4px 8px;
   min-width: 0;
   color: var(--rb-muted);
-  font-size: .78rem;
+  font-size: var(--text-sm);
 }
 #hq-robotics-app .rb-ptz-pulse select { width: auto; max-width: 100%; min-height: 44px; }
 
@@ -548,37 +631,199 @@
   border: 1px solid var(--rb-line);
   border-radius: 8px;
 }
-.rb-seq-step > b { color: var(--rb-muted); font-size: .78rem; font-variant-numeric: tabular-nums; }
+.rb-seq-step > b { color: var(--rb-muted); font-size: var(--text-sm); font-variant-numeric: tabular-nums; }
 .rb-seq-fields { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; min-width: 0; }
-#hq-robotics-app .rb-seq-input { width: 100%; height: 38px; min-height: 38px; padding-inline: 5px; font-size: .78rem; }
+#hq-robotics-app .rb-seq-input { width: 100%; height: 38px; min-height: 38px; padding-inline: 5px; font-size: var(--text-sm); }
 .rb-seq-tools { display: flex; gap: 3px; }
-#hq-robotics-app .rb-seq-tools button { width: 34px; min-width: 34px; height: 34px; min-height: 34px; padding: 0; font-size: .8rem; }
-.rb-seq-empty { padding: 4px 0; color: var(--rb-muted); font-size: .82rem; list-style: none; }
+#hq-robotics-app .rb-seq-tools button { width: 34px; min-width: 34px; height: 34px; min-height: 34px; padding: 0; font-size: var(--text-sm); }
+.rb-seq-empty { padding: 4px 0; color: var(--rb-muted); font-size: var(--text-sm); list-style: none; }
 
-.rb-section-nav { display: none; }
+/* One sticky bar for the whole page chrome: the section chips scroll inside it, « Vue complète »
+   never scrolls away, and the status strip below sticks at --rb-nav-h instead of colliding here. */
+.rb-section-bar {
+  position: sticky;
+  top: 0;
+  z-index: 7;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 8px;
+  padding: 6px 0;
+  background: color-mix(in srgb, var(--rb-panel) 92%, transparent);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+}
+.rb-section-nav {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  gap: 6px;
+  overflow-x: auto;
+  padding: 0 2px;
+  scrollbar-width: none;
+  overscroll-behavior-x: contain;
+  scroll-padding-inline: 8px;
+  scroll-snap-type: x proximity;
+}
+.rb-section-nav::-webkit-scrollbar { display: none; }
+/* Edge fades are the only cue that the row scrolls: the scrollbar is hidden, at every width.
+   is-start: chips are hidden behind the left fade. is-end: more chips wait on the right; the fade
+   runs over 48 px with a mid stop so a half-visible chip dissolves instead of ending on a hard cut. */
+.rb-section-nav.is-overflow:not(.is-start) {
+  mask-image: linear-gradient(90deg, #000 calc(100% - 56px), rgba(0, 0, 0, .26) calc(100% - 24px), transparent calc(100% - 10px));
+}
+.rb-section-nav.is-overflow.is-start {
+  mask-image: linear-gradient(90deg, transparent, #000 26px);
+}
+.rb-section-nav.is-overflow.is-start:not(.is-end) {
+  mask-image: linear-gradient(90deg, transparent, #000 26px, #000 calc(100% - 56px), rgba(0, 0, 0, .26) calc(100% - 24px), transparent calc(100% - 10px));
+}
+/* A real control for the same job, not just a painted hint: it scrolls the rail and leaves the tab
+   order with the row, so keyboard users get both the chips and the button. Phones keep the fade. */
+#hq-robotics-app .rb-section-more {
+  flex: 0 0 auto;
+  display: inline-grid;
+  place-items: center;
+  width: 40px;
+  min-width: 40px;
+  min-height: 44px;
+  padding: 0;
+  border-radius: 999px;
+  border-color: color-mix(in srgb, var(--rb-line) 92%, transparent);
+  background: var(--rb-surface);
+  color: var(--rb-ink);
+}
+#hq-robotics-app .rb-section-more .rb-icon { width: 18px; height: 18px; }
+#hq-robotics-app .rb-section-more:hover:enabled { background: var(--rb-surface); color: var(--rb-ink); }
+@media (max-width: 620px) { #hq-robotics-app .rb-section-more { display: none !important; } }
+/* Phones: the content lane is narrow, so the status cells stack instead of squeezing
+   « Simulation / À configurer » and cutting the STOP control. */
+@media (max-width: 599.98px) {
+  #hq-robotics-app .rb-status { grid-template-columns: 1fr; }
+  /* The safety row keeps E-stop + STOP readable instead of cutting the STOP label. */
+  #hq-robotics-app .rb-status-safety { flex-wrap: wrap; gap: 6px 10px; }
+}
+#hq-robotics-app .rb-section-nav button {
+  flex: 0 0 auto;
+  min-height: 44px;
+  padding-inline: 14px;
+  border-radius: 999px;
+  border-color: color-mix(in srgb, var(--rb-line) 70%, transparent);
+  background: color-mix(in srgb, var(--rb-panel) 90%, #73edce 7%);
+  color: var(--rb-muted);
+  font-size: var(--text-sm);
+  scroll-snap-align: start;
+  transition: background-color .16s ease, color .16s ease, border-color .16s ease;
+}
+#hq-robotics-app .rb-section-nav button:hover:enabled { background: var(--rb-surface); color: var(--rb-ink); }
+/* The rail ends on a whole chip: a chip entering either edge fade is hidden, not half-drawn. */
+#hq-robotics-app .rb-section-nav button.is-edge-cut { opacity: 0; pointer-events: none; }
+#hq-robotics-app .rb-section-nav button[aria-pressed="true"] {
+  background: var(--rb-active);
+  border-color: color-mix(in srgb, var(--rb-active) 74%, #73edce 26%);
+  color: #fff;
+  font-weight: 740;
+  box-shadow: 0 4px 14px -6px color-mix(in srgb, var(--rb-active) 80%, transparent);
+}
+#hq-robotics-app .rb-section-overview {
+  flex: 0 0 auto;
+  border-style: dashed;
+  border-radius: 999px;
+  color: var(--rb-muted);
+}
+/* Phone entry to Kinétia: the header button scrolls away with the card head and the floating chip would
+   sit over the jog buttons, so the sticky bar carries a compact trigger that follows the whole page. */
+#hq-robotics-app .rb-section-ai {
+  display: none;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  min-height: 44px;
+  padding-inline: 12px;
+  border-radius: 999px;
+  border-color: color-mix(in srgb, #5ed3bc 46%, var(--rb-line));
+  background: color-mix(in srgb, var(--rb-panel) 88%, #5ed3bc 12%);
+  color: color-mix(in srgb, var(--rb-ink) 74%, #5ed3bc 26%);
+  font-size: var(--text-sm);
+  font-weight: 650;
+}
+#hq-robotics-app .rb-section-ai .rb-icon { width: 17px; height: 17px; }
+#hq-robotics-app .rb-section-ai:hover:enabled { border-color: #5ed3bc; color: var(--rb-ink); }
+@media (max-width: 620px) { #hq-robotics-app .rb-section-ai { display: inline-flex; } }
+@media (max-width: 480px) { #hq-robotics-app .rb-section-ai-label { display: none; } }
+#hq-robotics-app .rb-section-overview[aria-pressed="true"] {
+  border-style: solid;
+  border-color: var(--rb-active);
+  background: color-mix(in srgb, var(--rb-active) 16%, var(--rb-panel));
+  color: var(--rb-ink);
+}
+#hq-robotics-app .rb-section-overview .rb-narrow { display: none; }
+/* A section jump must land under the chrome, not behind it. */
+.rb-workspace > [data-section], .rb-commission { scroll-margin-top: calc(var(--rb-nav-h) + 72px); }
+.rb-page-kicker { margin: 0; color: var(--rb-muted); font-size: var(--text-sm); }
+.rb-monitor-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.rb-monitor-layout {
+  display: grid;
+  gap: 3px;
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--rb-muted);
+  font-weight: 600;
+}
+.rb-monitor-layout select { min-height: calc(var(--rb-btn-h) - 4px); }
+#rb-position-pane .rb-side,
+#rb-position-pane .rb-gauges { margin-top: 10px; }
+.rb-motion-advanced,
+.rb-telemetry-advanced { margin-top: 8px; padding: 8px 10px; border: 1px solid var(--rb-line); border-radius: 10px; }
+.rb-wb-tabs { margin-bottom: 10px; }
+/* Section mode shows one section at a time. The hide rule is wrapped in :where() on purpose: it keeps
+   the « show the selected section » rules below more specific. As an equal-specificity !important pair
+   the hide rule used to win, so every section — the selected one included — stayed hidden. */
+#hq-robotics-app.rb-section-focus .rb-commission:not([hidden]) { margin-bottom: 12px; }
+#hq-robotics-app.rb-section-focus:not([data-active-section="commission"]) .rb-commission { display: none !important; }
+#hq-robotics-app.rb-section-focus[data-active-section="commission"] .rb-commission { display: block !important; }
+#hq-robotics-app.rb-section-focus[data-active-section="commission"] .rb-workspace { display: none !important; }
+#hq-robotics-app.rb-section-focus:not([data-active-section="commission"]) :where(.rb-workspace > [data-section]) { display: none !important; }
+#hq-robotics-app.rb-section-focus[data-active-section="camera"] .rb-workspace > [data-section="camera"],
+#hq-robotics-app.rb-section-focus[data-active-section="motion"] .rb-workspace > [data-section="motion"],
+#hq-robotics-app.rb-section-focus[data-active-section="telemetry"] .rb-workspace > [data-section="telemetry"],
+#hq-robotics-app.rb-section-focus[data-active-section="workbench"] .rb-workspace > [data-section="workbench"],
+#hq-robotics-app.rb-section-focus[data-active-section="presets"] .rb-workspace > [data-section="presets"],
+#hq-robotics-app.rb-section-focus[data-active-section="records"] .rb-workspace > [data-section="records"],
+#hq-robotics-app.rb-section-focus[data-active-section="records"] .rb-workspace > .rb-library { display: block !important; }
+#hq-robotics-app.rb-section-focus[data-active-section="records"] .rb-workspace > .rb-library[hidden] { display: none !important; }
+#hq-robotics-app.rb-section-focus[data-active-section="advanced"] .rb-workspace > [data-section="config"],
+#hq-robotics-app.rb-section-focus[data-active-section="advanced"] .rb-workspace > [data-section="history"] { display: block !important; }
+/* A single visible card owns the full width instead of the narrow overview column. */
+#hq-robotics-app.rb-section-focus:not([data-active-section="commission"]) .rb-workspace {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas: "camera" "motion" "telemetry" "workbench" "presets" "records" "library" "config" "history";
+  grid-template-rows: auto;
+}
+.rb-hover-explain.is-dormant,
+.rb-hover-explain[hidden] { display: none !important; }
+.rb-copilot[hidden] { display: none !important; }
 @media (max-width: 620px) {
-  .rb-section-nav {
-    position: sticky;
-    top: 0;
-    z-index: 4;
-    display: flex;
-    gap: 6px;
-    overflow-x: auto;
-    margin: 0 0 8px;
-    padding: 6px 0;
-    background: color-mix(in srgb, var(--rb-panel) 92%, transparent);
-    -webkit-backdrop-filter: blur(10px);
-    backdrop-filter: blur(10px);
-    scrollbar-width: none;
-    overscroll-behavior-x: contain;
-  }
-  .rb-section-nav::-webkit-scrollbar { display: none; }
-  #hq-robotics-app .rb-section-nav button { flex: 0 0 auto; min-height: 44px; padding-inline: 12px; font-size: .78rem; }
-  .rb-status { top: 60px; }
+  #hq-robotics-app .rb-section-overview .rb-wide { display: none; }
+  #hq-robotics-app .rb-section-overview .rb-narrow { display: inline; }
+  #hq-robotics-app .rb-section-nav button { padding-inline: 12px; }
+  .rb-status { top: var(--rb-nav-h); }
   .rb-workspace .rb-card { scroll-margin-top: 168px; }
   .rb-seq-step { grid-template-columns: 18px minmax(0, 1fr); }
   .rb-seq-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .rb-seq-tools { grid-column: 1 / -1; justify-content: flex-end; }
+  .rb-section-nav,
+  #hq-robotics-app .rb-space-views button {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    background: color-mix(in srgb, var(--rb-panel) 95%, transparent);
+  }
 }
 
 @media (prefers-color-scheme: light) {
@@ -587,10 +832,19 @@
     background:
       linear-gradient(90deg, rgba(20, 70, 80, .08) 1px, transparent 1px),
       linear-gradient(rgba(20, 70, 80, .08) 1px, transparent 1px), #eef6f5;
+    box-shadow: inset 0 1px 6px rgba(15, 45, 50, .08);
     color: var(--rb-ink);
   }
   body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-plot-caption,
   body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-plot-key { color: var(--rb-muted); }
+  body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-plot-caption > span,
+  body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-space-note {
+    background: rgba(255, 255, 255, .82);
+    border-color: rgba(20, 70, 80, .18);
+    color: var(--rb-ink);
+  }
+  body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-coordinates dt,
+  body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-lease { color: #08724f; }
   body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-plot-key .rb-key-area::before {
     border-color: #7d9b9b;
     background: #dcebea;
@@ -632,19 +886,19 @@
 }
 .rb-load-watch canvas { display: block; width: 100%; height: 38px; min-width: 0; }
 .rb-load-watch > div { display: grid; gap: 2px; text-align: end; }
-.rb-load-watch strong { font-size: .78rem; color: var(--rb-muted); font-weight: 650; }
+.rb-load-watch strong { font-size: var(--text-sm); color: var(--rb-muted); font-weight: 650; }
 .rb-load-watch strong[data-state="warn"] { color: #ffc176; }
 .rb-load-watch strong[data-state="critical"] { color: #ff8ca0; }
-.rb-load-watch span { color: var(--rb-muted); font: .72rem ui-monospace, monospace; }
+.rb-load-watch span { color: var(--rb-muted); font: var(--text-xs) ui-monospace, monospace; }
 .rb-load-track i.is-critical { background: #ff8ca0; }
 
 .rb-routine { display: grid; gap: 8px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--rb-line); }
 .rb-routine-load, .rb-routine-save { display: flex; align-items: end; flex-wrap: wrap; gap: 6px; }
-.rb-routine-load label, .rb-routine-save label { display: grid; gap: 4px; min-width: 150px; flex: 1 1 180px; color: var(--rb-muted); font-size: .78rem; }
+.rb-routine-load label, .rb-routine-save label { display: grid; gap: 4px; min-width: 150px; flex: 1 1 180px; color: var(--rb-muted); font-size: var(--text-sm); }
 .rb-routine-load button, .rb-routine-save button { flex: 0 0 auto; }
 .rb-keepout { display: grid; gap: 7px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--rb-line); }
 .rb-keepout-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px; }
-.rb-keepout-head strong { font-size: .82rem; }
+.rb-keepout-head strong { font-size:var(--text-sm); }
 .rb-keepout-rows { display: grid; gap: 6px; }
 .rb-keepout-row {
   display: grid;
@@ -656,12 +910,12 @@
   border-radius: 8px;
   background: var(--rb-surface);
 }
-.rb-keepout-row label { display: grid; gap: 2px; min-width: 0; color: var(--rb-muted); font-size: .67rem; }
-#hq-robotics-app .rb-keepout-row input { min-height: 36px; height: 36px; padding-inline: 5px; font-size: .75rem; }
+.rb-keepout-row label { display: grid; gap: 2px; min-width: 0; color: var(--rb-muted); font-size: var(--text-xs); }
+#hq-robotics-app .rb-keepout-row input { min-height: 36px; height: 36px; padding-inline: 5px; font-size: var(--text-sm); }
 #hq-robotics-app .rb-keepout-row button { min-height: 36px; height: 36px; padding: 0; color: var(--rb-muted); }
-.rb-keepout-empty { margin: 0; color: var(--rb-muted); font-size: .8rem; }
+.rb-keepout-empty { margin: 0; color: var(--rb-muted); font-size: var(--text-sm); }
 .rb-blackbox { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
-.rb-blackbox span { color: var(--rb-muted); font-size: .76rem; }
+.rb-blackbox span { color: var(--rb-muted); font-size: var(--text-sm); }
 .rb-ptz-presets {
   display: grid;
   grid-template-columns: minmax(120px, 1fr) auto minmax(140px, 1fr) auto auto;
@@ -671,9 +925,9 @@
   padding-top: 9px;
   border-top: 1px solid var(--rb-line);
 }
-.rb-ptz-presets label { display: grid; gap: 3px; min-width: 0; color: var(--rb-muted); font-size: .74rem; }
+.rb-ptz-presets label { display: grid; gap: 3px; min-width: 0; color: var(--rb-muted); font-size: var(--text-xs); }
 .rb-ptz-presets button { min-height: 40px; }
-.rb-ptz-presets > span { grid-column: 1 / -1; color: var(--rb-muted); font-size: .72rem; }
+.rb-ptz-presets > span { grid-column: 1 / -1; color: var(--rb-muted); font-size: var(--text-xs); }
 .rb-camera-overlay { position: absolute; z-index: 2; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 .rb-camera-calibration { margin-top: 10px; padding-top: 9px; border-top: 1px solid var(--rb-line); }
 .rb-cal-points { display: grid; gap: 6px; margin: 8px 0; }
@@ -688,10 +942,10 @@
   background: var(--rb-surface);
 }
 .rb-cal-point b { align-self: center; color: var(--rb-muted); }
-.rb-cal-point label { display: grid; gap: 2px; color: var(--rb-muted); font-size: .68rem; }
-#hq-robotics-app .rb-cal-point input { min-height: 36px; height: 36px; padding-inline: 5px; font-size: .76rem; }
-.rb-cal-point output { align-self: center; color: var(--rb-muted); font: .72rem ui-monospace, monospace; text-align: end; }
-.rb-camera-calibration .rb-check { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; color: var(--rb-muted); font-size: .78rem; }
+.rb-cal-point label { display: grid; gap: 2px; color: var(--rb-muted); font-size: var(--text-xs); }
+#hq-robotics-app .rb-cal-point input { min-height: 36px; height: 36px; padding-inline: 5px; font-size: var(--text-sm); }
+.rb-cal-point output { align-self: center; color: var(--rb-muted); font: var(--text-xs) ui-monospace, monospace; text-align: end; }
+.rb-camera-calibration .rb-check { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; color: var(--rb-muted); font-size: var(--text-sm); }
 .rb-camera-calibration .rb-check input { width: 20px; height: 20px; min-height: 0; }
 @media (max-width: 620px) {
   .rb-cal-point { grid-template-columns: 18px auto minmax(0, 1fr) minmax(0, 1fr); }
@@ -702,7 +956,7 @@
   .rb-ptz-presets label { grid-column: 1 / -1; }
   .rb-ptz-presets button { min-height: 44px; }
 }
-#hq-robotics-app .rb-estop { color: var(--rb-muted); font-size: .68rem; font-weight: 600; white-space: nowrap; }
+#hq-robotics-app .rb-estop { color: var(--rb-muted); font-size: var(--text-xs); font-weight: 600; white-space: nowrap; }
 #hq-robotics-app .rb-estop[data-state="warn"] { color: #ffc176; }
 #hq-robotics-app .rb-estop[data-state="ok"] { color: #73edce; }
 .rb-commission-guide { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--rb-line); }
@@ -715,20 +969,21 @@
   padding: 6px 7px;
   border: 1px solid var(--rb-line);
   border-radius: 8px;
-  font-size: .8rem;
+  font-size: var(--text-sm);
 }
-.rb-commission-steps output { color: var(--rb-muted); font-size: .74rem; text-align: end; }
+.rb-commission-steps output { color: var(--rb-muted); font-size: var(--text-xs); text-align: end; }
 .rb-commission-steps output[data-state="ok"] { color: #73edce; }
 .rb-commission-steps output[data-state="warn"] { color: #ffc176; }
 .rb-commission-steps li.is-ok { border-color: color-mix(in srgb, var(--rb-active) 50%, var(--rb-line)); }
 .rb-commission-steps li.is-warn { border-color: color-mix(in srgb, #ffc176 45%, var(--rb-line)); }
-#hq-robotics-app [data-rb="commission-status"] { margin-top: 8px; color: var(--rb-muted); font-size: .78rem; }
+#hq-robotics-app [data-rb="commission-status"] { margin-top: 8px; color: var(--rb-muted); font-size: var(--text-sm); }
 @media (max-width: 620px) {
   .rb-commission-steps li { grid-template-columns: minmax(0, 1fr) auto; }
   .rb-commission-steps output { grid-column: 1 / -1; text-align: start; }
 }
 @media (prefers-color-scheme: light) {
   body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-estop[data-state="warn"],
+  body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-status [data-state="warn"],
   body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-commission-steps output[data-state="warn"] { color: #8b5e00; }
   body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-estop[data-state="ok"] { color: #08724f; }
   body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-commission-steps output[data-state="ok"] { color: #08724f; }
@@ -748,4 +1003,1287 @@
   body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-load-watch strong[data-state="warn"] { color: #8b5e00; }
   body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-load-watch strong[data-state="critical"] { color: #a22035; }
   body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-load-track i.is-critical { background: #b4233d; }
+}
+
+.rb-pose-note { margin: 0 0 8px !important; color: var(--rb-muted); font-size: var(--text-sm); }
+
+/* Dismissable message */
+.rb-message > p { flex: 1; align-self: center; }
+#hq-robotics-app .rb-message-close {
+  flex: 0 0 auto; min-width: 32px; min-height: 32px; padding: 0; border: 0; background: transparent;
+  color: var(--rb-muted); font-size: var(--text-lg); line-height: 1; margin: -4px -6px -4px 0;
+}
+
+/* Warnings that open their setting */
+#hq-robotics-app button.rb-estop {
+  min-height: 0; min-width: 0; padding: 2px 0; border: 0; background: transparent; border-radius: 4px;
+  text-decoration: underline dotted; text-underline-offset: 3px; cursor: pointer;
+}
+#hq-robotics-app button.rb-estop:hover:enabled { background: transparent; color: var(--rb-ink); }
+#hq-robotics-app .rb-link {
+  min-height: 0; padding: 2px 0; border: 0; background: transparent; color: #73edce;
+  text-decoration: underline; text-underline-offset: 3px; font-size: var(--text-sm); margin-top: 4px;
+}
+#hq-robotics-app .rb-link:hover:enabled { background: transparent; }
+
+/* Camera account problem in the status strip */
+.rb-status [data-state="warn"] { color: #ffc176; }
+.rb-status-device strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Night vision mode not read yet */
+.rb-night-note { flex-basis: 100%; color: var(--rb-muted); font-size: var(--text-xs); }
+
+/* Commissioning card: shown first while the hardware revision is not approved */
+.rb-commission { margin-bottom: 12px; border-color: color-mix(in srgb, #ffc176 45%, var(--rb-line)); }
+.rb-commission > .rb-hint { margin-bottom: 10px !important; }
+.rb-commission-live { display: grid; gap: 6px; margin: 0 0 10px; padding: 0; list-style: none; }
+.rb-commission-live li {
+  display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; align-items: center; gap: 8px;
+  padding: 8px 10px; border: 1px solid var(--rb-line); border-radius: 8px; background: var(--rb-surface); font-size: var(--text-sm);
+}
+.rb-commission-live li::before {
+  content: ""; width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--rb-muted); box-sizing: border-box;
+}
+.rb-commission-live li[data-state="ok"]::before { background: #168f75; border-color: #168f75; }
+.rb-commission-live li[data-state="todo"]::before { border-color: #ffc176; }
+.rb-commission-live li[data-state="info"]::before { border-style: dashed; }
+.rb-commission-live output { color: var(--rb-muted); font-size: var(--text-sm); text-align: end; }
+.rb-commission-live li[data-state="ok"] output { color: #73edce; }
+.rb-commission-live li[data-state="todo"] output { color: #ffc176; }
+.rb-commission-approve { margin-top: 10px; border-top: 1px solid var(--rb-line); }
+.rb-commission-approve pre {
+  margin: 6px 0; padding: 10px; overflow-x: auto; border: 1px solid var(--rb-line); border-radius: 8px;
+  background: var(--rb-monitor); font-size: var(--text-xs); white-space: pre-wrap; word-break: break-all;
+}
+#hq-robotics-app:not(.rb-commissioning) [data-go-section="commission"] { display: none; }
+#hq-robotics-app.rb-precommission :is([data-section="motion"], [data-section="telemetry"],
+  [data-section="workbench"], [data-section="presets"], [data-section="records"]),
+#hq-robotics-app.rb-precommission :is([data-go-section="motion"], [data-go-section="telemetry"],
+  [data-go-section="workbench"], [data-go-section="presets"], [data-go-section="records"]) { display: none !important; }
+@media (max-width: 620px) {
+  .rb-commission-live li { grid-template-columns: 18px minmax(0, 1fr); }
+  .rb-commission-live output { grid-column: 2; text-align: start; }
+}
+
+/* Telemetry with no reading yet */
+.rb-telemetry.is-empty :is(table, .rb-load-watch) { display: none; }
+.rb-telemetry-empty { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.rb-telemetry-empty p { color: var(--rb-muted); font-size: var(--text-sm); }
+
+/* Phones: once the header scrolls away, the status strip shrinks to one line */
+@media (max-width: 620px) {
+  /* Two device cells + the STOP fit a phone row; three squeezed them into « Sim… » / « Virt… ». The
+     camera state already shows in the Moniteur card head. */
+  .rb-status.rb-compact { grid-template-columns: auto auto minmax(0, 1fr); }
+  .rb-status.rb-compact .rb-status-device:nth-child(3) { display: none; }
+  .rb-status.rb-compact .rb-status-device { padding: 4px 6px; }
+  .rb-status.rb-compact .rb-status-device > span,
+  .rb-status.rb-compact .rb-estop { display: none; }
+  .rb-status.rb-compact .rb-status-device strong { font-size: var(--text-xs); }
+  .rb-status.rb-compact .rb-status-safety { grid-column: auto; gap: 6px; padding: 3px 4px 3px 6px; }
+  .rb-status.rb-compact .rb-status-safety strong { font-size: 0; gap: 0; }
+  #hq-robotics-app .rb-status.rb-compact .rb-stop { min-height: 36px; padding: 4px 8px; font-size: var(--text-xs); }
+}
+
+/* The global quick-capture button stays off this page: its corner is busy with STOP-adjacent tools */
+body[data-view="robotique"] .hq-capture-fab { display: none; }
+
+/* Wide screens: let Moniteur flow cleanly in the grid without overlapping lower cards */
+@media (min-width: 1051px) {
+  .rb-camera { position: static; }
+}
+
+/* Pilot aids: measured marker, reading line, limit shading */
+.rb-axis-reading { grid-column: 1 / -1; margin: -2px 0 4px; color: var(--rb-muted); font-size: var(--text-xs); font-variant-numeric: tabular-nums; }
+.rb-axis.is-near .rb-axis-reading { color: #ffc176; }
+.rb-axis.is-out .rb-axis-reading { color: #ff8ca0; }
+.rb-axis.is-near { border-radius: 8px; box-shadow: inset 3px 0 0 #ffc176; padding-left: 6px; }
+.rb-axis.is-out { border-radius: 8px; box-shadow: inset 3px 0 0 #ff8ca0; padding-left: 6px; }
+.rb-axis.is-near .rb-axis-input input { border-color: #b98a4c; }
+.rb-axis.is-out .rb-axis-input input { border-color: #c74659; }
+.rb-slider-wrap {
+  grid-column: 1 / -1; position: relative; margin: 0 0 2px;
+  --rb-lo: 0%; --rb-hi: 100%;
+}
+.rb-slider-wrap::before {
+  content: ""; position: absolute; left: 8px; right: 8px; top: 50%; height: 8px; transform: translateY(-50%);
+  border-radius: 4px; pointer-events: none;
+  background: linear-gradient(90deg, rgba(255, 193, 118, .45) 0 var(--rb-lo), rgba(115, 237, 206, .08) var(--rb-lo) var(--rb-hi),
+    rgba(255, 193, 118, .45) var(--rb-hi) 100%);
+}
+#hq-robotics-app .rb-slider-wrap .rb-slider { position: relative; margin: 0; }
+.rb-measured-mark {
+  position: absolute; top: 2px; bottom: 2px; width: 3px; border-radius: 2px; pointer-events: none;
+  left: calc(7px + (100% - 16px) * var(--rb-at-n, 0));
+  background: #73edce; box-shadow: 0 0 6px rgba(115, 237, 206, .75), 0 0 0 1px #0b171e;
+}
+.rb-measured-mark[hidden] { display: none; }
+
+/* Side view */
+.rb-side { margin: 10px 0 0; }
+.rb-side figcaption { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin-bottom: 4px; color: var(--rb-muted); font-size: var(--text-xs); }
+.rb-side-key { display: inline-flex; align-items: center; gap: 5px; }
+.rb-side-key i { display: inline-block; width: 14px; height: 0; border-top: 3px solid #73edce; margin-left: 6px; }
+.rb-side-key i.is-target { border-top: 2px dashed #9fc5ff; }
+.rb-side canvas {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  max-height: 300px;
+  border: 1px solid #2a4752;
+  border-radius: 11px;
+  background: var(--rb-monitor);
+  box-shadow: inset 0 2px 12px rgba(0, 0, 0, .58);
+}
+
+/* Keep-out proximity and gripper buttons */
+.rb-pose-warn { margin: 4px 0 8px !important; padding: 6px 10px; border-left: 3px solid #ffc176; border-radius: 6px; background: color-mix(in srgb, #ffc176 10%, transparent); color: #ffc176; font-size: var(--text-sm); }
+.rb-pose-warn.is-inside { border-color: #ff8ca0; color: #ff8ca0; background: color-mix(in srgb, #ff8ca0 10%, transparent); }
+.rb-grip { display: flex; align-items: center; gap: 6px; margin: 4px 0 8px; flex-wrap: wrap; }
+.rb-grip > span { color: var(--rb-muted); font-size: var(--text-sm); margin-right: 4px; }
+#hq-robotics-app .rb-grip button { flex: 1 1 0; min-width: 72px; }
+.rb-keyjog { margin: 10px 0 0; font-size: var(--text-sm); }
+.rb-keyjog-hint { margin: 6px 0 0 !important; }
+
+@media (prefers-color-scheme: light) {
+  .rb-side canvas { border-color: #9bb8b7; box-shadow: none; }
+  body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-axis.is-near .rb-axis-reading,
+  body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-pose-warn { color: #8a5a00; }
+  body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-axis.is-out .rb-axis-reading,
+  body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-pose-warn.is-inside { color: #b4233d; }
+}
+
+/* 3D monitor */
+.rb-space canvas { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; cursor: grab; }
+.rb-space canvas:active { cursor: grabbing; }
+.rb-space-views { position: absolute; top: 8px; right: 8px; display: flex; gap: 4px; }
+#hq-robotics-app .rb-space-views button { min-height: 32px; padding: 4px 9px; font-size: var(--text-xs); background: color-mix(in srgb, var(--rb-panel) 84%, transparent); -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); }
+#hq-robotics-app .rb-space-views button[aria-pressed="true"] { border-color: var(--rb-active); color: #73edce; }
+.rb-space-note {
+  position: absolute; top: 10px; left: 10px; max-width: calc(100% - 240px);
+  padding: 2px 8px; border-radius: 6px;
+  background: rgba(9, 19, 25, .74); border: 1px solid rgba(115, 237, 206, .16);
+  color: #b4d2d4; font-size: var(--text-xs); pointer-events: none;
+}
+#hq-robotics-app .rb-space-clear { position: absolute; bottom: 8px; left: 8px; min-height: 30px; padding: 3px 8px; font-size: var(--text-xs); background: color-mix(in srgb, var(--rb-panel) 82%, transparent); }
+.rb-space-key { position: static; margin: 6px 0 2px; color: var(--rb-muted); font-size: var(--text-xs); gap: 10px; display: flex; flex-wrap: wrap; }
+.rb-space-key .rb-key-live::before { background: #c4d0d6; }
+.rb-space-key .rb-key-target::before { background: transparent; border: 1px dashed #9fc5ff; }
+.rb-space-key .rb-key-zone::before { background: rgba(255, 120, 145, .35); border: 1px solid #ff7891; border-radius: 2px; }
+.rb-space-key .rb-key-envelope::before { background: transparent; border: 1px dashed #9fc5ff; border-radius: 2px; }
+@media (max-width: 620px) {
+  .rb-space-note { top: auto; bottom: 46px; max-width: calc(100% - 20px); }
+  .rb-space-views { left: 8px; right: 8px; justify-content: flex-end; }
+}
+
+/* Movement editor */
+#hq-robotics-app .rb-compose-toggle[aria-pressed="true"] { border-color: #ffc176; color: #ffc176; }
+.rb-compose { margin-top: 10px; padding: 12px; border: 1px solid color-mix(in srgb, #ffc176 45%, var(--rb-line)); border-radius: 12px; background: var(--rb-surface); }
+.rb-compose-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 6px; }
+.rb-compose-head span { color: var(--rb-muted); font-size:var(--text-sm); }
+.rb-compose-list { display: grid; gap: 4px; margin: 10px 0 6px; padding: 0; list-style: none; counter-reset: none; }
+.rb-compose-list li { display: grid; grid-template-columns: minmax(0, 1fr) repeat(5, 36px); gap: 4px; align-items: center; padding-bottom: 6px; border-bottom: 1px solid var(--rb-line); }
+.rb-compose-list li:last-child { border-bottom: 0; }
+#hq-robotics-app .rb-compose-leg { min-height: 36px; font-size: var(--text-sm); padding-inline: 8px 4px; }
+span.rb-compose-leg { color: var(--rb-muted); padding-left: 8px; align-self: center; min-height: 0 !important; }
+#hq-robotics-app .rb-compose-list button { min-height: 36px; padding: 2px 6px; }
+#hq-robotics-app .rb-compose-pick { display: block; width: 100%; grid-column: 1 / -1; text-align: start; font-variant-numeric: tabular-nums; font-size: var(--text-sm); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rb-compose-list li[aria-selected="true"] .rb-compose-pick { border-color: #ffc176; color: #ffc176; }
+.rb-compose-list li[data-state="bad"] .rb-compose-pick { border-color: #ff6b81; color: #ff8ca0; }
+.rb-compose-list li[data-warn="still"] .rb-compose-pick { border-style: dashed; color: #ffc176; }
+/* Empty editor: one quiet line instead of an empty box between the buttons and the title row. */
+.rb-compose-list li.rb-compose-empty {
+  display: block;
+  padding: 10px 12px;
+  border: 1px dashed color-mix(in srgb, var(--rb-line) 88%, var(--rb-muted));
+  border-radius: 9px;
+  color: var(--rb-muted);
+  font-size: var(--text-sm);
+  line-height: 1.45;
+}
+.rb-compose-result { min-height: 1.2em; font-size: var(--text-sm); }
+.rb-compose-result:empty { display: none; }
+.rb-compose-result[data-state="ok"] { color: #73edce; }
+.rb-compose-result[data-state="bad"] { color: #ff8ca0; }
+.rb-compose-save { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) auto; gap: 8px; align-items: end; }
+@media (max-width: 620px) {
+  .rb-compose-save { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* Exclusion zone editor */
+.rb-space-modes { margin-top: 8px; }
+#hq-robotics-app .rb-zones-toggle[aria-pressed="true"] { border-color: #ff8ca0; color: #ff8ca0; }
+.rb-zones { margin-top: 10px; padding: 12px; border: 1px solid color-mix(in srgb, #ff7891 45%, var(--rb-line)); border-radius: 12px; background: var(--rb-surface); }
+.rb-zones-list { display: grid; gap: 6px; margin: 10px 0; }
+.rb-zone { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px 8px; align-items: end; padding: 8px; border: 1px solid transparent; border-radius: 8px; }
+.rb-zone.is-selected { border-color: #ffc176; background: color-mix(in srgb, #ffc176 6%, transparent); }
+.rb-zone > input:first-child { grid-column: 1 / 3; }
+.rb-zone > button { grid-column: 3; grid-row: 1; justify-self: end; width: 36px; }
+.rb-zone label { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 4px; font-size: var(--text-xs); color: var(--rb-muted); }
+.rb-zone .rb-zone-axis { grid-column: 1 / -1; }
+#hq-robotics-app .rb-zone input { min-height: 36px; font-size: var(--text-sm); padding-inline: 6px; text-align: end; font-variant-numeric: tabular-nums; }
+#hq-robotics-app .rb-zone > input:first-child { text-align: start; }
+#hq-robotics-app .rb-zone button { min-height: 36px; padding: 0; }
+.rb-zones-conflict:not(:empty) { margin: 6px 0 !important; padding: 6px 10px; border-left: 3px solid #ff8ca0; border-radius: 6px; color: #ff8ca0; font-size: var(--text-sm); background: color-mix(in srgb, #ff8ca0 10%, transparent); }
+.rb-zones-warn { margin: 6px 0 !important; color: #ffc176; font-size: var(--text-sm); }
+@media (max-width: 620px) {
+  .rb-zone { grid-template-columns: minmax(0, 1fr) 36px; }
+  .rb-zone > input:first-child { grid-column: 1; }
+  .rb-zone > button { grid-column: 2; }
+  .rb-zone label { grid-column: 1 / -1; grid-template-columns: 3.4rem 1fr 1fr; align-items: center; }
+  .rb-zone .rb-zone-axis { grid-column: auto; }
+}
+
+/* Light theme: the editor, zones and commissioning colours above are tuned for the dark panel */
+@media (prefers-color-scheme: light) {
+  body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-commission-live li[data-state="ok"] output,
+  body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-compose-result[data-state="ok"],
+  body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-link,
+  body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-space-views button[aria-pressed="true"] { color: #08724f; }
+  /* The badge sits on its own teal tint, which eats enough of #08724f to land at 4.27:1: darken it. */
+  body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-copilot-badge { color: #065c40; }
+  body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-commission-live li[data-state="todo"] output,
+  body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-zones-warn,
+  body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-compose-toggle[aria-pressed="true"],
+  body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-compose-list li[aria-selected="true"] .rb-compose-pick,
+  body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-compose-list li[data-warn="still"] .rb-compose-pick { color: #8b5e00; }
+  body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-commission-live li[data-state="todo"]::before,
+  body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-compose-toggle[aria-pressed="true"],
+  body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-compose-list li[aria-selected="true"] .rb-compose-pick,
+  body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-zone.is-selected { border-color: #c27c00; }
+  body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-compose-result[data-state="bad"],
+  body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-zones-toggle[aria-pressed="true"],
+  body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-zones-conflict:not(:empty),
+  body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-compose-list li[data-state="bad"] .rb-compose-pick { color: #b4233d; }
+  body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-zones-toggle[aria-pressed="true"],
+  body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-compose-list li[data-state="bad"] .rb-compose-pick,
+  body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-zones-conflict:not(:empty) { border-color: #b4233d; }
+  body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-space-views button[aria-pressed="true"] { border-color: #08724f; }
+}
+
+/* Readability: shorter visible help, a little more size on the smallest text */
+.rb-help { margin: 2px 0 8px; font-size: var(--text-sm); color: var(--rb-muted); }
+.rb-help > summary { min-height: 32px; display: inline-flex; align-items: center; cursor: pointer; font-size: var(--text-sm); font-weight: 650; color: var(--rb-muted); }
+.rb-help p { margin: 4px 0 !important; line-height: 1.45; }
+.rb-compose-xyz { display: block; margin-top: 1px; color: var(--rb-muted); font-size: var(--text-xs); font-weight: 500; }
+.rb-compose-pick > span:first-child { display: block; overflow: hidden; text-overflow: ellipsis; }
+.rb-zone label, .rb-axis-reading, .rb-night-note, .rb-space-note, .rb-space-key { font-size: var(--text-sm); }
+.rb-side figcaption { font-size: var(--text-sm); }
+.rb-compose-result[data-state="pending"] { color: var(--rb-muted); }
+.rb-compose-result { min-height: 1.4em; }
+
+/* Touch screens: every editor control is at least 44 px */
+@media (pointer: coarse) {
+  #hq-robotics-app .rb-compose-list button, #hq-robotics-app .rb-compose-leg,
+  #hq-robotics-app .rb-zone input, #hq-robotics-app .rb-zone button,
+  #hq-robotics-app .rb-space-views button, #hq-robotics-app .rb-space-clear { min-height: 44px; }
+  .rb-compose-list li { grid-template-columns: minmax(0, 1fr) repeat(5, 44px); }
+  .rb-zone > button { width: 44px; }
+}
+
+/* Movement: cost on Déplacer, speed in °/s, progress of the move under way */
+.rb-speed-deg { display: block; margin-top: 2px; color: var(--rb-muted); font-size: var(--text-xs); font-weight: 500; }
+.rb-move-note { margin: 6px 0 0 !important; padding: 6px 10px; border-left: 3px solid #ffc176; border-radius: 6px; color: #ffc176; font-size: var(--text-sm); background: color-mix(in srgb, #ffc176 10%, transparent); }
+.rb-motion-progress { margin-top: 8px; border-color: color-mix(in srgb, var(--rb-active) 45%, var(--rb-line)); }
+.rb-motion-progress .rb-playback-bar i { background: var(--rb-active); }
+.rb-motion-progress .rb-playback-foot { align-items: center; }
+#hq-robotics-app .rb-motion-progress button { min-height: 36px; padding: 4px 10px; font-size: var(--text-sm); }
+#hq-robotics-app [data-step]:disabled[title]:not([title=""]) { opacity: .45; }
+#hq-robotics-app [data-compose-goto]:enabled { color: var(--rb-active); font-weight: 800; }
+/* Phone: the path menu gets its own line so the five row buttons keep 44 px */
+@media (max-width: 620px) {
+  .rb-compose-list li { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+  .rb-compose-list .rb-compose-leg { grid-column: 1 / -1; }
+  .rb-compose-list span.rb-compose-leg { display: none; }
+}
+@media (prefers-color-scheme: light) {
+  body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-move-note { color: #8b5e00; border-color: #c27c00; }
+}
+
+/* ==== Button system ====
+   One look per role, so every button says what it does before it is pressed:
+   primary (the action of the area) · secondary (default) · quiet danger (discards work) ·
+   toggle (aria-pressed) · icon (square, stroke icon). Every state is explicit: hover, press, focus, disabled.
+   Disabled buttons keep their outline, so they read as unavailable controls rather than as text. */
+#hq-robotics-app {
+  --rb-btn-h: 40px;
+  --rb-btn-sm: 34px;
+  --rb-accent-ink: #73edce;
+  --rb-accent-tint: color-mix(in srgb, var(--rb-active) 20%, transparent);
+  --rb-danger-ink: #ff8ca0;
+  --rb-btn-edge: color-mix(in srgb, var(--rb-line) 75%, var(--rb-ink) 25%);
+}
+@media (pointer: coarse) { #hq-robotics-app { --rb-btn-h: 44px; --rb-btn-sm: 44px; } }
+@media (prefers-color-scheme: light) {
+  body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app { --rb-accent-ink: #08724f; --rb-danger-ink: #b4233d; }
+}
+#hq-robotics-app :is(button, input, select) { min-height: var(--rb-btn-h); }
+#hq-robotics-app button {
+  display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+  padding: 0 14px; border-radius: 9px; border-color: var(--rb-btn-edge);
+  font-weight: 650; letter-spacing: -.005em; line-height: 1.15; text-align: center;
+  cursor: pointer; -webkit-tap-highlight-color: transparent;
+  transition: background-color .12s ease, border-color .12s ease, color .12s ease, box-shadow .12s ease, transform .06s ease;
+}
+#hq-robotics-app button:hover:enabled { background: var(--rb-surface); border-color: color-mix(in srgb, var(--rb-ink) 40%, var(--rb-line)); }
+#hq-robotics-app button:active:enabled { transform: translateY(1px); }
+#hq-robotics-app button:focus-visible { outline: 2px solid var(--rb-accent-ink); outline-offset: 2px; }
+#hq-robotics-app button:disabled {
+  background: transparent; border-color: color-mix(in srgb, var(--rb-line) 80%, transparent);
+  color: var(--rb-muted); opacity: .5; cursor: not-allowed; box-shadow: none; transform: none;
+}
+@media (prefers-reduced-motion: reduce) { #hq-robotics-app button { transition: none; } #hq-robotics-app button:active:enabled { transform: none; } }
+
+/* primary: filled accent, a hairline highlight on top */
+#hq-robotics-app .rb-primary:enabled {
+  background: var(--rb-active); border-color: var(--rb-active); color: #fff;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .14), 0 1px 2px rgba(0, 0, 0, .22);
+}
+#hq-robotics-app .rb-primary:hover:enabled { background: color-mix(in srgb, var(--rb-active) 86%, #fff); border-color: color-mix(in srgb, var(--rb-active) 86%, #fff); }
+#hq-robotics-app .rb-primary:disabled { background: var(--rb-accent-tint); border-color: transparent; opacity: .6; }
+
+/* STOP: the one red, filled control */
+#hq-robotics-app .rb-stop:enabled {
+  background: #b0203b; border-color: #b0203b; color: #fff; font-weight: 780; letter-spacing: 0;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .16), 0 1px 3px rgba(120, 0, 20, .35);
+}
+#hq-robotics-app .rb-stop:hover:enabled { background: #c4283f; border-color: #c4283f; }
+
+/* quiet danger: looks secondary, turns red when you reach for it */
+#hq-robotics-app .rb-danger-quiet:hover:enabled, #hq-robotics-app .rb-danger-quiet:focus-visible {
+  color: var(--rb-danger-ink); border-color: color-mix(in srgb, var(--rb-danger-ink) 60%, transparent);
+  background: color-mix(in srgb, var(--rb-danger-ink) 10%, transparent);
+}
+
+/* toggles (not the segmented tabs, which keep their own look) */
+#hq-robotics-app button[aria-pressed="true"]:enabled:not(.rb-tabs button),
+body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app button[aria-pressed="true"]:enabled:not(.rb-tabs button) {
+  background: var(--rb-accent-tint); border-color: color-mix(in srgb, var(--rb-active) 75%, transparent);
+  color: var(--rb-accent-ink); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--rb-active) 35%, transparent);
+}
+/* segmented tabs: a raised pill for the selected one */
+#hq-robotics-app .rb-tabs button { min-height: calc(var(--rb-btn-h) - 4px); border-radius: 7px; }
+#hq-robotics-app .rb-tabs button[aria-pressed="true"] { box-shadow: 0 1px 2px rgba(0, 0, 0, .18), inset 0 -2px var(--rb-active); }
+
+/* icons */
+#hq-robotics-app .rb-icon { width: 18px; height: 18px; flex: none; display: block; }
+#hq-robotics-app button.rb-icon-button { padding: 0; }
+#hq-robotics-app .rb-axis .rb-icon { width: 20px; height: 20px; stroke-width: 2.4; }
+#hq-robotics-app .rb-ptz .rb-icon { width: 22px; height: 22px; stroke-width: 2.4; }
+#hq-robotics-app .rb-message-close .rb-icon { width: 16px; height: 16px; }
+
+/* compact tools inside rows (editor points, zones, keep-out, sequences, recordings): square, quieter until hovered */
+#hq-robotics-app :is(.rb-compose-list, .rb-zone, .rb-keepout-row, .rb-seq-tools, .rb-record-step) button.rb-icon-button {
+  width: var(--rb-btn-sm); min-width: var(--rb-btn-sm); height: var(--rb-btn-sm); min-height: var(--rb-btn-sm);
+  color: var(--rb-muted);
+}
+#hq-robotics-app :is(.rb-compose-list, .rb-zone, .rb-keepout-row, .rb-seq-tools, .rb-record-step) button.rb-icon-button:hover:enabled { color: var(--rb-ink); }
+#hq-robotics-app .rb-compose-list button[data-compose-goto]:enabled { color: var(--rb-accent-ink); }
+#hq-robotics-app .rb-compose-list .rb-compose-leg { min-height: var(--rb-btn-sm); }
+.rb-compose-list li { grid-template-columns: minmax(0, 1fr) repeat(5, var(--rb-btn-sm)); }
+#hq-robotics-app .rb-zone input { min-height: var(--rb-btn-sm); }
+
+/* short labels never break in two */
+#hq-robotics-app :is(.rb-actions, .rb-grip, .rb-space-views, .rb-tabs, .rb-section-nav, .rb-night, .rb-audio) button { white-space: nowrap; }
+#hq-robotics-app .rb-grip button { flex: 1 1 auto; }
+/* Phone: the editor row tools share the width (the path menu has its own line above them) */
+@media (max-width: 620px) {
+  .rb-compose-list li { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+  #hq-robotics-app .rb-compose-list button.rb-icon-button { width: 100%; }
+}
+/* The 3D view's buttons sit on the dark canvas in both themes: the pressed one gets an opaque fill */
+#hq-robotics-app .rb-space-views button[aria-pressed="true"]:enabled:not(.rb-tabs button),
+body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-space-views button[aria-pressed="true"]:enabled:not(.rb-tabs button) {
+  background: color-mix(in srgb, var(--rb-active) 26%, var(--rb-panel)); color: var(--rb-accent-ink);
+  border-color: var(--rb-active);
+}
+
+/* ==== Button layout ====
+   Buttons are placed in rows of a small, fixed vocabulary instead of free-wrapping flex rows: every row is a grid,
+   so equal widths and aligned edges come from the grid, and no button is ever left alone on a line.
+     data-cols="1"    one full-width button
+     data-cols="2"    two equal
+     data-cols="3"    three equal
+     data-cols="4"    four equal (two by two on a phone)
+     data-cols="1-2"  a secondary and a wider primary
+     data-cols="3b"   a wide first button, then two (the wide one takes a row on a phone)
+     data-cols="flow" however many buttons are shown, equal widths
+     data-cols="auto" as many columns as fit, each at most 240 px, left aligned */
+#hq-robotics-app .rb-btn-row { display: grid; gap: 8px; margin-top: 10px; align-items: stretch; }
+#hq-robotics-app .rb-btn-row > button {
+  width: 100%;
+  min-width: 0;
+  height: auto;
+  min-height: var(--rb-btn-h);
+  white-space: normal;
+  overflow-wrap: break-word;
+  line-height: 1.18;
+  padding-block: 6px;
+}
+#hq-robotics-app .rb-btn-row[data-cols="1"] { grid-template-columns: minmax(0, 1fr); }
+#hq-robotics-app .rb-btn-row[data-cols="2"] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+#hq-robotics-app .rb-btn-row[data-cols="3"] { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+#hq-robotics-app .rb-btn-row[data-cols="4"] { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+#hq-robotics-app .rb-btn-row[data-cols="1-2"] { grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); }
+#hq-robotics-app .rb-btn-row[data-cols="3b"] { grid-template-columns: minmax(0, 1.6fr) repeat(2, minmax(0, 1fr)); }
+#hq-robotics-app .rb-btn-row[data-cols="flow"] { grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); margin-top: 0; }
+#hq-robotics-app .rb-btn-row[data-cols="auto"] { grid-template-columns: repeat(auto-fit, minmax(180px, 240px)); justify-content: start; }
+@media (max-width: 620px) {
+  #hq-robotics-app .rb-btn-row[data-cols="3"] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  #hq-robotics-app .rb-btn-row[data-cols="3"] > :first-child:nth-last-child(n+3) { grid-column: 1 / -1; }
+  #hq-robotics-app .rb-btn-row[data-cols="4"] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  #hq-robotics-app .rb-btn-row[data-cols="3b"] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  #hq-robotics-app .rb-btn-row[data-cols="3b"] > :first-child { grid-column: 1 / -1; }
+}
+
+/* arming: the lease countdown is a quiet line under the two buttons */
+.rb-safety .rb-btn-row { margin-top: 0; }
+.rb-safety .rb-lease { display: block; margin-top: 6px; }
+
+/* camera: quality select and the live buttons share one line, labels above their controls */
+.rb-camera-actions { display: grid; grid-template-columns: minmax(0, 9.5rem) minmax(0, 1fr); gap: 8px; align-items: end; justify-content: stretch; }
+.rb-quality { display: grid; gap: 3px; margin: 0; }
+.rb-quality > span { color: var(--rb-muted); font-size: var(--text-sm); font-weight: 600; }
+.rb-audio { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; justify-content: stretch; }
+.rb-audio > [data-rb="audio-status"] { grid-column: 1 / -1; color: var(--rb-muted); font-size: var(--text-sm); }
+.rb-audio > audio { display: none; }
+.rb-audio[hidden] { display: none; }
+
+/* camera views: choose and go, then name and save; the refresh sits with the first line */
+#hq-robotics-app .rb-ptz-presets { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 8px; align-items: end; }
+#hq-robotics-app .rb-ptz-presets > :nth-child(1) { grid-column: 1; grid-row: 1; }
+#hq-robotics-app .rb-ptz-presets > :nth-child(2) { grid-column: 2; grid-row: 1; }
+#hq-robotics-app .rb-ptz-presets > :nth-child(5) { grid-column: 3; grid-row: 1; }
+#hq-robotics-app .rb-ptz-presets > :nth-child(3) { grid-column: 1; grid-row: 2; }
+#hq-robotics-app .rb-ptz-presets > :nth-child(4) { grid-column: 2 / 4; grid-row: 2; }
+#hq-robotics-app .rb-ptz-presets > :nth-child(6) { grid-column: 1 / -1; grid-row: 3; color: var(--rb-muted); font-size: var(--text-sm); }
+#hq-robotics-app .rb-ptz-presets label { display: grid; gap: 3px; margin: 0; font-size: var(--text-sm); color: var(--rb-muted); font-weight: 600; }
+@media (max-width: 620px) {
+  #hq-robotics-app .rb-ptz-presets { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  #hq-robotics-app .rb-ptz-presets > :nth-child(1) { grid-column: 1 / -1; }
+  #hq-robotics-app .rb-ptz-presets > :nth-child(2) { grid-column: 1; grid-row: 2; }
+  #hq-robotics-app .rb-ptz-presets > :nth-child(5) { grid-column: 2; grid-row: 2; }
+  #hq-robotics-app .rb-ptz-presets > :nth-child(3) { grid-column: 1 / -1; grid-row: 3; }
+  #hq-robotics-app .rb-ptz-presets > :nth-child(4) { grid-column: 1 / -1; grid-row: 4; }
+  #hq-robotics-app .rb-ptz-presets > :nth-child(6) { grid-row: 5; }
+}
+
+/* night vision: a label and three equal buttons, the note under them */
+.rb-night { display: grid; grid-template-columns: auto repeat(3, minmax(0, 1fr)); gap: 6px 8px; align-items: center; justify-content: stretch; }
+.rb-night > span { margin: 0; }
+.rb-night > .rb-night-note { grid-column: 1 / -1; }
+
+/* gripper: a label and three equal buttons */
+.rb-grip { display: grid; grid-template-columns: auto repeat(3, minmax(0, 1fr)); gap: 8px; align-items: center; }
+#hq-robotics-app .rb-grip button { flex: none; min-width: 0; }
+
+/* hidden tools add no gap: the spacing belongs to the buttons that are shown */
+.rb-safety .rb-btn-row.rb-tools > button { margin-top: 8px; }
+/* labels line up on their top edge, whatever sits under each control */
+.rb-tuning, .rb-preset-fields { align-items: start !important; }
+/* button wrapping is enabled globally on .rb-btn-row > button; keep compact mobile padding */
+@media (max-width: 620px) {
+  #hq-robotics-app .rb-btn-row > button { padding-inline: 8px; font-size: var(--text-sm); }
+}
+
+/* ==== Advanced Telemetry & Cockpit Features (Flight Recorder, Compliant Grasp, Proprioception, Leg Tuning, Gamepad) ==== */
+.rb-flight {
+  margin-top: 12px; padding: 12px; border: 1px solid var(--rb-line); border-radius: 12px;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--rb-surface) 92%, #0c262d 8%) 0%, var(--rb-surface) 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .04);
+}
+.rb-flight[hidden], .rb-compose-tuning[hidden] { display: none; }
+.rb-flight-chart {
+  display: block; width: 100%; height: 64px; margin-top: 8px; border-radius: 8px;
+  border: 1px solid var(--rb-line); background: #071116;
+}
+.rb-flight-scrubber { display: grid; gap: 4px; margin-top: 8px; font-size: var(--text-sm); color: var(--rb-muted); font-weight: 600; }
+.rb-flight-scrubber input[type="range"] { width: 100%; min-height: 28px; accent-color: var(--rb-active); }
+.rb-flight-meta {
+  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px;
+  margin: 10px 0 0; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--rb-line);
+  background: color-mix(in srgb, var(--rb-panel) 75%, transparent);
+}
+.rb-flight-meta > div { display: grid; gap: 2px; min-width: 0; }
+.rb-flight-meta dt { font-size: var(--text-xs); text-transform: uppercase; letter-spacing: .04em; color: var(--rb-muted); }
+.rb-flight-meta dd { margin: 0; font-size: var(--text-sm); font-variant-numeric: tabular-nums; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.rb-compose-tuning {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px;
+  margin-top: 8px; padding: 10px; border-radius: 9px; border: 1px solid var(--rb-line);
+  background: color-mix(in srgb, var(--rb-panel) 65%, transparent);
+}
+.rb-compose-tuning label { display: grid; gap: 4px; margin: 0; font-size: var(--text-sm); color: var(--rb-muted); font-weight: 600; }
+.rb-compose-tuning output { font-variant-numeric: tabular-nums; color: var(--rb-accent-ink); font-weight: 700; }
+
+.rb-grasp {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: end;
+  margin-top: 8px; padding: 10px; border-radius: 10px; border: 1px solid var(--rb-line);
+  background: color-mix(in srgb, var(--rb-surface) 88%, #0c262d 12%);
+}
+.rb-grasp label { display: grid; gap: 4px; margin: 0; font-size: var(--text-sm); color: var(--rb-muted); font-weight: 600; min-width: 0; }
+.rb-grasp > span[role="status"] {
+  grid-column: 1 / -1; font-size: var(--text-sm); font-variant-numeric: tabular-nums;
+  color: var(--rb-accent-ink); font-weight: 600;
+}
+
+.rb-proprio {
+  margin-top: 12px; padding: 11px 12px; border-radius: 10px; border: 1px solid var(--rb-line);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--rb-surface) 90%, #0d262e 10%) 0%, var(--rb-surface) 100%);
+}
+.rb-proprio-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 8px; }
+.rb-proprio-head strong { font-size:var(--text-sm); letter-spacing: -.005em; }
+.rb-proprio-head span {
+  font-size:var(--text-xs); font-weight: 700; padding: 2px 8px; border-radius: 999px;
+  border: 1px solid var(--rb-line); color: var(--rb-muted);
+}
+.rb-proprio-head span[data-state="ok"] { color: var(--rb-accent-ink); border-color: color-mix(in srgb, var(--rb-active) 55%, transparent); background: var(--rb-accent-tint); }
+.rb-proprio-head span[data-state="warn"] { color: var(--rb-warn); border-color: color-mix(in srgb, var(--rb-warn) 55%, transparent); }
+.rb-proprio-grid {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 12px; margin: 0;
+}
+.rb-proprio-grid > div { display: grid; gap: 2px; min-width: 0; }
+.rb-proprio-grid dt { font-size: var(--text-xs); color: var(--rb-muted); }
+.rb-proprio-grid dd { margin: 0; font-size: var(--text-sm); font-variant-numeric: tabular-nums; font-weight: 650; }
+
+.rb-padjog { margin-top: 6px; }
+.rb-blackbox { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; }
+
+@media (max-width: 620px) {
+  .rb-flight-meta { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .rb-compose-tuning { grid-template-columns: minmax(0, 1fr); }
+  .rb-grasp { grid-template-columns: minmax(0, 1fr); }
+  .rb-proprio-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* ==== User-Friendliness & Ergonomics (Shortcuts Cheatsheet, Actionable Interlock, Quick-Chips, Field Undo, 3D Joint Flash) ==== */
+.rb-shortcuts {
+  margin-bottom: 12px;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--rb-surface) 92%, #0c262d 8%) 0%, var(--rb-surface) 100%);
+}
+.rb-shortcuts[hidden] { display: none; }
+.rb-shortcuts-grid {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 8px;
+}
+.rb-shortcuts-grid > div {
+  padding: 10px 12px; border-radius: 10px; border: 1px solid var(--rb-line);
+  background: color-mix(in srgb, var(--rb-panel) 72%, transparent);
+}
+.rb-shortcuts-grid strong { display: block; font-size: var(--text-sm); color: var(--rb-accent-ink); margin-bottom: 6px; }
+.rb-shortcuts-grid ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 5px; font-size: var(--text-sm); color: var(--rb-muted); }
+.rb-shortcuts-grid kbd {
+  display: inline-block; padding: 1px 6px; border-radius: 5px; border: 1px solid var(--rb-line);
+  background: var(--rb-surface); color: var(--rb-ink); font-family: ui-monospace, monospace; font-size: var(--text-xs); font-weight: 700;
+}
+
+.rb-interlock-bar {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-top: 6px;
+}
+.rb-interlock-bar > p { margin: 0; flex: 1 1 200px; }
+#hq-robotics-app .rb-interlock-action {
+  min-height: 32px; padding: 0 11px; font-size: var(--text-sm); border-radius: 999px;
+  border-color: color-mix(in srgb, var(--rb-active) 65%, transparent);
+  background: var(--rb-accent-tint); color: var(--rb-accent-ink);
+}
+#hq-robotics-app .rb-interlock-action[hidden] { display: none; }
+
+.rb-pose-head {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px;
+}
+.rb-pose-quick { display: flex; flex-wrap: wrap; gap: 6px; }
+#hq-robotics-app .rb-pose-quick button {
+  min-height: 32px; padding: 0 10px; font-size: var(--text-sm); border-radius: 8px;
+}
+
+.rb-preset-chips {
+  display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; padding: 6px 8px;
+  border-radius: 9px; border: 1px solid var(--rb-line);
+  background: color-mix(in srgb, var(--rb-panel) 60%, transparent);
+}
+.rb-preset-chips[hidden] { display: none; }
+.rb-preset-chip {
+  display: inline-flex; align-items: center; border-radius: 8px; overflow: hidden;
+  border: 1px solid var(--rb-line); background: var(--rb-surface);
+}
+#hq-robotics-app .rb-preset-chip-load {
+  min-height: 30px; padding: 0 9px; border: 0; border-radius: 0; font-size: var(--text-sm);
+}
+#hq-robotics-app .rb-preset-chip button.rb-icon-button {
+  width: 30px; min-width: 30px; height: 30px; min-height: 30px; border: 0;
+  border-left: 1px solid var(--rb-line); border-radius: 0; color: var(--rb-accent-ink);
+}
+
+#hq-robotics-app .rb-move-approach { width: 100%; margin-top: 8px; }
+#hq-robotics-app .rb-move-approach[hidden] { display: none; }
+
+.rb-axis.is-flash {
+  animation: rb-joint-flash 1.1s ease-out;
+}
+@keyframes rb-joint-flash {
+  0%, 25% { box-shadow: 0 0 0 2px var(--rb-accent-ink), inset 0 0 14px var(--rb-accent-tint); }
+  100% { box-shadow: none; }
+}
+
+@media (max-width: 620px) {
+  .rb-shortcuts-grid { grid-template-columns: minmax(0, 1fr); }
+  .rb-pose-head { flex-direction: column; align-items: stretch; }
+  .rb-pose-quick { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+/* ==== Workbench Assistant, Gravimetric Scale, Pick->Place & Grid Palletizer ==== */
+.rb-scale {
+  margin-top: 10px; padding: 11px 12px; border-radius: 10px; border: 1px solid var(--rb-line);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--rb-surface) 90%, #0d262e 10%) 0%, var(--rb-surface) 100%);
+}
+.rb-workbench { grid-area: workbench; }
+@media (min-width: 960px) {
+  .rb-workbench {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+    align-items: start;
+  }
+  .rb-workbench > .rb-card-head,
+  .rb-workbench > .rb-card-guide {
+    grid-column: 1 / -1;
+    margin-bottom: 0;
+  }
+  .rb-workbench > .rb-wb-details {
+    margin-top: 0;
+  }
+  .rb-workbench > .rb-wb-details:last-of-type {
+    grid-column: 2;
+  }
+  .rb-workbench > .rb-wb-block {
+    grid-row: 3 / span 2;
+  }
+}
+.rb-wb-block {
+  padding: 12px; border-radius: 10px; border: 1px solid var(--rb-line);
+  background: color-mix(in srgb, var(--rb-surface) 88%, #0c262d 12%);
+}
+.rb-wb-subhead { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 6px; margin-bottom: 4px; }
+.rb-wb-subhead strong { font-size:var(--text-sm); }
+.rb-wb-subhead small { font-size:var(--text-xs); color: var(--rb-muted); }
+.rb-wb-checks { display: grid; gap: 6px; margin-top: 10px; }
+.rb-wb-details {
+  margin-top: 10px; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--rb-line);
+  background: color-mix(in srgb, var(--rb-panel) 65%, transparent);
+}
+.rb-wb-details > summary { cursor: pointer; font-weight: 700; font-size: var(--text-sm); color: var(--rb-ink); }
+.rb-wb-grid {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 10px; margin-top: 8px;
+}
+.rb-wb-grid > label {
+  display: grid; gap: 4px; margin: 0; font-size: var(--text-sm); color: var(--rb-muted); font-weight: 600; min-width: 0;
+}
+.rb-wb-grid output {
+  display: flex; align-items: center; min-height: var(--rb-btn-h); padding: 0 10px;
+  border-radius: 8px; border: 1px solid var(--rb-line); background: var(--rb-surface);
+  color: var(--rb-accent-ink); font-variant-numeric: tabular-nums; font-weight: 700;
+}
+.rb-wb-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.rb-wb-pair input { width: 100%; min-width: 0; }
+
+@media (max-width: 620px) {
+  .rb-wb-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* ==== Visual Cockpit Upgrades (Split 2D+3D Monitor, Radial Joint Gauges & Gripper Diagram, Pallet Tray Map) ==== */
+@media (min-width: 860px) {
+  .rb-camera.is-split-monitor {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px;
+    align-items: start;
+  }
+  .rb-camera.is-split-monitor > .rb-monitor-head,
+  .rb-camera.is-split-monitor > .rb-card-guide {
+    grid-column: 1 / -1;
+    margin-bottom: 0;
+  }
+}
+@media (min-width: 1051px) {
+  .rb-camera.is-split-monitor {
+    grid-column: 1 / -1;
+  }
+  .rb-workspace:has(.rb-camera.is-split-monitor) {
+    grid-template-areas:
+      "camera camera"
+      "motion telemetry"
+      "workbench workbench"
+      "presets records"
+      "library library"
+      "config history";
+  }
+}
+
+.rb-gauges {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--rb-line);
+  background: var(--rb-surface);
+}
+.rb-gauges figcaption {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: var(--text-xs);
+  color: var(--rb-muted);
+  margin-bottom: 6px;
+}
+.rb-visual-gauges {
+  display: block;
+  width: 100%;
+  height: 82px;
+  border-radius: 7px;
+  cursor: pointer;
+}
+
+.rb-pallet-map {
+  display: grid;
+  grid-template-columns: repeat(var(--pal-cols, 3), minmax(0, 1fr));
+  gap: 6px;
+  margin-top: 10px;
+}
+#hq-robotics-app .rb-pallet-slot {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-height: 44px;
+  padding: 5px 6px;
+  border-radius: 8px;
+  border: 1px solid var(--rb-line);
+  background: var(--rb-surface);
+  font-family: ui-monospace, monospace;
+}
+#hq-robotics-app .rb-pallet-slot strong {
+  font-size: var(--text-sm);
+  color: var(--rb-ink);
+}
+#hq-robotics-app .rb-pallet-slot small {
+  font-size: var(--text-xs);
+  color: var(--rb-muted);
+}
+#hq-robotics-app .rb-pallet-slot.is-active {
+  border-color: var(--rb-warn);
+  background: color-mix(in srgb, var(--rb-warn) 16%, var(--rb-surface));
+}
+#hq-robotics-app .rb-pallet-slot.is-active strong {
+  color: var(--rb-warn);
+}
+#hq-robotics-app .rb-pallet-slot.is-done {
+  border-color: color-mix(in srgb, var(--rb-active) 55%, var(--rb-line));
+}
+
+/* ==== Live Hover Inspector Bar, Card Guides & Contextual Cursors ==== */
+.rb-hover-explain {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  margin-bottom: 12px;
+  padding: 6px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--rb-line);
+  border-left: 3px solid var(--rb-active);
+  background: color-mix(in srgb, var(--rb-surface) 92%, #0c262d 8%);
+  font-size: var(--text-sm);
+  color: var(--rb-muted);
+}
+.rb-hover-badge {
+  flex: none;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-family: ui-monospace, monospace;
+  font-size: var(--text-xs);
+  font-weight: 700;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  background: var(--rb-accent-tint);
+  color: var(--rb-accent-ink);
+  border: 1px solid color-mix(in srgb, var(--rb-active) 40%, transparent);
+}
+.rb-hover-explain > span:last-child {
+  color: var(--rb-ink);
+  line-height: 1.35;
+}
+
+.rb-card-guide {
+  margin: 0 0 10px;
+  padding: 6px 10px;
+  border-radius: 9px;
+  border: 1px solid var(--rb-line);
+  background: color-mix(in srgb, var(--rb-panel) 65%, transparent);
+  font-size: var(--text-sm);
+}
+.rb-card-guide > summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--rb-accent-ink);
+}
+.rb-help-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  margin: 6px 0 0;
+  color: var(--rb-muted);
+}
+.rb-help-badges .is-safe { color: var(--rb-accent-ink); }
+.rb-help-badges .is-live { color: var(--rb-warn); }
+
+#hq-robotics-app button:not(:disabled),
+#hq-robotics-app summary,
+#hq-robotics-app select:not(:disabled),
+#hq-robotics-app .rb-check {
+  cursor: pointer;
+}
+#hq-robotics-app button:disabled,
+#hq-robotics-app select:disabled {
+  cursor: not-allowed;
+}
+#hq-robotics-app .rb-slider {
+  cursor: ew-resize;
+}
+
+/* ==== Lease Renew, Tapo Snapshot Strip & Step-by-Step Debugger ==== */
+.rb-lease-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.rb-lease {
+  display: inline-grid;
+  gap: 4px;
+  min-width: 146px;
+}
+.rb-lease-bar {
+  display: block;
+  width: 100%;
+  height: 5px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, .1);
+  overflow: hidden;
+}
+.rb-lease-bar > b {
+  display: block;
+  height: 100%;
+  width: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--rb-active), #73edce);
+  box-shadow: 0 0 8px rgba(115, 237, 206, .55);
+  transition: width 1s linear, background .25s ease;
+}
+.rb-lease.is-expiring .rb-lease-bar > b {
+  background: linear-gradient(90deg, #d97706, #ffc176);
+  box-shadow: 0 0 8px rgba(255, 193, 118, .65);
+}
+.rb-lease.is-expiring {
+  color: var(--rb-warn);
+  font-weight: 700;
+  animation: rb-lease-pulse .9s ease-in-out infinite alternate;
+}
+@keyframes rb-lease-pulse {
+  from { opacity: 1; }
+  to { opacity: .55; }
+}
+#hq-robotics-app .rb-lease-renew {
+  min-height: 28px;
+  padding: 0 10px;
+  font-size: var(--text-xs);
+  border-radius: 999px;
+  border-color: color-mix(in srgb, var(--rb-active) 55%, transparent);
+  background: var(--rb-accent-tint);
+  color: var(--rb-accent-ink);
+}
+#hq-robotics-app .rb-lease-renew[hidden] { display: none; }
+
+.rb-snap-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+  gap: 8px;
+  margin-top: 8px;
+}
+.rb-snap-strip[hidden] { display: none; }
+.rb-snap-thumb {
+  display: grid;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 8px;
+  border: 1px solid var(--rb-line);
+  background: var(--rb-surface);
+  text-decoration: none;
+  color: var(--rb-muted);
+  font-size: var(--text-xs);
+}
+.rb-snap-thumb img {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  border-radius: 5px;
+}
+.rb-snap-thumb span {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rb-debug-toggle { margin-top: 8px; }
+.rb-step-debugger {
+  margin-top: 8px;
+  padding: 10px;
+  border-radius: 9px;
+  border: 1px solid var(--rb-warn);
+  background: color-mix(in srgb, var(--rb-warn) 12%, var(--rb-surface));
+}
+.rb-step-debugger[hidden] { display: none; }
+.rb-step-debugger strong {
+  display: block;
+  font-size: var(--text-sm);
+  color: var(--rb-warn);
+  margin-bottom: 6px;
+}
+
+/* ==== UI Animation & Cockpit Visual Polish Pass ==== */
+@keyframes rb-card-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes rb-led-pulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.28); opacity: .72; }
+}
+@keyframes rb-bar-shimmer {
+  0% { background-position: 0 0; }
+  100% { background-position: 28px 0; }
+}
+@keyframes rb-panel-reveal {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+#hq-robotics-app .rb-workspace > .rb-card {
+  transition: border-color .22s ease, box-shadow .22s ease;
+}
+
+/* Subtle armed cockpit aura on Pilotage when a live 20 s lease is active */
+#hq-robotics-app .rb-motion:has(.rb-lease:not([hidden])) {
+  border-color: color-mix(in srgb, var(--rb-active) 72%, #73edce 28%);
+  box-shadow: inset 0 1px 0 rgba(115, 237, 206, .14), 0 0 24px -10px rgba(28, 224, 184, .34);
+}
+
+/* Tactile button & slot micro-interactions */
+#hq-robotics-app button,
+#hq-robotics-app .rb-pallet-slot,
+#hq-robotics-app .rb-preset-chip,
+#hq-robotics-app .rb-snap-thumb {
+  transition: transform .14s cubic-bezier(.22, 1, .36, 1),
+              background-color .18s ease,
+              border-color .18s ease,
+              box-shadow .18s ease,
+              opacity .18s ease;
+}
+@media (hover: hover) and (pointer: fine) {
+  #hq-robotics-app button:not(:disabled):hover,
+  #hq-robotics-app .rb-pallet-slot:hover,
+  #hq-robotics-app .rb-snap-thumb:hover {
+    transform: translateY(-1px);
+  }
+}
+#hq-robotics-app button:not(:disabled):active,
+#hq-robotics-app .rb-pallet-slot:active {
+  transform: translateY(0) scale(.985);
+}
+
+#hq-robotics-app .rb-tabs button[aria-pressed="true"],
+#hq-robotics-app .rb-space-views button[aria-pressed="true"] {
+  box-shadow: 0 0 12px -3px color-mix(in srgb, var(--rb-active) 60%, transparent);
+}
+
+/* Radar pulse on live status LEDs */
+.rb-status [data-state="armed"]::before,
+.rb-status [data-state="live"]::before,
+.rb-card-head [data-state="moving"]::before {
+  animation: rb-led-pulse 1.8s ease-in-out infinite;
+}
+
+/* Animated telemetry progress & load shimmer */
+.rb-playback-bar i {
+  background-image: linear-gradient(
+    -45deg,
+    rgba(255, 255, 255, .18) 25%,
+    transparent 25%,
+    transparent 50%,
+    rgba(255, 255, 255, .18) 50%,
+    rgba(255, 255, 255, .18) 75%,
+    transparent 75%,
+    transparent
+  );
+  background-size: 28px 28px;
+  animation: rb-bar-shimmer 1.1s linear infinite;
+}
+.rb-load-track i {
+  transition: width .22s cubic-bezier(.22, 1, .36, 1), background-color .22s ease;
+}
+.rb-load-track i.is-critical {
+  box-shadow: 0 0 8px rgba(255, 96, 122, .55);
+}
+
+/* Smooth panel reveals for drawers, debugger & snapshots */
+.rb-zones:not([hidden]),
+.rb-compose:not([hidden]),
+.rb-flight:not([hidden]),
+.rb-shortcuts:not([hidden]),
+.rb-step-debugger:not([hidden]),
+.rb-snap-strip:not([hidden]) {
+  animation: rb-panel-reveal .22s cubic-bezier(.22, 1, .36, 1) both;
+}
+
+.rb-coordinates > div,
+.rb-proprio-grid > div {
+  transition: border-color .2s ease, transform .18s ease;
+}
+@media (hover: hover) and (pointer: fine) {
+  .rb-coordinates > div:hover,
+  .rb-proprio-grid > div:hover {
+    border-color: color-mix(in srgb, var(--rb-line) 45%, #73edce 55%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #hq-robotics-app *,
+  #hq-robotics-app *::before,
+  #hq-robotics-app *::after {
+    animation-duration: .001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .001ms !important;
+  }
+}
+
+/* Optical HUD corner reticles on 2D, 3D & Camera viewports */
+.rb-viewport::before,
+.rb-viewport::after {
+  content: "";
+  position: absolute;
+  inset: 6px;
+  pointer-events: none;
+  z-index: 3;
+  border-radius: 7px;
+  background:
+    linear-gradient(to right, rgba(115, 237, 206, .55) 10px, transparent 10px) 0 0 / 100% 1.5px no-repeat,
+    linear-gradient(to bottom, rgba(115, 237, 206, .55) 10px, transparent 10px) 0 0 / 1.5px 100% no-repeat,
+    linear-gradient(to left, rgba(115, 237, 206, .55) 10px, transparent 10px) 100% 0 / 100% 1.5px no-repeat,
+    linear-gradient(to bottom, rgba(115, 237, 206, .55) 10px, transparent 10px) 100% 0 / 1.5px 100% no-repeat,
+    linear-gradient(to right, rgba(115, 237, 206, .55) 10px, transparent 10px) 0 100% / 100% 1.5px no-repeat,
+    linear-gradient(to top, rgba(115, 237, 206, .55) 10px, transparent 10px) 0 100% / 1.5px 100% no-repeat,
+    linear-gradient(to left, rgba(115, 237, 206, .55) 10px, transparent 10px) 100% 100% / 100% 1.5px no-repeat,
+    linear-gradient(to top, rgba(115, 237, 206, .55) 10px, transparent 10px) 100% 100% / 1.5px 100% no-repeat;
+}
+/* Mission-Complete Emerald Ripple across .rb-status */
+@keyframes rb-complete-ripple {
+  0% { transform: translateX(-100%); opacity: 0; }
+  20% { opacity: .9; }
+  100% { transform: translateX(100%); opacity: 0; }
+}
+.rb-status.is-complete {
+  border-color: #73edce;
+  box-shadow: 0 10px 26px -10px rgba(0, 0, 0, .48), 0 0 22px -4px rgba(115, 237, 206, .45);
+}
+.rb-status.is-complete::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(105deg, transparent 20%, rgba(115, 237, 206, .28) 50%, transparent 80%);
+  animation: rb-complete-ripple .95s cubic-bezier(.22, 1, .36, 1) forwards;
+}
+
+/* ==== Kinétia Inline Co-pilot Strip & Snapshot Analyze Button ==== */
+.rb-copilot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  border-radius: 11px;
+  border: 1px solid color-mix(in srgb, var(--rb-active) 48%, var(--rb-line));
+  background: linear-gradient(90deg, color-mix(in srgb, var(--rb-panel) 88%, #117f6c 12%) 0%, var(--rb-surface) 100%);
+  font-size: var(--text-sm);
+}
+.rb-copilot.is-alert {
+  border-color: color-mix(in srgb, var(--rb-warn) 70%, var(--rb-line));
+  background: linear-gradient(90deg, color-mix(in srgb, var(--rb-panel) 88%, #d97706 12%) 0%, var(--rb-surface) 100%);
+}
+.rb-copilot-badge {
+  flex: none;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: var(--text-xs);
+  font-weight: 760;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  background: color-mix(in srgb, var(--rb-active) 24%, transparent);
+  color: #73edce;
+  border: 1px solid color-mix(in srgb, var(--rb-active) 55%, transparent);
+}
+.rb-copilot-text {
+  flex: 1 1 260px;
+  color: var(--rb-ink);
+  line-height: 1.35;
+}
+.rb-copilot-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+#hq-robotics-app .rb-copilot-actions button,
+#hq-robotics-app .rb-copilot-open {
+  min-height: 30px;
+  padding: 0 10px;
+  font-size: var(--text-xs);
+  border-radius: 999px;
+}
+#hq-robotics-app .rb-copilot-open {
+  border-color: color-mix(in srgb, var(--rb-active) 60%, transparent);
+  background: var(--rb-accent-tint);
+  color: var(--rb-accent-ink);
+}
+#hq-robotics-app .rb-snap-ask {
+  min-height: 26px;
+  padding: 2px 6px;
+  font-size: var(--text-xs);
+  border-radius: 6px;
+}
+
+@media (max-width: 620px), (pointer: coarse) {
+  .rb-section-nav,
+  #hq-robotics-app .rb-space-views button {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    background: color-mix(in srgb, var(--rb-panel) 95%, transparent);
+  }
+}
+
+.rb-compose-scrub {
+  display: grid;
+  gap: 4px;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--rb-line);
+  border-radius: 10px;
+  background: var(--rb-surface);
+  font-size: var(--text-sm);
+}
+.rb-compose-scrub[hidden] { display: none; }
+.rb-compose-scrub label { display: grid; gap: 4px; color: var(--rb-muted); font-weight: 600; }
+.rb-compose-scrub label strong { color: var(--rb-accent-ink); font-variant-numeric: tabular-nums; margin-left: 6px; }
+.rb-compose-scrub-meta { color: var(--rb-muted); font-variant-numeric: tabular-nums; font-size: var(--text-xs); }
+
+/* ---- Optical Lab & Blueprint Reticle Art Polish ---- */
+.rb-plot::after,
+.rb-viewport::after {
+  content: "";
+  position: absolute;
+  inset: 6px;
+  pointer-events: none;
+  z-index: 2;
+  background:
+    linear-gradient(to right, rgba(115, 237, 206, .38) 10px, transparent 10px) 0 0 / 100% 1.5px no-repeat,
+    linear-gradient(to bottom, rgba(115, 237, 206, .38) 10px, transparent 10px) 0 0 / 1.5px 100% no-repeat,
+    linear-gradient(to left, rgba(115, 237, 206, .38) 10px, transparent 10px) 100% 0 / 100% 1.5px no-repeat,
+    linear-gradient(to bottom, rgba(115, 237, 206, .38) 10px, transparent 10px) 100% 0 / 1.5px 100% no-repeat,
+    linear-gradient(to right, rgba(115, 237, 206, .38) 10px, transparent 10px) 0 100% / 100% 1.5px no-repeat,
+    linear-gradient(to top, rgba(115, 237, 206, .38) 10px, transparent 10px) 0 100% / 1.5px 100% no-repeat,
+    linear-gradient(to left, rgba(115, 237, 206, .38) 10px, transparent 10px) 100% 100% / 100% 1.5px no-repeat,
+    linear-gradient(to top, rgba(115, 237, 206, .38) 10px, transparent 10px) 100% 100% / 1.5px 100% no-repeat;
+  opacity: .72;
+}
+.rb-video-idle {
+  background:
+    radial-gradient(circle at 50% 48%, rgba(9, 19, 25, .42) 0%, rgba(9, 19, 25, .82) 72%),
+    url("/assets/robotics-camera-standby.jpg") center / cover no-repeat;
+}
+.rb-head {
+  position: relative;
+  overflow: hidden;
+  padding: 16px 18px;
+  border: 1px solid color-mix(in srgb, var(--rb-line) 74%, #73edce 26%);
+  border-radius: 14px;
+  color: #eaf0f5;
+  background:
+    linear-gradient(90deg, rgba(9, 19, 25, .94) 0%, rgba(9, 19, 25, .78) 46%, rgba(9, 19, 25, .36) 100%),
+    url("/assets/robotics-bench-banner.jpg") right center / cover no-repeat;
+  box-shadow: 0 12px 28px -12px rgba(0, 0, 0, .55), inset 0 1px 0 rgba(255, 255, 255, .06);
+}
+.rb-head > * { position: relative; z-index: 1; }
+.rb-head::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(110deg, transparent 30%, rgba(115, 237, 206, .09) 50%, transparent 70%);
+  transform: translateX(-100%);
+  animation: rb-head-sweep 11s ease-in-out infinite;
+}
+.rb-head p { color: #b7ccd3; }
+.rb-viewport video {
+  filter: contrast(1.06) saturate(1.07);
+}
+
+/* ---- Lab Telemetry & Optical FX (GPU-composited, reduced-motion safe) ---- */
+@keyframes rb-head-sweep {
+  0%, 62% { transform: translateX(-100%); opacity: 0; }
+  74% { opacity: 1; }
+  92%, 100% { transform: translateX(100%); opacity: 0; }
+}
+@keyframes rb-reticle-spin {
+  to { transform: translate(-50%, -50%) rotate(360deg); }
+}
+@keyframes rb-stop-alert {
+  0%, 100% { border-color: rgba(255, 77, 106, .55); box-shadow: 0 10px 26px -10px rgba(0, 0, 0, .48), 0 0 16px -4px rgba(255, 77, 106, .35); }
+  50% { border-color: rgba(255, 77, 106, .95); box-shadow: 0 10px 26px -10px rgba(0, 0, 0, .48), 0 0 24px -2px rgba(255, 77, 106, .62); }
+}
+@keyframes rb-armed-aura {
+  0%, 100% { border-color: rgba(28, 224, 184, .5); box-shadow: 0 10px 26px -10px rgba(0, 0, 0, .48), 0 0 14px -4px rgba(28, 224, 184, .28); }
+  50% { border-color: rgba(115, 237, 206, .85); box-shadow: 0 10px 26px -10px rgba(0, 0, 0, .48), 0 0 22px -2px rgba(115, 237, 206, .48); }
+}
+.rb-video-idle { position: relative; overflow: hidden; }
+.rb-video-idle > * { position: relative; z-index: 1; }
+.rb-video-idle::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 48%;
+  width: 150px;
+  height: 150px;
+  border-radius: 50%;
+  border: 1px dashed rgba(115, 237, 206, .34);
+  border-top-color: rgba(115, 237, 206, .78);
+  pointer-events: none;
+  opacity: .55;
+  transform: translate(-50%, -50%);
+  animation: rb-reticle-spin 16s linear infinite;
+}
+.rb-status:has([data-state="armed"]) {
+  animation: rb-armed-aura 3.2s ease-in-out infinite;
+}
+.rb-status:has([data-state="stop"]) {
+  animation: rb-stop-alert 1.3s ease-in-out infinite;
+}
+.rb-lib-rename {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+  animation: rb-card-in .22s ease-out both;
+}
+.rb-lib-rename input {
+  flex: 1 1 160px;
+  min-width: 0;
 }

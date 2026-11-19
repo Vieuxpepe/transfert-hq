@@ -1,0 +1,36 @@
+name: UX tooltip checks
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "assets/hq.js"
+      - "assets/hq-forge*"
+      - "assets/hq-robotic*"
+      - "tests/check_hq_dynamic_help.mjs"
+      - "tests/test_hq_ux.py"
+      - "docs/test-index.md"
+      - ".github/workflows/ux-tooltips.yml"
+  pull_request:
+    paths:
+      - "assets/hq.js"
+      - "assets/hq-forge*"
+      - "assets/hq-robotic*"
+      - "tests/check_hq_dynamic_help.mjs"
+      - "tests/test_hq_ux.py"
+      - "docs/test-index.md"
+      - ".github/workflows/ux-tooltips.yml"
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: UX tooltip suite
+        run: python -m unittest tests.test_hq_ux -v

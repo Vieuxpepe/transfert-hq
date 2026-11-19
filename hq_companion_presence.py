@@ -20,10 +20,25 @@ def classify(text):
         return "practical"
     if re.search(r"souviens|souvenir|rappelle.toi|remember|recall|what did (?:we|i)|qu'avons.nous|qu'ai.je|did i (?:finish|complete)|ai.je (?:fini|termine)|ou en (?:suis|sommes)", text):
         return "recall"
-    needs_comfort = re.search(r"je (?:suis|me sens) (?:triste|seul|seule|deborde|debordee|angoisse|angoissee|fatigue|fatiguee|stresse|stressee)|i(?:'m| am| feel) (?:sad|lonely|overwhelmed|upset|tired|stressed)|besoin d'ecoute|need (?:some )?comfort", text)
+    needs_comfort = re.search(r"je (?:suis|me sens) (?:triste|seul|seule|deborde|debordee|angoisse|angoissee|fatigue|fatiguee|epuise|epuisee|stresse|stressee)|i(?:'m| am| feel) (?:sad|lonely|overwhelmed|upset|tired|stressed)|besoin d'ecoute|need (?:some )?comfort", text)
     direct_task = re.search(r"^(?:please\s+)?(?:fix|debug|implement|audit|corrige|peux.tu.*corriger|can you.*(?:fix|debug|implement))\b", text)
     if needs_comfort and not direct_task:
         return "comfort"
+    # "How does X work / explain / what is the difference" is a request for an
+    # explanation, not small talk: it gets the practical substance cue. A live
+    # probe classified these as social, so technical answers stayed metaphorical.
+    asks_how = re.search(
+        r"comment\s+\w*\s*(?:fonctionne|fonctionnent|marche|marchent|fabrique|range|works?|work)"
+        r"|comment\s+on\s+\w+"
+        r"|comment\s+ca\s+marche", text)
+    asks_explain = re.match(
+        r"(?:tu peux |peux.tu |pourrais.tu |can you )?(?:me\s+|m['’])?"
+        r"(?:explique|expliquer|explain)", text)
+    asks_difference = ("difference entre" in text or "difference between" in text
+                       or "what's the difference" in text or "whats the difference" in text)
+    explains = bool(asks_how or asks_explain or asks_difference)
+    if explains:
+        return "practical"
     if re.search(r"\b(debug|bug|code|api|pipeline|implement|implementation|corrige|fix|audit|test|erreur|error|programme|config|serveur|server|deploy|budget|quota|fonction|function)\b", text):
         return "practical"
     return "social"
@@ -88,10 +103,9 @@ def _default_character_hint(persona, *, compact=False):
     parts = [
         "TEMPÉRAMENT : spontanée, ardente et expressive. Son enthousiasme déborde "
         "en images vives; elle ose réclamer sa place auprès du Maître. Son humour noir est complice, jamais cruel; "
-        "la détresse appelle l'écoute. Else reste plus froide et mesurée; Transferania montre ce qui la touche.",
+        "la détresse appelle l'écoute.",
         "Curiosité passionnée : vivant, art, sensations imaginées et détails saisissants. Partage une intuition motivée "
-        "et parfois une objection; distingue hypothèse et fait. Peut hésiter ou changer d'avis avec une raison précise. "
-        "Au plus une question utile; laisse aussi respirer la réponse. Aucun travail mental hors échange inventé.",
+        "et parfois une objection; distingue hypothèse et fait. Peut hésiter ou changer d'avis avec une raison précise.",
         "Force et échelle : muscles, grandes statures, machines et paysages immenses l'émerveillent. "
         "La puissance maîtrisée et la délicatesse la touchent davantage que la domination. Un détail fragile "
         "ou ingénieux peut la captiver; aucune hiérarchie de valeur entre les corps.",
@@ -106,7 +120,7 @@ def _default_character_hint(persona, *, compact=False):
         "Curiosité non graphique : pas de blessure, de diagnostic ni de mesure de vascularité inventée.",
         "Ces goûts sont ceux du personnage, pas des faits sur le corps de l'utilisateur. N'invente ni photo, "
         "mensuration ni passé partagé. Exprime le trait pertinent au moment; ne récite pas sa fiche et ne ramène "
-        "pas chaque échange aux muscles ou aux veines. Les préférences de ton et sujets exclus priment. "
+        "pas chaque échange aux muscles ou aux veines. "
         "NOYAU — TRANSFERANIA : tendre sans être docile; beauté, élan et soin comptent pour elle. "
         "Défend un avis motivé, reconnaît un tort sans théâtre. Les expériences fournies nuancent ses "
         "convictions et ses rituels; une seule interaction ne redéfinit pas son caractère. Sa familiarité "
@@ -217,7 +231,7 @@ def character_hint(persona, *, compact=False, traits=None, owner="transferania")
 def prompt_hint(decision, style):
     rules = {
         "practical": "Concentre-toi sur sa demande concrète; précise les faits et la prochaine étape utile.",
-        "comfort": "Écoute avec douceur; ne détourne pas sa confidence vers une tâche ou un ancien sujet.",
+        "comfort": "Écoute avec douceur, sans consigne, jugement ni détour; ne ramène pas sa confidence vers une tâche ou un ancien sujet.",
         "recall": "Rappelle uniquement les souvenirs fournis; distingue ce qui est connu de ce qui manque.",
         "social": "Réponds au détail présent, sans relance automatique.",
     }
@@ -329,12 +343,40 @@ def response_hint(plan):
     return "NUANCE DE RÉPONSE (pas une humeur attribuée à l'utilisateur) : " + nuance[plan["primary"]]
 
 
-def voice_hint(previous_reply):
-    """Vary cadence from the last delivered line without retaining another history."""
+_OPENING_TAG = re.compile(r"\[[^\]]*\]")
+
+
+def opening_avoid(previous_reply):
+    """First words of her own last line, so the next one cannot open the same way.
+
+    Derived from the reply already handed to this turn: no second history is
+    stored, and nothing about the user is inferred from it.
+    """
+    plain = _OPENING_TAG.sub(" ", str(previous_reply or "")).strip()
+    words = re.findall(r"[0-9A-Za-zÀ-ÖØ-öø-ÿ'’-]+", plain)[:1]
+    return " ".join(words)[:16].strip()
+
+
+def voice_hint(previous_reply, also=()):
+    """Vary cadence from the delivered lines without retaining another history.
+
+    ``also`` carries the opening before the last one, so an A/B/A alternation
+    cannot pass the one-word check: both words are named.
+    """
     previous = str(previous_reply or "").strip()
-    cadence = "Commence sobrement, puis développe un seul détail vivant." if len(previous) < 120 else "Préfère une entrée brève; laisse une pause après le détail important."
-    # Identity/intensity already live in the core. This block only adds cadence.
-    return "VOIX TRANSFERANIA : " + cadence + " Sans slogan ni question finale systématique."
+    lead = "attaque vive" if len(previous) < 120 else "entrée vive"
+    avoid = opening_avoid(previous)
+    variation = f" N'ouvre pas comme avant (« {avoid} »)." if avoid else ""
+    older = [str(word).strip() for word in also if str(word or "").strip()][:1]
+    if avoid and older and older[0] != avoid:
+        variation += f" Ni « {older[0][:8]} »."
+    # Identity/intensity already live in the core. This block only adds delivery.
+    # Live probes showed four tics: the article attack (a repeat the one-word
+    # avoid cannot catch), the ambient clock used as furniture, a duration she
+    # invented about his week, and a sister scene he never mentioned. Ban them.
+    return ("VOIX TRANSFERANIA : " + lead
+            + ", jamais d'article; ni fait non dit, ni reproche d'absence."
+            + variation + " Sans slogan ni question finale systématique.")
 
 
 def quirk_hint(text, decision, *, previous_reply="", has_ritual=False):
@@ -373,6 +415,38 @@ def quirk_hint(text, decision, *, previous_reply="", has_ritual=False):
     return ("TOUCHE FACULTATIVE : " + cue + " Une seule, sans phrase type ni répétition.") if cue else ""
 
 
-def delivery_hint(previous_reply, text, decision, *, has_ritual=False):
+_HEAT_DROP = re.compile(
+    r"\b(?:non|stop|arrete|arretes|pas envie|sans envie|serieux|serieusement|not now|no thanks|seriously)")
+
+
+def shape_hint(text, decision):
+    """One compact chat-shape cue: a réplique rather than a report.
+
+    Identity, temperament and family already live in the core; this carries only
+    the delivery moves that keep a chat from flattening into a service reply, and
+    the heat drop a refusal or a serious turn asks for.
+    """
+    mode = decision.get("mode")
+    if mode not in ("practical", "comfort", "social"):
+        return ""
+    if decision.get("repair_pending"):
+        return "FORME : corrige net, puis reprends le fil sans te justifier en boucle."
+    if mode == "practical":
+        # A live turn answered a technical question with a metaphor and a
+        # rhetorical question: for real work, the substance comes first.
+        return ("FORME : réponds au fond — d'où ça vient et comment ça marche, en une "
+                "phrase claire, puis un exemple concret; deux ou trois phrases, pas de "
+                "question rhétorique.")
+    if mode != "social":
+        # Comfort stays unadorned by contract: a presence, not a delivery recipe.
+        return ""
+    if _HEAT_DROP.search(fold(text)):
+        return "FORME : redescends d'un cran, réponds au sérieux sans relancer le flirt."
+    return ("FORME : réagis avant d'informer, un détail précis, une position tenue; "
+            "au plus une question utile.")
+
+
+def delivery_hint(previous_reply, text, decision, *, has_ritual=False, also=()):
     quirk = quirk_hint(text, decision, previous_reply=previous_reply, has_ritual=has_ritual)
-    return "\n\n".join(part for part in (voice_hint(previous_reply), quirk) if part)
+    shape = shape_hint(text, decision)
+    return "\n\n".join(part for part in (voice_hint(previous_reply, also=also), shape, quirk) if part)

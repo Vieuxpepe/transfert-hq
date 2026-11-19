@@ -70,6 +70,7 @@ const css = readFileSync(new URL("../assets/hq-home-fx.css", import.meta.url), "
 const loops = css.split("@media (prefers-reduced-motion:no-preference)")[0];
 assert.ok(!/animation:[^;}]*infinite/.test(loops), "every loop lives in the no-preference block");
 const bridge = readFileSync(new URL("../iphone_bridge.py", import.meta.url), "utf8");
-assert.ok(bridge.indexOf('<script src="/assets/hq-home.js"></script>') < bridge.indexOf('<script src="/assets/hq-home-fx.js"></script>'), "loads after hq-home.js");
+const tagAt = (name) => bridge.indexOf('<script src="/assets/' + name + '.js"'); // defer keeps the tag, not the exact form
+assert.ok(tagAt("hq-home") < tagAt("hq-home-fx"), "loads after hq-home.js");
 assert.ok(bridge.includes('<link rel="stylesheet" href="/assets/hq-home-fx.css"/>'));
 console.log("check_hq_home_fx: ok");

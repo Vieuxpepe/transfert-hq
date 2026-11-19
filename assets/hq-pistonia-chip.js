@@ -119,6 +119,8 @@
   root.style.setProperty("--pis-stage-ms", MOTION.stage.ms + "ms");
   root.style.setProperty("--pis-caret-ms", MOTION.caret.ms + "ms");
   root.id = "hq-pistonia";
+  function sfx(kind) { try { if (win.HqAssistantSfx) win.HqAssistantSfx.play("pistonia", kind, win); } catch (_) {} }
+  try { if (win.HqAssistantSfx) win.HqAssistantSfx.register("pistonia", function () { return root; }, win); } catch (_) {}
   root.hidden = true;
   root.dataset.mood = "idle";
 
@@ -1218,7 +1220,9 @@
   }
 
   function setBusy(on) {
+    var wasBusy = busy;
     busy = on;
+    if (on && !wasBusy) sfx("think"); else if (!on && wasBusy) sfx("done");
     // The send button stays enabled: while she answers, a message is queued instead of lost — and a disabled submit
     // button is also what silently swallowed Enter in the first place.
     sendBtn.disabled = false;
@@ -1441,6 +1445,7 @@
   }
 
   function showError(msg, retryable) {
+    sfx("error");
     var row = el("div", "hq-pistonia-msg is-error", msg);
     if (retryable && lastText) {
       var b = el("button", "hq-pistonia-pbtn", T.retry);
@@ -1674,7 +1679,9 @@
   /* ---------------- open / close / visibility ---------------- */
   var isOpen = false;
   function setOpen(on) {
+    var wasOpen = isOpen;
     isOpen = !!on;
+    if (isOpen && !wasOpen) sfx("open");
     if (!isOpen) { stopVoice(); fitKeyboard(); }    // closed: the fitted height is not ours to keep
     bubble.hidden = !isOpen;
     root.classList.toggle("is-open", isOpen);

@@ -1,6 +1,6 @@
 """Episode-backed development for the non-companion assistants.
 
-Culinia, Forgia, Musica, Inventoria, Pistonia and Securia reuse the growth engine
+Culinia, Forgia, Musica, Inventoria, Pistonia, Securia and Elsea reuse the growth engine
 that backs Transferania's development, but each assistant supplies its own file
 path. Nothing here reads or writes the companion store or another assistant's
 file. A file that exists but is unreadable is preserved and ignored.

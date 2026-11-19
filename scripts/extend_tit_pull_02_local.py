@@ -13,7 +13,7 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 PREVIEW = ROOT / "artifacts" / "elevenlabs-expressive-sample-test" / "tit_pull_02.mp3"
-SRC = ROOT / "artifacts" / "elevenlabs-sound-design-src" / "Else_tit_pull_02.mp3"
+SRC = ROOT / "artifacts" / "elevenlabs-sound-design-src" / "Transferania_tit_pull_02.mp3"
 BANK = ROOT / "assets/companion/chat/reactions"
 REPEATS = 1
 CROSSFADE_S = 0.022
@@ -31,15 +31,15 @@ def tit_pull_02_manifest_url(man: dict) -> str | None:
         runtime = json.loads(runtime_path.read_text(encoding="utf-8"))
         for item in runtime.get("impacts", {}).get("tit_pull") or []:
             url = item.get("url") or ""
-            if re.search(r"else_tit_pull_02\.", url, re.I):
+            if re.search(r"transferania_tit_pull_02\.", url, re.I):
                 return url
     for item in man.get("impacts", {}).get("tit_pull") or []:
         url = item.get("url") or ""
-        if re.search(r"else_tit_pull_02\.", url, re.I):
+        if re.search(r"transferania_tit_pull_02\.", url, re.I):
             return url
     for item in man.get("samples", {}).get("impacts", {}).get("tit_pull") or []:
         url = item.get("url") or ""
-        if re.search(r"else_tit_pull_02\.", url, re.I):
+        if re.search(r"transferania_tit_pull_02\.", url, re.I):
             return url
     return None
 
@@ -232,7 +232,7 @@ def reencode_02_ogg() -> None:
     man = json.loads(man_path.read_text(encoding="utf-8"))
     url = tit_pull_02_manifest_url(man)
     if not url:
-        print("no else_tit_pull_02 in manifest", file=sys.stderr)
+        print("no transferania_tit_pull_02 in manifest", file=sys.stderr)
         return
 
     ogg_path = ROOT / url.lstrip("/")

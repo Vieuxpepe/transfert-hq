@@ -12,14 +12,46 @@ The API call itself is ``hq_ai.generate`` (same key, quota ledger and model fall
 """
 from __future__ import annotations
 
+import hq_language
+
 import json
 import math
 import re
+import threading
+import time
 import unicodedata
 from difflib import SequenceMatcher
 from typing import Any
 
 import hq_inventory
+
+CANCEL_TTL = 180.0
+_JOB_RE = re.compile(r"^[a-z0-9][a-z0-9-]{5,39}$")
+_cancel_lock = threading.Lock()
+_cancelled: dict[str, float] = {}   # job -> when the Master pressed Cancel
+
+
+class Cancelled(Exception):
+    """The Master stopped the turn: nothing is stored, no draft is created."""
+
+
+def request_cancel(job: Any) -> dict[str, Any]:
+    if not isinstance(job, str) or not _JOB_RE.fullmatch(job):
+        return {"cancelled": False}
+    now = time.time()
+    with _cancel_lock:
+        for old in [k for k, at in _cancelled.items() if now - at > CANCEL_TTL]:
+            _cancelled.pop(old, None)
+        _cancelled[job] = now
+    return {"cancelled": True}
+
+
+def is_cancelled(job: str) -> bool:
+    if not job:
+        return False
+    with _cancel_lock:
+        return job in _cancelled
+
 
 HISTORY_TURNS = 12          # prior messages sent to the model
 HISTORY_CHARS = 700         # per-message cap
@@ -90,9 +122,22 @@ Photo-detection tool (a photo of several PHYSICAL items; nothing is applied, the
     "place": "<optional place name>", "note": "<optional>"}]}
   mode "add": the items are new (a pile of groceries just brought home, a delivery): each qty is ADDED to the stock.
   mode "count": the photo shows what is stored (shelf, fridge, cupboard, drawer): each qty is the COUNT now present and will REPLACE the stock.
-Meal tool (read-only):
+Meal tools:
 - meal_needs {}   (what the current meal plan still needs to buy, from the meals module; mention it when the Master asks about meals)
-Draft tool (prepares changes for the Master to review; NOTHING is applied):
+- cook_check {"recipe": "<saved recipe title>", "servings": <optional>}   (can I cook it tonight? each ingredient: have / short / missing)
+- use_recipe {"recipe": "<saved recipe title>", "servings": <optional>}   (the Master COOKED it: queues the ingredient use as adjusts)
+- use_soon {"days": <optional, default 5>}   (food and items expiring soon, soonest first: suggest meals that use them first)
+- set_expiry {"item_id": "<id>", "item_name": "<its name>", "date": "YYYY-MM-DD" or "" to clear}   (only a date the Master gave; never guess one)
+Where / parts tools (read-only):
+- where_is {"query": "<item>"}   (shelf path and a photo id; answer "where is X?" with the place path)
+- check_parts {"parts": [{"name": "<part>", "qty": <number>, "unit": "<optional>"}]}   (can I build it / cook a dish with no saved recipe? have / short / missing)
+Price tools (receipts):
+- record_prices {"store": "<store name from the receipt header>", "date": "YYYY-MM-DD (optional)", "lines": [{"item_id": "<id>", "item_name": "<its name>", "qty": <number>, "total_cents": <line total in cents>}]}
+- price_info {"item_id": "<id>"}   (price history and the cheapest store seen)
+- spending {"month": "YYYY-MM (optional)"}   (what receipts Inventoria read cost, by category and by store)
+3D printing tool:
+- link_filament {"material": "PLA" | "PETG" | ..., "item_id": "<filament item id, counted in g or kg>", "item_name": "<its name>"}   (from then on, finished prints subtract the grams they used; item_id "" unlinks)
+Change tool (see APPLY MODE below for what happens to each change):
 - propose_changes {"photo_kind": "receipt" | "list" (only when a photo is attached), "changes": [ ... ]} with each change one of:
     {"op": "adjust", "item_id": "<id>", "item_name": "<its name>", "delta": <non-zero integer, negative to remove>}   (ONE adjust per item: add up the amounts)
     or, for quantities WITH DECIMALS (0.85 kg, 1.5 L): {"op": "adjust", ..., "amount": 0.85, "unit": "kg"} (I convert to the item's unit or round, and say so)
@@ -105,6 +150,9 @@ Memory tools (lasting household preferences, NOT stock):
 - remember {"note": "<one short durable fact or preference>", "corrects_id": "<mem id>", "expect": "<that note's exact saved text>"}
   corrects_id/expect only after the Master has said which saved note is wrong: a correction writes nothing until then.
 - forget {"id": "<mem id>"}
+- learn_alias {"alias": "<the Master's word>", "item_id": "<id>", "item_name": "<its name>"}   (a nickname: "PQ" = Papier toilette)
+- forget_alias {"alias": "<word>"}
+  Call learn_alias when the Master says a word means an item, or when they confirm which item an unknown word meant after you asked.
   Use remember only for lasting preferences or rules the Master states (pack sizes, where things belong, favourite shops,
   allergies, how they like lists). Never for secrets, one-off requests or stock counts. Say plainly when you saved or forgot something.
 INTAKE: the Master may send a list of things bought, received, used or thrown away, in any language
@@ -128,8 +176,7 @@ INTAKE: the Master may send a list of things bought, received, used or thrown aw
     of the draft and ask.
  5. Send ONE propose_changes with all the changes, then recap briefly: how many updated, how many new and where, what you skipped
     or assumed. Remind the Master to review the draft.
-After propose_changes succeeds, tell the Master plainly that a DRAFT is ready to review and apply in the panel (preview, then confirm).
-Never say a change has been applied: you cannot apply anything."""
+After propose_changes succeeds, describe the outcome exactly as the APPLY MODE block below says. You never apply anything yourself."""
 
 LANG_FR = "Reply in French (tutoiement, light Québec warmth is fine). Keep exact numbers and units."
 
@@ -322,9 +369,49 @@ def _memory_block(query: str = "") -> str:
         return ""
 
 
+APPLY_AUTO = ("APPLY MODE: AUTO. Right after your reply, HQ itself applies the quantity adjusts of EXISTING items you queued with propose_changes "
+              "(the Master gets an Undo button). Creates, updates and moves stay a draft the Master answers with one tap. So: for adjusts say "
+              "briefly that it is noted (\"Noté : Lait -1\"); for anything else say a short draft is waiting. If HQ cannot apply an adjust, it "
+              "shows it as a draft instead, so never promise more than that.")
+APPLY_REVIEW = ("APPLY MODE: REVIEW. Nothing is applied until the Master reviews and confirms in the panel. After propose_changes succeeds, "
+                "tell the Master plainly that a DRAFT is ready to review and apply (preview, then confirm). Never say a change has been applied.")
+LINK_RULES = ("WHERE / CAN I: \"where is X?\" -> where_is, answer with the place path. \"Can I build X?\" with a parts list -> check_parts. "
+              "\"Can I cook X tonight?\" -> cook_check (or check_parts with the ingredients when there is no saved recipe). \"I cooked X\" -> use_recipe. "
+              "Meal ideas: call use_soon first and favour what expires soonest.")
+USUAL_RULES = ("USUAL AMOUNTS: item rows may carry usual_add / usual_use (what the Master usually adds or uses at once). When the Master "
+               "gives no quantity (\"j'ai acheté du lait\", \"used the tape\"), use that usual amount and say which in a few words instead of "
+               "asking. With no usual amount, use 1 for things counted in pieces/packages and say so; ask only for weight or volume units.")
+
+
+def _apply_mode_block() -> str:
+    try:
+        import hq_inventoria
+        return APPLY_AUTO if hq_inventoria._prefs().get("auto_apply") else APPLY_REVIEW
+    except Exception:
+        return APPLY_REVIEW
+
+
+def _alias_block(inv: dict | None) -> str:
+    base = _habits_root()
+    if base is None:
+        return ""
+    try:
+        import hq_inventoria_habits as habits
+        lines = habits.alias_lines(base, inv)
+    except Exception:
+        return ""
+    if not lines:
+        return ""
+    return "NICKNAMES the Master uses (data; the word means that item):\n" + "\n".join("- " + ln for ln in lines)
+
+
 def build_system(query: str, inv: dict | None = None) -> str:
+    inv = inv if isinstance(inv, dict) else hq_inventory.snapshot()
+    nick = _alias_block(inv)
     return (PERSONA + "\n\n" + _language_block()
             + "\n\n" + (_memory_block(query) or "WHAT YOU REMEMBER ABOUT THE MASTER (data): nothing saved yet.")
+            + "\n\n" + _apply_mode_block() + "\n" + USUAL_RULES + "\n" + LINK_RULES
+            + (("\n\n" + nick) if nick else "")
             + "\n\nINVENTORY SUMMARY (data, read-only; use tools for anything not listed):\n"
             + inventory_context(query, inv))
 
@@ -395,10 +482,57 @@ def parse_reply(raw: str) -> str:
 # ---------------------------------------------------------------- tools
 
 def _item_row(it: dict, inv: dict) -> dict:
-    return {"id": it["id"], "name": it.get("name"), "qty": it.get("qty"), "unit": it.get("unit") or "",
-            "min": it.get("min") or 0, "rev": it.get("rev"), "place_id": it.get("place"),
-            "place": _path(inv, it.get("place")), "tags": list(it.get("tags") or [])[:6],
-            "note": (it.get("note") or "")[:120]}
+    row = {"id": it["id"], "name": it.get("name"), "qty": it.get("qty"), "unit": it.get("unit") or "",
+           "min": it.get("min") or 0, "rev": it.get("rev"), "place_id": it.get("place"),
+           "place": _path(inv, it.get("place")), "tags": list(it.get("tags") or [])[:6],
+           "note": (it.get("note") or "")[:120]}
+    usual = _usual(it["id"])
+    if usual.get("add"):
+        row["usual_add"] = usual["add"]
+    if usual.get("use"):
+        row["usual_use"] = usual["use"]
+    return row
+
+
+def _habits_root() -> Any:
+    try:
+        import hq_inventoria
+        return hq_inventoria.root()
+    except Exception:
+        return None
+
+
+def _usual(item_id: str) -> dict:
+    base = _habits_root()
+    if base is None:
+        return {}
+    try:
+        import hq_inventoria_habits as habits
+        return habits.usual(base, item_id)
+    except Exception:
+        return {}
+
+
+def _alias_id(name: Any) -> str | None:
+    base = _habits_root()
+    if base is None or not name:
+        return None
+    try:
+        import hq_inventoria_habits as habits
+        return habits.alias_item(base, name)
+    except Exception:
+        return None
+
+
+def _learned_defaults(name: Any) -> dict:
+    base = _habits_root()
+    if base is None:
+        return {}
+    try:
+        import hq_inventoria_habits as habits
+        return habits.name_defaults(base, name)
+    except Exception:
+        return {}
 
 
 def _to_int(v: Any, field: str, *, min_value: int | None = None, allow_zero: bool = True) -> int:
@@ -439,6 +573,9 @@ def resolve_item(inv: dict, item_id: Any = None, item_name: Any = None) -> dict:
     items = [i for i in inv.get("items", []) if isinstance(i, dict)]
     by_id = {i["id"]: i for i in items}
     name = str(item_name or "").strip()
+    nick = _alias_id(name) if name else None
+    if nick in by_id and not (isinstance(item_id, str) and item_id in by_id and item_id != nick):
+        return by_id[nick]                                   # a nickname the Master taught ("PQ" = Papier toilette)
     if isinstance(item_id, str) and item_id in by_id:
         it = by_id[item_id]
         if name and match_score(name, it.get("name", "")) < NAME_OK:
@@ -654,6 +791,12 @@ class Toolbox:
                     payload["unit"] = str(ch["unit"])
             if ch.get("place_id"):
                 payload["place"] = place(ch["place_id"])
+            else:
+                learned = _learned_defaults(name)            # where/in what unit this name lived before
+                if learned.get("place") in by_place:
+                    payload["place"] = learned["place"]
+                if not payload.get("unit") and learned.get("unit"):
+                    payload["unit"] = learned["unit"]
             if ch.get("min") is not None:
                 payload["min"] = _to_int(ch["min"], "min", min_value=0)
             where = by_place[payload["place"]].get("name") if payload.get("place") else None
@@ -690,6 +833,146 @@ class Toolbox:
         if op in ("delete", "item.delete", "place.delete"):
             raise ValueError("deleting is not available; the Master can delete in the panel")
         raise ValueError(f"unknown op {op!r}")
+
+    # --- links: where, parts, meals, prices, dates, filament
+    def _links_ctx(self):
+        import hq_inventoria_links as links
+        return links, _habits_root()
+
+    def where_is(self, args: dict) -> dict:
+        links, root = self._links_ctx()
+        try:
+            return links.where_is(self.inv(), args.get("query"), root)
+        except links.LinkError as exc:
+            return {"error": str(exc)}
+
+    def check_parts(self, args: dict) -> dict:
+        links, root = self._links_ctx()
+        try:
+            return links.check_parts(self.inv(), args.get("parts"), root)
+        except links.LinkError as exc:
+            return {"error": str(exc)}
+
+    def _meals_db(self):
+        import hq_inventoria as ivo
+        return ivo.current_db()
+
+    def cook_check(self, args: dict) -> dict:
+        links, root = self._links_ctx()
+        db = self._meals_db()
+        if db is None:
+            return {"error": "recipes are not reachable from here"}
+        try:
+            return links.cook_check(self.inv(), db[0], db[1], args.get("recipe"), args.get("servings"), root)
+        except (links.LinkError, Exception) as exc:
+            return {"error": str(exc)[:160]}
+
+    def use_recipe(self, args: dict) -> dict:
+        links, root = self._links_ctx()
+        db = self._meals_db()
+        if db is None:
+            return {"error": "recipes are not reachable from here"}
+        try:
+            recipe = links.find_recipe(db[0], db[1], args.get("recipe"))
+        except Exception as exc:
+            return {"error": str(exc)[:160]}
+        if recipe is None:
+            return {"error": "no saved recipe by that name; ask which ingredients were used and use propose_changes"}
+        props, skipped = links.cooked_proposals(self.inv(), recipe, args.get("servings"), root)
+        if not props:
+            return {"queued": 0, "skipped": skipped, "note": "nothing to subtract from the stock"}
+        res = self.propose_changes({"changes": [{"op": "adjust", "item_id": p["payload"]["id"], "delta": p["payload"]["delta"]} for p in props]})
+        res["skipped"] = skipped
+        res["recipe"] = recipe.get("title")
+        return res
+
+    def use_soon(self, args: dict) -> dict:
+        links, root = self._links_ctx()
+        if root is None:
+            return {"error": "not available"}
+        days = args.get("days", links.USE_SOON_DAYS)
+        days = days if isinstance(days, int) and not isinstance(days, bool) and 0 <= days <= 60 else links.USE_SOON_DAYS
+        db = self._meals_db()
+        rows = links.use_soon(root, self.inv(), days=days, conn=db[0] if db else None, household_id=db[1] if db else None)
+        return {"days": days, "count": len(rows), "items": rows[:30]}
+
+    def set_expiry(self, args: dict) -> dict:
+        links, root = self._links_ctx()
+        try:
+            it = resolve_item(self.inv(), args.get("item_id"), args.get("item_name"))
+            out = links.set_expiry(root, it["id"], args.get("date"))
+        except ValueError as exc:
+            return {"saved": False, "error": str(exc)[:160]}
+        return {"saved": True, "item": it.get("name"), **out}
+
+    def record_prices(self, args: dict) -> dict:
+        links, root = self._links_ctx()
+        inv = self.inv()
+        lines = []
+        for ln in args.get("lines") or []:
+            if not isinstance(ln, dict):
+                continue
+            try:
+                it = resolve_item(inv, ln.get("item_id"), ln.get("item_name"))
+            except ValueError:
+                lines.append({"item_name": ln.get("item_name")})
+                continue
+            lines.append({**ln, "item_id": it["id"]})
+        try:
+            res = links.record_prices(root, args.get("store"), lines, inv, date=args.get("date"))
+        except links.LinkError as exc:
+            return {"saved": False, "error": str(exc)}
+        return {"saved": res["saved"] > 0, **res}
+
+    def price_info(self, args: dict) -> dict:
+        links, root = self._links_ctx()
+        try:
+            it = resolve_item(self.inv(), args.get("item_id"), args.get("item_name"))
+        except ValueError as exc:
+            return {"error": str(exc)[:160]}
+        return {"item": it.get("name"), **links.price_info(root, it["id"])}
+
+    def spending(self, args: dict) -> dict:
+        links, root = self._links_ctx()
+        try:
+            return links.spending(root, self.inv(), args.get("month"))
+        except links.LinkError as exc:
+            return {"error": str(exc)}
+
+    def link_filament(self, args: dict) -> dict:
+        links, root = self._links_ctx()
+        item_id = None
+        if args.get("item_id") or args.get("item_name"):
+            try:
+                it = resolve_item(self.inv(), args.get("item_id"), args.get("item_name"))
+            except ValueError as exc:
+                return {"saved": False, "error": str(exc)[:160]}
+            if links.unit_dim(it.get("unit")) is None or links.unit_dim(it.get("unit"))[0] != "g":
+                return {"saved": False, "error": f"{it.get('name')} is counted in {it.get('unit') or 'pieces'}; filament needs an item counted in g or kg"}
+            item_id = it["id"]
+        try:
+            res = links.link_filament(root, args.get("material"), item_id)
+        except links.LinkError as exc:
+            return {"saved": False, "error": str(exc)}
+        return {"saved": True, "links": res, "note": "Only prints that finish after now are subtracted."}
+
+    def learn_alias(self, args: dict) -> dict:
+        import hq_inventoria_habits as habits
+        inv = self.inv()
+        try:
+            it = resolve_item(inv, args.get("item_id"), args.get("item_name"))
+            habits.set_alias(_watch_root(), args.get("alias"), it["id"], item_name=str(it.get("name") or ""))
+        except ValueError as exc:
+            return {"saved": False, "error": str(exc)[:200]}
+        return {"saved": True, "alias": str(args.get("alias") or "").strip(), "item": it.get("name"),
+                "note": "Nickname saved; stock unchanged."}
+
+    def forget_alias(self, args: dict) -> dict:
+        import hq_inventoria_habits as habits
+        try:
+            return {"removed": habits.remove_alias(_watch_root(), args.get("alias"))}
+        except ValueError as exc:
+            return {"removed": False, "error": str(exc)[:200]}
 
     @staticmethod
     def _dup_key(prop: dict) -> str | None:
@@ -738,7 +1021,7 @@ class Toolbox:
         self.proposals.extend(accepted)
         results.extend(overflow)
         return {"results": results, "drafts_total": len(self.proposals),
-                "note": "Drafts only. Nothing is applied until the Master reviews and confirms in the panel."}
+                "note": "Queued. What happens next is in the APPLY MODE block (auto-applied adjusts or drafts to review)."}
 
     def list_alerts(self, args: dict) -> dict:
         inv = self.inv()
@@ -756,10 +1039,11 @@ class Toolbox:
         skipped = max(0, len(names) - 40)
         for n in names[:40]:
             n = str(n)
-            scored = sorted(((match_score(n, i.get("name", "")), i) for i in items), key=lambda x: -x[0])
+            nick = _alias_id(n)
+            scored = sorted(((1.0 if i["id"] == nick else match_score(n, i.get("name", "")), i) for i in items), key=lambda x: -x[0])
             out.append({"name": n, "matches": [
                 {"id": i["id"], "name": i.get("name"), "qty": i.get("qty"), "unit": i.get("unit") or "",
-                 "place": places.get(i.get("place"), ""), "score": sc}
+                 "place": places.get(i.get("place"), ""), "score": sc, **({"nickname": True} if i["id"] == nick else {})}
                 for sc, i in scored[:3] if sc >= 0.6]})
         self.match_called = True
         res: dict[str, Any] = {"results": out}
@@ -971,7 +1255,9 @@ class Toolbox:
         return {"forgotten": mem.forget(hq_inventoria._root(), args.get("id"))}
 
     TOOLS = ("search_items", "get_item", "list_places", "list_place", "list_low_stock", "list_alerts", "match_items",
-             "propose_changes", "propose_grocery", "report_detections", "watch", "unwatch", "set_store", "meal_needs", "remember", "forget")
+             "propose_changes", "propose_grocery", "report_detections", "watch", "unwatch", "set_store", "meal_needs", "remember", "forget",
+             "learn_alias", "forget_alias", "where_is", "check_parts", "cook_check", "use_recipe", "use_soon", "set_expiry",
+             "record_prices", "price_info", "spending", "link_filament")
 
     def run(self, name: str, args: dict) -> dict:
         self.calls += 1
@@ -992,7 +1278,8 @@ class Toolbox:
             res = getattr(self, name)(args or {})
         except Exception as exc:  # a bad argument must never break the chat
             return {"error": str(exc)[:200]}
-        if name in ("remember", "forget", "watch", "unwatch", "set_store") and isinstance(res, dict) and (
+        if name in ("remember", "forget", "watch", "unwatch", "set_store", "learn_alias", "forget_alias", "set_expiry", "record_prices",
+                    "link_filament") and isinstance(res, dict) and (
                 res.get("saved") or res.get("removed") or res.get("forgotten")):
             self.side_effects += 1
         return res
@@ -1037,7 +1324,10 @@ Things the Master NEEDS (a handwritten or screenshot shopping list, an empty she
 propose_grocery. One photo can contain both. If the Master said what the photo is, obey that; if it is genuinely unclear, ask ONE short
 question instead of guessing, and say in your reply which part went to the stock and which to the grocery list.
 - A RECEIPT: read the line items as a purchase list (quantity and name; "2 x LAIT 2% 4L" = 2 of milk). Ignore prices, totals, taxes, dates and the
-  store header. Then follow the INTAKE steps (bought = increase).
+  store header for the stock. Then follow the INTAKE steps (bought = increase) in ONE propose_changes for the whole receipt: every line that matches an existing
+  item is an adjust, every readable line with no match is a create. Do NOT ask about lines one by one: the Master answers the new items with one
+  tap. Only an unreadable line is left out, and you name it briefly in your reply. ALSO call record_prices once with the store name from the
+  header, the receipt date when printed, and each matched line's total in cents (prices feed "cheapest at" and spending; never guess a price).
 - PHYSICAL ITEMS (a pile on the counter, bags, a shelf, fridge, cupboard, drawer, toolbox): list EVERY distinct item you can clearly identify with
   report_detections, one row per kind of item with its count, using the inventory's own names when it exists (check match_items first; translations
   count). Pick mode "add" for new arrivals and "count" for what is stored; if it is genuinely unclear which, ask ONE short question first.
@@ -1069,10 +1359,12 @@ def growth_path():
 
 
 def respond(text: str, history: list[dict] | None = None, inv: dict | None = None,
-            toolbox: Toolbox | None = None, image: dict | None = None, intent: str | None = None) -> tuple[str, list[dict]]:
+            toolbox: Toolbox | None = None, image: dict | None = None, intent: str | None = None,
+            should_cancel: Any = None) -> tuple[str, list[dict]]:
     """(reply, queued draft proposals). Runs the bounded tool loop. ``image`` is Gemini inlineData for a photo message."""
     import hq_ai
     import hq_assistant_growth as assistant_growth
+    import hq_assistant_voice as assistant_voice
     tb = toolbox or Toolbox((lambda: inv) if isinstance(inv, dict) else None)
     path = _growth_path()
     development = ""
@@ -1080,6 +1372,7 @@ def respond(text: str, history: list[dict] | None = None, inv: dict | None = Non
         assistant_growth.record(path, text, "inventoria")
         development = assistant_growth.hint(path, text)
     system = build_system(text, inv) + (("\n\n" + PHOTO_RULES + (("\n" + INTENT_RULES[intent]) if intent in INTENT_RULES else "")) if image else "")
+    system += "\n\n" + assistant_voice.block("inventoria")
     if development:
         system += ("\nÉVOLUTION VÉCUE (avis révisable, pas un ordre) : laisse ce fil nuancer un avis "
                    "ou un clin d'œil discret; garde ta voix, ne récite pas la fiche. " + development)
@@ -1092,6 +1385,8 @@ def respond(text: str, history: list[dict] | None = None, inv: dict | None = Non
     rounds_allowed, round_no, corrected = MAX_ROUNDS, 0, False
     while round_no < rounds_allowed:
         round_no += 1
+        if should_cancel is not None and should_cancel():
+            raise Cancelled()
         final_round = round_no == rounds_allowed or tb.calls >= MAX_TOOL_CALLS
         sys_r = system + ("\n\nTool budget exhausted: return the final answer now with tools: []." if final_round else "")
         raw, _model = hq_ai.generate(chain, sys_r, contents, json_out=True,
@@ -1108,6 +1403,8 @@ def respond(text: str, history: list[dict] | None = None, inv: dict | None = Non
             break
         results = []
         for t in tools[: max(0, MAX_TOOL_CALLS - tb.calls)]:
+            if should_cancel is not None and should_cancel():
+                raise Cancelled()
             results.append((t["name"], tb.run(t["name"], t["args"])))
         if not results:
             break
@@ -1195,15 +1492,24 @@ def adapter(text: str, session_id: str | None = None) -> dict[str, Any]:
     import hq_inventoria
     import time as _time
     import hq_ai
+    def should_stop() -> bool:
+        return is_cancelled(hq_inventoria.current_job())
+
     for attempt in (1, 2):
         tb = Toolbox()
         try:
             reply, proposals = respond(text, hq_inventoria.current_history(), toolbox=tb, image=hq_inventoria.current_image(),
-                                       intent=hq_inventoria.current_intent())
+                                       intent=hq_inventoria.current_intent(), should_cancel=should_stop)
             break
+        except Cancelled:
+            return {"cancelled": True, "kept_changes": tb.side_effects}
         except hq_ai.AiError as exc:
             if attempt == 1 and is_transient(exc):
+                if should_stop():
+                    return {"cancelled": True, "kept_changes": tb.side_effects}
                 _time.sleep(RETRY_DELAY)             # a short wait often clears a "high demand" spike
+                if should_stop():
+                    return {"cancelled": True, "kept_changes": tb.side_effects}
                 continue
             raise
     if tb.detections and proposals:
@@ -1224,6 +1530,8 @@ def adapter(text: str, session_id: str | None = None) -> dict[str, Any]:
     if tb.grocery:
         out["grocery_lines"] = tb.grocery
     if tb.detections:
+        if should_stop():                            # the photo follow-up costs another model call
+            return {"cancelled": True, "kept_changes": tb.side_effects}
         image = hq_inventoria.current_image()
         if image and any(not r.get("boxes") for r in tb.detections):
             locate_items(image, tb.detections)
@@ -1258,7 +1566,7 @@ GREETING = {
 def language() -> str:
     try:
         import hq_voice_phonon
-        return "en" if hq_voice_phonon.reply_language("inventoria") == "en" else "fr"
+        return hq_language.pick(hq_voice_phonon.reply_language("inventoria"))
     except Exception:
         return "fr"
 

@@ -10,6 +10,9 @@
 })(typeof window !== "undefined" ? window : null, function () {
   "use strict";
 
+  // Same 24×24 stroke vocabulary as the action bar (the bubble has its own small icon).
+  const CLOSE_ART = '<svg class="sk-i" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m6 6 12 12M18 6 6 18"/></svg>';
+
   const GAP = 14, MARGIN = 8, DOCK_BELOW = 600, ARM_MS = 400;
 
   /** On a narrow stage the bubble is docked: at the bottom, or at the top when the selection sits in the lower half
@@ -74,9 +77,11 @@
 
     function build(spec) {
       box.replaceChildren();
+      const close = el(doc, "button", { type: "button", class: "sk-bubble-x", "aria-label": "Fermer les actions rapides" });
+      close.innerHTML = CLOSE_ART;
       const head = el(doc, "div", { class: "sk-bubble-head" }, [
         el(doc, "strong", { text: spec.title }),
-        el(doc, "button", { type: "button", class: "sk-bubble-x", "aria-label": "Fermer les actions rapides", text: "✕" }),
+        close,
       ]);
       head.lastChild.addEventListener("click", () => { if (Date.now() - S.shownAt < ARM_MS) return; S.dismissed = S.sig; hide(); if (handlers && handlers.onClose) handlers.onClose(); });
       box.appendChild(head);

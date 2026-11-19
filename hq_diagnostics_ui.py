@@ -7,10 +7,10 @@ PAGE = """<!doctype html>
 <html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex,nofollow"><title>Diagnostics · Transfert HQ</title>
 <style>
-body{font:14px/1.45 system-ui,Segoe UI,sans-serif;margin:0 auto;max-width:960px;padding:12px 16px;color:#1c1c1c;background:#fff}
-h1{font-size:1.25rem;margin:.2rem 0 .6rem}h2{font-size:1rem;margin:1.2rem 0 .4rem;border-bottom:1px solid #bbb;padding-bottom:2px}
+body{font:13px/1.45 system-ui,Segoe UI,sans-serif;margin:0 auto;max-width:960px;padding:12px 16px;color:#1c1c1c;background:#fff}
+h1{font-size:1.25rem;margin:.2rem 0 .6rem}h2{font-size:15px;margin:1.2rem 0 .4rem;border-bottom:1px solid #bbb;padding-bottom:2px}
 table{border-collapse:collapse;width:100%}td,th{padding:3px 8px;border-bottom:1px solid #ddd;text-align:left;vertical-align:top}
-th{font-weight:600;width:34%}code{font-family:Consolas,monospace;font-size:.92em}
+th{font-weight:600;width:34%}code{font-family:Consolas,monospace;font-size:13px}
 .s-ok{color:#0a6b2d}.s-degraded{color:#8a5a00}.s-unavailable,.s-error,.s-not_ready{color:#b00020}.s-not_configured,.s-never{color:#555}
 .badge{font-weight:700}button{font:inherit;padding:4px 10px;margin:2px 6px 2px 0}input{font:inherit;padding:3px 6px;width:22em;max-width:100%}
 .muted{color:#555}.err{white-space:pre-wrap;word-break:break-word}

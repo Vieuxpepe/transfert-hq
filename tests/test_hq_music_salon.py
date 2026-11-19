@@ -205,13 +205,18 @@ class MusicaExtrasTests(Bound):
 
     def test_dj_line_uses_model_and_cools_down(self):
         with mock.patch("hq_ai.generate", return_value=("« Place à Sabaton, ça va cogner ! »", "m")) as gen:
-            first = hq_musica.dj_line({"track": "Primo Victoria", "artist": "Sabaton", "uri": "spotify:track:1"})
+            first = hq_musica.dj_line({"track": "Primo Victoria", "artist": "Sabaton", "uri": "spotify:track:1",
+                                       "key": "s-1", "source": "spotify"})
             self.assertEqual(first["line"], "Place à Sabaton, ça va cogner !")
             again = hq_musica.dj_line({"track": "Other", "artist": "X", "uri": "spotify:track:2"})
             self.assertTrue(again["cooldown"])
             gen.assert_called_once()
             system = gen.call_args.args[1]
             self.assertIn("DJ Musica", system)
+            trace = hq_musica.speech_recent(5)["items"]
+            self.assertEqual(trace[-1]["kind"], "dj")
+            self.assertEqual(trace[-1]["key"], "s-1")
+            self.assertEqual(trace[-1]["title"], "Primo Victoria")
         with self.assertRaises(hq_musica.MusicaError):
             hq_musica.dj_line({"track": ""})
 
@@ -235,7 +240,7 @@ class MusicaExtrasTests(Bound):
         self.assertIn("shake", out["lines"])
         self.assertTrue(again["cooldown"])
         gen.assert_called_once()
-        self.assertEqual(gen.call_args.args[0][0], "gemini-3.5-flash-lite")  # fastest model leads
+        self.assertEqual(gen.call_args.args[0][0], "gemma-4-26b-a4b-it")  # 14.4k RPD Gemma leads to spare Flash Lite quotas
         hq_musica._LAST_DANCE_AT = 0.0
         with mock.patch("hq_ai.generate", return_value=("n'importe quoi", "m")):
             self.assertEqual(hq_musica.dance_lines()["lines"], {})

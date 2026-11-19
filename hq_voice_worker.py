@@ -21,6 +21,7 @@ import getpass
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import threading
@@ -29,7 +30,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = "1"
+VERSION = "2"
 CREDS = Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "TransfertHQ" / "voice-worker.json"
 VOICE_RE = re.compile(r"^[a-z0-9_-]{1,40}$")
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -109,30 +110,168 @@ def cmd_pair(args) -> int:
 
 
 _last_spawn = 0.0
+_spawned = None      # the daemon launcher this worker started (its child is the process that holds the port)
 SPAWN_COOLDOWN = 240  # loading the model takes ~2 minutes: never start a second daemon while the first one loads
 
 
 def start_daemon(args) -> None:
-    """Start the local Chatterbox daemon, at most once per SPAWN_COOLDOWN (the model takes about two minutes to load)."""
-    global _last_spawn
+    """Start the local Chatterbox daemon, at most once per SPAWN_COOLDOWN (the model takes about two minutes to load).
+    A live launcher is enough reason not to start another: /health can time out for a whole load on a busy PC, and two
+    daemons would each load a model into VRAM (Windows lets both bind the port)."""
+    global _last_spawn, _spawned
+    if _spawned is not None and _spawned.poll() is None:
+        return
     if not (args.daemon_python and args.daemon_script) or time.time() - _last_spawn < SPAWN_COOLDOWN:
         return
     _last_spawn = time.time()
     cmd = [args.daemon_python, "-I", args.daemon_script, "--host", "127.0.0.1", "--port", str(args.daemon_port)]
     if args.root:
         cmd += ["--root", args.root]
-    subprocess.Popen(cmd, creationflags=NO_WINDOW | getattr(subprocess, "DETACHED_PROCESS", 0),
-                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)
+    _spawned = subprocess.Popen(cmd, creationflags=NO_WINDOW | getattr(subprocess, "DETACHED_PROCESS", 0),
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)
 
 
 def restart_daemon(daemon: str) -> None:
-    """A synthesis that hangs leaves the daemon locked for good: kill it (its pid comes from its own /health)
-    so the next loop starts a fresh one."""
-    global _last_spawn
+    """A synthesis that hangs leaves the daemon locked for good: kill its whole tree so the next loop starts a fresh one.
+    The launcher we spawned is killed too: it survives a child-only kill and would then look alive to start_daemon."""
+    global _last_spawn, _spawned
+    pids = []
+    if _spawned is not None and _spawned.pid:
+        pids.append(_spawned.pid)
     pid = daemon_health(daemon).get("pid")
-    if isinstance(pid, int) and pid > 0:
-        subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True, timeout=15, creationflags=NO_WINDOW)
+    if isinstance(pid, int) and pid > 0 and pid not in pids:
+        pids.append(pid)
+    for victim in pids:
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(victim)], capture_output=True, timeout=15, creationflags=NO_WINDOW)
+    _spawned = None
     _last_spawn = 0.0
+
+
+LLM_IDLE = 300          # seconds without a text job before the LLM gives its VRAM back to Chatterbox
+LLM_ARGS = "--fit on -fitt 3300 -c 4096"  # llama.cpp places the layers itself and leaves ~3.3 GB of VRAM for Chatterbox (4096 = the window HQ budgets for)
+LLM_LOAD_WAIT = 90      # a cold start reads ~4.5 GB from disk
+_llm = {"proc": None, "last": 0.0}
+
+
+def has_llm(args) -> bool:
+    return bool(getattr(args, "llm_server", None) and getattr(args, "llm_model", None))
+
+
+def llm_url(args) -> str:
+    return f"http://127.0.0.1:{getattr(args, 'llm_port', 8089)}"
+
+
+def llm_healthy(args) -> bool:
+    try:
+        with urllib.request.urlopen(llm_url(args) + "/health", timeout=3) as r:
+            return json.loads(r.read() or b"{}").get("status") == "ok"
+    except Exception:  # noqa: BLE001 — still loading, or not running
+        return False
+
+
+def stop_llm() -> None:
+    """Give the whole GPU back to Chatterbox. Called before every sentence and after LLM_IDLE."""
+    proc = _llm["proc"]
+    _llm["proc"] = None
+    if proc is not None and proc.poll() is None:
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True, timeout=15, creationflags=NO_WINDOW)
+
+
+def ensure_llm(args) -> None:
+    """Start llama-server (all layers on the GPU, the 4k window the HQ side budgets for) and wait until it answers."""
+    proc = _llm["proc"]
+    if proc is None or proc.poll() is not None:
+        _llm["proc"] = subprocess.Popen(
+            [args.llm_server, "-m", args.llm_model, "-np", "1", "--host", "127.0.0.1", "--port", str(getattr(args, "llm_port", 8089)),
+             *shlex.split(getattr(args, "llm_args", None) or LLM_ARGS)],
+            creationflags=NO_WINDOW, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)
+    end = time.time() + LLM_LOAD_WAIT
+    while time.time() < end and not STOP.is_set():
+        if _llm["proc"].poll() is not None:
+            raise RuntimeError("llama-server s’est arrêté")
+        if llm_healthy(args):
+            return
+        time.sleep(1.0)
+    raise RuntimeError("llama-server trop long à démarrer")
+
+
+EMBED_IDLE = 900        # seconds without an embed job before its small model is stopped (CPU only: it never holds VRAM)
+EMBED_ARGS = "-ngl 0 -c 2048"
+_emb = {"proc": None, "last": 0.0}
+
+
+def has_embed(args) -> bool:
+    """Embedding jobs need the same llama-server and an embedding .gguf (``--embed-model``)."""
+    return bool(getattr(args, "llm_server", None) and getattr(args, "embed_model", None))
+
+
+def embed_url(args) -> str:
+    return f"http://127.0.0.1:{getattr(args, 'embed_port', 8096)}"
+
+
+def stop_embed() -> None:
+    proc = _emb["proc"]
+    _emb["proc"] = None
+    if proc is not None and proc.poll() is None:
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True, timeout=15, creationflags=NO_WINDOW)
+
+
+def ensure_embed(args) -> None:
+    """Start the embedding model on the CPU (a few hundred MB of RAM, no VRAM) and wait until it answers."""
+    proc = _emb["proc"]
+    if proc is None or proc.poll() is not None:
+        _emb["proc"] = subprocess.Popen(
+            [args.llm_server, "-m", args.embed_model, "--embedding", "-np", "1", "--host", "127.0.0.1",
+             "--port", str(getattr(args, "embed_port", 8096)), *shlex.split(getattr(args, "embed_args", None) or EMBED_ARGS)],
+            creationflags=NO_WINDOW, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)
+    end = time.time() + LLM_LOAD_WAIT
+    while time.time() < end and not STOP.is_set():
+        if _emb["proc"].poll() is not None:
+            raise RuntimeError("le modèle d’embeddings s’est arrêté")
+        try:
+            with urllib.request.urlopen(embed_url(args) + "/health", timeout=3) as r:
+                if json.loads(r.read() or b"{}").get("status") == "ok":
+                    return
+        except Exception:  # noqa: BLE001 — still loading
+            pass
+        time.sleep(0.5)
+    raise RuntimeError("le modèle d’embeddings est trop long à démarrer")
+
+
+def embed_texts(args, job: dict) -> list:
+    """Vectors for a job's texts, in order. The job carries texts only."""
+    texts = [str(t) for t in (job.get("texts") or [])][:64]
+    if not texts:
+        raise RuntimeError("aucun texte")
+    ensure_embed(args)
+    req = urllib.request.Request(embed_url(args) + "/v1/embeddings", json.dumps({"input": texts}).encode(),
+                                 {"Content-Type": "application/json"}, method="POST")
+    with urllib.request.urlopen(req, timeout=60) as r:
+        data = json.loads(r.read() or b"{}")
+    _emb["last"] = time.time()
+    rows = sorted(data.get("data") or [], key=lambda x: x.get("index", 0))
+    vectors = [row.get("embedding") for row in rows]
+    if len(vectors) != len(texts) or not all(isinstance(v, list) and v for v in vectors):
+        raise RuntimeError("vecteurs incomplets")
+    return vectors
+
+
+def complete(args, job: dict) -> str:
+    """One chat completion. The job carries messages, a temperature and a token cap, nothing else."""
+    ensure_llm(args)
+    body = {"messages": job.get("messages") or [], "temperature": job.get("temperature", 0.7),
+            "max_tokens": min(int(job.get("max_tokens") or 256), 400), "stream": False}
+    if job.get("json") is True:
+        body["response_format"] = {"type": "json_object"}  # llama-server constrains the reply to valid JSON
+    req = urllib.request.Request(llm_url(args) + "/v1/chat/completions", json.dumps(body).encode(),
+                                 {"Content-Type": "application/json"}, method="POST")
+    with urllib.request.urlopen(req, timeout=40) as r:
+        data = json.loads(r.read() or b"{}")
+    _llm["last"] = time.time()
+    text = str(((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+    if not text:
+        raise RuntimeError("réponse vide")
+    return text
 
 
 def ensure_voice(creds: dict, voices: Path, name: str, stamp: int) -> bool:
@@ -181,7 +320,12 @@ def cmd_run(args) -> int:
         health = daemon_health(daemon)
         if not health:
             start_daemon(args)
-        info = {**gpu, "version": VERSION, "device": health.get("device"), "ready": bool(health.get("ready"))}
+        info = {**gpu, "version": VERSION, "device": health.get("device"), "ready": bool(health.get("ready")),
+                "llm": has_llm(args), "embed": has_embed(args)}
+        if _emb["proc"] is not None and time.time() - _emb["last"] > EMBED_IDLE:
+            stop_embed()
+        if _llm["proc"] is not None and time.time() - _llm["last"] > LLM_IDLE:
+            stop_llm()  # nobody asked for text for a while: give the RAM and VRAM back
         try:
             status, data = post(creds["hq"] + "/voice-worker/v1/poll", {"info": info}, token=creds["token"], timeout=20)
         except Exception as exc:  # noqa: BLE001 — HQ unreachable: back off, never crash
@@ -200,16 +344,29 @@ def cmd_run(args) -> int:
             continue
         started = time.time()
         try:
-            if not health.get("ready"):
-                raise RuntimeError("Chatterbox n’est pas prêt")
-            if not ensure_voice(creds, voices, job.get("voice", ""), int(job.get("voice_stamp") or 0)):
-                raise RuntimeError("voix de référence indisponible")
-            try:
-                wav = synth(daemon, job)
-            except (TimeoutError, urllib.error.URLError, OSError, RuntimeError):
-                restart_daemon(daemon)  # hung or stuck busy: do not leave it blocking every later line
-                raise
-            payload = {"ok": True, "wav_b64": base64.b64encode(wav).decode("ascii"), "ms": int((time.time() - started) * 1000)}
+            if job.get("kind") == "embed":
+                if not has_embed(args):
+                    raise RuntimeError("pas de modèle d’embeddings")
+                _emb["last"] = time.time()
+                payload = {"ok": True, "vectors": embed_texts(args, job), "ms": int((time.time() - started) * 1000)}
+            elif job.get("kind") == "text":
+                if not has_llm(args):
+                    raise RuntimeError("pas de modèle de texte")
+                _llm["last"] = time.time()
+                payload = {"ok": True, "text": complete(args, job), "ms": int((time.time() - started) * 1000)}
+            else:
+                if getattr(args, "llm_exclusive", False):
+                    stop_llm()  # opt-in for a model too big to share the GPU: the sentence gets all of it
+                if not health.get("ready"):
+                    raise RuntimeError("Chatterbox n’est pas prêt")
+                if not ensure_voice(creds, voices, job.get("voice", ""), int(job.get("voice_stamp") or 0)):
+                    raise RuntimeError("voix de référence indisponible")
+                try:
+                    wav = synth(daemon, job)
+                except (TimeoutError, urllib.error.URLError, OSError, RuntimeError):
+                    restart_daemon(daemon)  # hung or stuck busy: do not leave it blocking every later line
+                    raise
+                payload = {"ok": True, "wav_b64": base64.b64encode(wav).decode("ascii"), "ms": int((time.time() - started) * 1000)}
         except Exception as exc:  # noqa: BLE001
             payload = {"ok": False, "error": str(exc)[:160]}
         try:
@@ -242,6 +399,14 @@ def main() -> int:
         p.add_argument("--root", default=r"C:\AI\Chatterbox", help="Chatterbox folder (holds voices/)")
         p.add_argument("--daemon-python")
         p.add_argument("--daemon-script")
+        p.add_argument("--llm-server", help="llama-server.exe: enables text jobs (small LLM, only while the voice is idle)")
+        p.add_argument("--llm-model", help="a .gguf file for llama-server")
+        p.add_argument("--llm-port", type=int, default=8089)
+        p.add_argument("--embed-model", help="an embedding .gguf (CPU): enables embed jobs (needs --llm-server for the binary)")
+        p.add_argument("--embed-port", type=int, default=8096)
+        p.add_argument("--embed-args", help=f"extra llama-server flags for it (default: {EMBED_ARGS})")
+        p.add_argument("--llm-args", help=f"extra llama-server flags (default: {LLM_ARGS})")
+        p.add_argument("--llm-exclusive", action="store_true", help="stop the LLM whenever a sentence is wanted (model too big to share the GPU)")
     args = ap.parse_args()
     try:
         return {"pair": cmd_pair, "run": cmd_run, "status": cmd_status}[args.cmd](args)

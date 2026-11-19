@@ -15,6 +15,7 @@ import os
 import shutil
 import sys
 import unittest
+from tests.hq_symlink_test_helper import skip_without_symlinks
 import uuid
 import zipfile
 from io import BytesIO
@@ -529,6 +530,7 @@ class CorruptionTests(ABase):
         self.assertEqual(status, 503)
         self.assertEqual(path.read_bytes(), b"{not json")
 
+    @skip_without_symlinks
     def test_redirected_directory_is_refused(self):
         self.create(self.stor(), "x")
         outside = Path(self.tmp.parent) / ("outside-" + uuid.uuid4().hex)
@@ -1005,6 +1007,7 @@ class HardenedCopyTests(ABase):
         self.assertEqual((refused, (self.dest / self.path.name).read_bytes()), ([], self.path.read_bytes()))
         self.assertEqual(n, self.path.stat().st_size)
 
+    @skip_without_symlinks
     def test_symlink_swapped_in_after_closure_is_never_followed(self):
         clo = self.closure()
         self.path.unlink()
@@ -1025,6 +1028,7 @@ class HardenedCopyTests(ABase):
         self.path.unlink()
         self.assertEqual(self.copy(clo), (0, [self.path.name]))
 
+    @skip_without_symlinks
     def test_open_time_swap_is_caught_by_the_descriptor_identity_check(self):
         clo = self.closure()
         real_open = os.open
@@ -1050,6 +1054,7 @@ class HardenedCopyTests(ABase):
         n, refused = self.copy(clo)
         self.assertEqual(((self.dest / self.path.name).read_bytes(), refused), (raw, []))
 
+    @skip_without_symlinks
     def test_backup_marks_invalid_and_reports_the_refused_file(self):
         clo = self.closure()
         self.path.unlink()
@@ -1061,6 +1066,7 @@ class HardenedCopyTests(ABase):
         self.assertEqual([p.name for p in (self.tmp / "backup" / "annotations").iterdir()], [])
         self.assertNotIn("NE-DOIT-PAS-ETRE-LU", "".join(p.read_text() for p in (self.tmp / "backup").rglob("*") if p.is_file()))
 
+    @skip_without_symlinks
     def test_symlinked_shard_is_not_read_by_the_live_store_either(self):
         self.path.unlink()
         self.path.symlink_to(self.secret)
@@ -1087,6 +1093,7 @@ class HardenedCommentCopyTests(CommentBase):
         n, refused = self.copy(rcm.closure(self.tmp))
         self.assertEqual((refused, (self.dest / self.path.name).read_bytes()), ([], self.path.read_bytes()))
 
+    @skip_without_symlinks
     def test_symlink_directory_deleted_swaps_are_refused(self):
         for swap in ("link", "dir", "gone"):
             clo = rcm.closure(self.tmp)
@@ -1111,6 +1118,7 @@ class HardenedCommentCopyTests(CommentBase):
         n, refused = self.copy(rcm.closure(self.tmp))
         self.assertEqual(((self.dest / self.path.name).read_bytes(), refused), (raw, []))
 
+    @skip_without_symlinks
     def test_backup_marks_invalid_when_a_thread_is_swapped(self):
         clo = rcm.closure(self.tmp)
         self.path.unlink()
@@ -1121,6 +1129,7 @@ class HardenedCommentCopyTests(CommentBase):
         self.assertEqual((out["review_comments"]["refused"], out["review_comments"]["valid"]), (1, False))
         self.assertNotIn("NE-DOIT-PAS-ETRE-LU", "".join(p.read_text() for p in (self.tmp / "backup").rglob("*") if p.is_file()))
 
+    @skip_without_symlinks
     def test_symlinked_thread_is_not_read_by_the_live_store(self):
         self.path.unlink()
         self.path.symlink_to(self.secret)

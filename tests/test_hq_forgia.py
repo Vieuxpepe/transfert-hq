@@ -13,6 +13,7 @@ import hq_forge
 import hq_forge_jobs
 import hq_forge_presets
 import hq_forgia
+import hq_state
 
 
 class TestHqForgia(unittest.TestCase):
@@ -22,7 +23,8 @@ class TestHqForgia(unittest.TestCase):
         hq_forgia.bind(root=self.tmp_root)
 
     def tearDown(self) -> None:
-        hq_forgia.bind(root=ROOT)
+        # Back to the run's sandbox root, never the live checkout.
+        hq_forgia.bind(root=hq_state.state_root())
         self._tmp.cleanup()
 
     def test_status_and_readonly_forge_tools(self) -> None:
@@ -72,6 +74,24 @@ class TestHqForgia(unittest.TestCase):
             code2, amb = hq_forgia.http_post("/api/forgia/ambient", {"trigger": "timer", "nsfw": False})
         self.assertEqual(code2, 200)
         self.assertIn("42%", amb["line"])
+
+    def test_cancel_stops_the_turn_before_it_is_stored(self) -> None:
+        hq_forgia.cancel("fg-testjob")
+        code, res = hq_forgia.http_post("/api/forgia/chat", {"message": "Fais un prompt", "job": "fg-testjob"})
+        self.assertEqual(code, 200)
+        self.assertTrue(res["cancelled"])
+        self.assertEqual(hq_forgia.get_thread()["messages"], [])
+
+    def test_cancel_lands_between_tool_rounds(self) -> None:
+        def generate(*_args, **_kwargs):
+            hq_forgia.cancel("fg-midjob")      # the Master pressed Arrêter while a round was in flight
+            return json.dumps({"reply": "Je regarde.", "tools": [{"name": "get_forge_status", "args": {}}]}), "mock"
+
+        with patch("hq_ai.generate", side_effect=generate), \
+             patch.object(hq_forge, "status", return_value={"online": True}):
+            res = hq_forgia.chat("état ?", job="fg-midjob")
+        self.assertTrue(res["cancelled"])
+        self.assertEqual(hq_forgia.get_thread()["messages"], [])
 
 
 if __name__ == "__main__":

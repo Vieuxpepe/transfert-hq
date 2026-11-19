@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 LETTER = "A-Za-z\u00c0-\u00ff\u0152\u0153"
 WEDGED = re.compile(r"[" + LETTER + r"]\?[" + LETTER + r"]")
 QUERY = re.compile(r"\?[A-Za-z_][A-Za-z0-9_]*=")
-ALLOW = ("html?|", "|ya?ml|", "ya?ml")
+ALLOW = ("html?|", "|ya?ml|", "ya?ml", "k?ohms?", r"\s?h", r"\s?heures?")
 MOJIBAKE = ("\u00c3\u00a9", "\u00c3\u00a8", "\u00c3\u00a0", "\u00e2\u20ac", "\u00c2\u00a0")
 
 

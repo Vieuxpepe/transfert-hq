@@ -31,6 +31,7 @@ hq_agents.json
 hq_agent_jobs.json
 hq_planner.json
 .hq-agent-state/
+.hq-print3d/
 .hq-terminal/
 .hq-carnet/
 .hq-inventory/
@@ -97,6 +98,9 @@ hq_voice_profiles.json
 
 # headless Spotify player binary (not shipped)
 tools/librespot/*.exe
+tools/soloist/*.exe
+tools/soloist/*.txt
+tools/soloist/*.md
 
 # Local review exports, visual snapshots, scratch and runtime caches
 /review/
@@ -110,3 +114,48 @@ assets/companion/chat/voice_cache/
 .hq-engine/
 /_walk_phone.txt
 /nav-*.png
+
+# bridge runtime identity and logs
+.hq-boot.json
+.hq-boot.json.tmp
+.hq-boot.json.*.tmp
+.hq-boot.publish.lock
+bridge.lock
+bridge_launcher.log
+bridge_stdout.log.1
+bridge_stderr.log.1
+bridge_stdout-*.log
+bridge_stderr-*.log
+bridge_stdout-*.log.1
+bridge_stderr-*.log.1
+
+# Per-assistant visit transcripts are runtime state, never committed
+*_visits.json
+hq_greetings.json
+
+# Live household database. Never track a SQLite file with its -wal / -shm:
+# a committed sidecar can resurrect deleted rows or corrupt the database.
+.hq-household/*.sqlite
+.hq-household/*.sqlite-shm
+.hq-household/*.sqlite-wal
+.hq-household/culinia_self.json
+.hq-household/culinia_thread.json
+.hq-security/securia_self.json
+
+# Bridge runtime logs
+.hq-bridge.out.log
+.hq-bridge.err.log
+00000.log
+
+# Local tooling and disposable test output (never source)
+.cursor/mcp.json
+.hq-demo-shots/
+.tmp-review/
+result.json
+.hq-lecteur/state.json
+family-mission.json
+/ghost-drag-*.png
+/screenshots/
+
+# Merge-conflict leftovers are never source. Keep them off the tree entirely.
+*.conflict-backup-*.py

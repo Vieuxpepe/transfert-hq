@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import sys
 import unittest
+from tests.hq_symlink_test_helper import skip_without_symlinks
 from pathlib import Path
 from unittest import mock
 
@@ -935,6 +936,7 @@ class DeleteTests(RBase):
         succ = out["successor"]
         self.assertEqual(self.ra("reasoning_delete", succ, expect=409, confirm=True)["code"], "reasoning_has_history")
 
+    @skip_without_symlinks
     def test_a_noncanonical_file_is_never_unlinked(self):
         r = self.rc(DEC)
         path = self.rpath(r)
@@ -982,6 +984,7 @@ class CorruptionTests(RBase):
         self.assertEqual(([r["id"] for r in rel["results"][0]["records"]], rel["unavailable"]), ([good["id"]], 1))
         self.assertEqual(post(action="reasoning_resolve", ids=[good["id"], bad["id"]])[0], 200)
 
+    @skip_without_symlinks
     def test_invalid_and_noncanonical_files_are_preserved_and_do_not_poison_the_index(self):
         good = self.rc(DEC)
         d = self.tmp / ".hq-carnet" / "reasoning"
@@ -1207,6 +1210,7 @@ class BackupTests(RBase):
         self.assertFalse(out["reasoning"]["valid"])
         self.assertEqual((self.tmp / "backup" / "reasoning" / self.rpath(r).name).read_bytes(), data)
 
+    @skip_without_symlinks
     def test_store_symlink_and_final_file_swaps_are_refused_and_never_followed(self):
         r = self.rc(DEC)
         path = self.rpath(r)
@@ -1238,6 +1242,7 @@ class BackupTests(RBase):
             r = self.rc(DEC)
             path = self.rpath(r)
 
+    @skip_without_symlinks
     def test_redirected_store_directory_is_refused(self):
         self.rc(DEC)
         d = self.tmp / ".hq-carnet" / "reasoning"
@@ -1431,6 +1436,7 @@ class MarkerTests(RBase):
             rsn.drop_index()
             self.assertEqual(self.rget(a)["effective_status"], "active", "no marker: the record is ordinary again")
 
+    @skip_without_symlinks
     def test_marker_symlink_is_never_followed_and_still_blocks(self):
         a = self.rc(DEC)
         secret = self.tmp / "s.json"

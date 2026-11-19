@@ -8,13 +8,18 @@ fall back. Fully offline once models are cached (HF_HUB_OFFLINE is honoured by p
   POST /synthesize  -> {"text","lang","voice","duration_delta"}  => audio/wav (mono 16-bit)
 """
 from __future__ import annotations
-import argparse, io, json, os, threading, time, wave
+import argparse, io, json, os, socket, threading, time, wave
+import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 MODELS: dict = {}
 ERRORS: dict = {}
 LOCK = threading.Lock()
 MAX_TEXT = 1200
+# Stamped on every reply, including error ones. The HQ side reads it to tell "our daemon, half dead" from
+# "some other program owns 8058", which decides whether a silent listener may be killed. Keep the literal in
+# sync with PHONON_SIGNATURE in hq_voice_phonon.py (this script runs isolated in its own venv).
+SERVICE = "hq-phonon"
 
 
 def load(specs):
@@ -53,14 +58,15 @@ class H(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _err(self, code, msg):
-        self._send(code, json.dumps({"ok": False, "error": msg}).encode())
+        self._send(code, json.dumps({"ok": False, "service": SERVICE, "error": msg}).encode())
 
     def do_GET(self):
         if self.path != "/health":
             return self._err(404, "not found")
         info = {l: {"repo": m["repo"], "rate": m["tts"].sample_rate, "quant": m["tts"].quant,
                     "load_s": m["load_s"]} for l, m in MODELS.items()}
-        self._send(200, json.dumps({"ready": bool(MODELS), "models": info, "errors": ERRORS, "pid": os.getpid()}).encode())
+        self._send(200, json.dumps({"service": SERVICE, "ready": bool(MODELS), "models": info, "errors": ERRORS,
+                                     "pid": os.getpid()}).encode())
 
     def do_POST(self):
         if self.path != "/synthesize":
@@ -99,6 +105,26 @@ class H(BaseHTTPRequestHandler):
             LOCK.release()
 
 
+
+class _Server(ThreadingHTTPServer):
+    """One daemon per port. HTTPServer sets SO_REUSEADDR, and on Windows that lets a second process bind a port
+    that is already served: the copy then sits in serve_forever with the models loaded and nobody talking to it.
+    Each bridge boot started a fresh daemon, so they accumulated (ten idle copies, ~300 MB). An exclusive bind
+    makes the second one fail immediately instead."""
+
+    def server_bind(self):
+        exclusive = getattr(socket, "SO_EXCLUSIVEADDRUSE", None) if os.name == "nt" else None
+        if exclusive is None:
+            super().server_bind()
+            return
+        self.socket.setsockopt(socket.SOL_SOCKET, exclusive, 1)
+        self.socket.bind(self.server_address)
+        self.server_address = self.socket.getsockname()
+        host, port = self.server_address[:2]
+        self.server_name = socket.getfqdn(host)
+        self.server_port = port
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", action="append", required=True, help="lang=hf://repo or lang=/local/dir")
@@ -110,6 +136,11 @@ if __name__ == "__main__":
         raise SystemExit("loopback only")
     if a.threads:
         import ptts; ptts.set_num_threads(a.threads)
-    srv = ThreadingHTTPServer((a.host, a.port), H)
+    try:
+        srv = _Server((a.host, a.port), H)
+    except OSError as exc:
+        # Another daemon owns this port: exit instead of lingering as an idle copy with the models loading.
+        print(f"phonon: port {a.port} already served ({exc}); nothing to do", file=sys.stderr)
+        raise SystemExit(1)
     threading.Thread(target=lambda: load(a.model), daemon=True).start()  # port answers while loading
     srv.serve_forever()

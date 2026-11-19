@@ -5,6 +5,7 @@ Supports expressive vocal styling, multi-reference speaker blending, and warm ff
 """
 
 from __future__ import annotations
+import hq_language
 import os
 import sys
 import wave
@@ -97,7 +98,7 @@ def start_daemon(wait_sec: float = 0.0) -> bool:
                 [str(XTTS_PYTHON), str(XTTS_DAEMON_SCRIPT),
                  "--model-dir", str(XTTS_MODELS_DIR),
                  "--speaker-wav", str(DEFAULT_SPEAKER_WAV),
-                 "--language", "fr",
+                 "--language", "en",
                  "--host", XTTS_DAEMON_HOST, "--port", str(XTTS_DAEMON_PORT)],
                 cwd=str(GEMINI_TEST_ROOT), env=env, stdout=log, stderr=log,
                 stdin=subprocess.DEVNULL, creationflags=flags, close_fds=True, **extra,
@@ -258,7 +259,11 @@ def synthesize(
 
     A Phonon character never falls back to XTTS (Else's voice); on failure it returns
     ok=False with engine="phonon" so the client uses browser speech.
+
+    The language is normalised first (hq_language): under the English-only policy every
+    request is synthesized in English, whatever it asked for or defaulted to.
     """
+    language = hq_language.pick(language)
     if character is not None:
         import hq_voice_phonon
         engine = hq_voice_phonon.route(character)

@@ -84,6 +84,14 @@ class SessionLifecycleTests(unittest.TestCase):
         self.assertFalse(ok_gen)
         self.assertEqual(reason_gen, "generation_mismatch")
 
+    def test_session_memory_owner_prefers_user_id(self) -> None:
+        self.assertEqual(
+            sec.session_memory_owner({"user": "Admin", "user_id": "usr_root"}),
+            "usr_root",
+        )
+        self.assertEqual(sec.session_memory_owner({"user": "Legacy"}), "Legacy")
+        self.assertEqual(sec.session_memory_owner(None), "admin")
+
     def test_parse_stored_session_compatibility(self) -> None:
         now = 1000000.0
         future = now + 5000.0

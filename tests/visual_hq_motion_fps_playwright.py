@@ -19,6 +19,8 @@ from playwright.sync_api import sync_playwright
 
 HERE = Path(__file__).resolve().parent
 SOURCE = HERE.parent
+sys.path.insert(0, str(SOURCE / "scripts"))
+from hq_perf_fps_stats import SAMPLE_STATS_JS_FUNCTION  # noqa: E402
 
 SAMPLE_MS = 3000
 MIN_FPS = 40.0
@@ -35,8 +37,10 @@ MAX_CARNET_SCRIPTS = 45
 
 
 def sample_motion(page, label: str) -> dict:
-    return page.evaluate(
-        """async ({ sampleMs, label }) => {
+    js = (
+        "async ({ sampleMs, label }) => {\n"
+        + SAMPLE_STATS_JS_FUNCTION
+        + """
           const t0 = performance.now();
           const frames = [];
           let longTasks = 0;
@@ -60,10 +64,8 @@ def sample_motion(page, label: str) -> dict:
             requestAnimationFrame(tick);
           });
           if (obs) obs.disconnect();
-          const elapsed = performance.now() - t0;
-          const gaps = [];
-          for (let i = 1; i < frames.length; i += 1) gaps.push(frames[i] - frames[i - 1]);
-          gaps.sort((a, b) => a - b);
+          const sampleElapsedMs = performance.now() - t0;
+          const frameStats = hqPerfStatsFromFrames(frames, sampleElapsedMs, sampleElapsedMs);
           const resources = performance.getEntriesByType("resource").filter((entry) => entry.startTime >= t0);
           const running = document.getAnimations().filter((anim) => anim.playState === "running");
           const homeAnimList = running.filter((anim) => {
@@ -78,25 +80,12 @@ def sample_motion(page, label: str) -> dict:
           const motion = window.HqMotion ? window.HqMotion.getState() : null;
           const softbody = document.querySelector(".hq-dangling-member-mount.is-softbody") != null;
           const apiEntries = resources.filter((entry) => entry.name.includes("/api/"));
-          return {
-            label,
-            frames: frames.length,
-            fps: Number((frames.length * 1000 / elapsed).toFixed(1)),
-            p95GapMs: Number((gaps[Math.floor(gaps.length * 0.95)] || 0).toFixed(1)),
-            maxGapMs: Number((gaps[gaps.length - 1] || 0).toFixed(1)),
-            longTasks,
-            longTaskMs: Math.round(longTaskMs),
-            apiRequests: apiEntries.length,
-            apiDetails: apiEntries.map((e) => e.name),
-            runningAnimations: running.length,
-            homeAnimations,
-            homeAnimDetails,
-            motion,
-            softbody,
-          };
-        }""",
-        {"sampleMs": SAMPLE_MS, "label": label},
+          return Object.assign({ label, longTasks, longTaskMs: Math.round(longTaskMs),
+            apiRequests: apiEntries.length, apiDetails: apiEntries.map((e) => e.name),
+            runningAnimations: running.length, homeAnimations, homeAnimDetails, motion, softbody }, frameStats);
+        }"""
     )
+    return page.evaluate(js, {"sampleMs": SAMPLE_MS, "label": label})
 
 
 def check_sample(
@@ -187,7 +176,11 @@ def main() -> None:
                 problems.append("missing window.HqMotion")
             if not page.evaluate("() => !!window.HqKinetic"):
                 problems.append("missing window.HqKinetic")
-            page.wait_for_selector(".hq-companion", timeout=20000)
+            # Accueil keeps the companion collapsed to its minimal orb on a fresh
+            # profile: the rig is attached, but nothing is laid out yet. The
+            # samples below measure the page, so wait for the element rather than
+            # for an expanded portrait that only a user gesture opens.
+            page.wait_for_selector(".hq-companion", state="attached", timeout=20000)
 
             preloaded_carnet_scripts = page.evaluate(
                 """() => performance.getEntriesByType("resource").filter(
@@ -316,7 +309,7 @@ def main() -> None:
             parked_page.route("**/api/ai*", ai_status)
             parked_page.on("pageerror", lambda e: problems.append("parked pageerror: " + str(e)))
             parked_page.goto(base + "/", wait_until="domcontentloaded", timeout=45000)
-            parked_page.wait_for_selector(".hq-companion", timeout=20000)
+            parked_page.wait_for_selector(".hq-companion", state="attached", timeout=20000)
             parked_page.wait_for_timeout(1200)
             parked = sample_motion(parked_page, "accueil-parked")
             check_sample(problems, parked)

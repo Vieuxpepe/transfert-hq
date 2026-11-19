@@ -27,34 +27,44 @@ h1,.home-greet{font-weight:600;letter-spacing:-.02em}
 .home-clock-face,.home-next-when,.fx-meta,.fx-bk-num,.badge,.fx-n,.device-tile-meta,.hq-cal-time,time{font-variant-numeric:tabular-nums}
 .home-clock-face{font-family:var(--font);font-weight:700;letter-spacing:-.03em}
 
-/* ---------------------------------------------------------------- an accent per page, from its sunset */
-body:not(.theme-midnight)[data-view="accueil"]{--accent:#ffab70;--accent2:#ffab70}
-body:not(.theme-midnight)[data-view="carnet"]{--accent:#f2c46b;--accent2:#f2c46b}
-body:not(.theme-midnight)[data-view="calendrier"]{--accent:#c3a6ff;--accent2:#c3a6ff}
-body:not(.theme-midnight)[data-view="dessiner"]{--accent:#ff9478;--accent2:#ff9478}
+/* ---------------------------------------------------------------- an accent per page, from its sunset
+   ONE list. --view-<page> is the page colour; --nav-<page> is derived from it (the rail cannot read a page's
+   --accent, since a tab may sit somewhere else), and --accent picks it up. A page with no entry here used to keep
+   the previous page's colour; every view in VIEW_LABELS is listed, and tests/check_hq_theme.mjs fails if one is not. */
+:root{
+  --view-accueil:#ffab70;--view-carnet:#f2c46b;--view-calendrier:#c3a6ff;--view-dessiner:#ff9478;--view-forge:#9aa6ff;
+  --view-fichiers:#5fd0f0;--view-projets:#7fb0ff;--view-inventaire:#a8dc72;--view-lecteur:#ff7fb8;--view-intime:#ff4d8d;
+  --view-musique:#c084fc;--view-playground:#5ce6c9;--view-atelier3d:#ff8fd8;--view-robotique:#9ee06b;--view-engine:#ff9f5c;
+  --view-securite:#ff6b8a;--view-repas:#f0e26b;--view-budget:#8fd9a8;--view-plus:#3dffb5;--view-ops:#3dffb5
+}
+body:not(.theme-midnight)[data-view="accueil"]{--accent:var(--view-accueil);--accent2:var(--view-accueil)}
+body:not(.theme-midnight)[data-view="carnet"]{--accent:var(--view-carnet);--accent2:var(--view-carnet)}
+body:not(.theme-midnight)[data-view="calendrier"]{--accent:var(--view-calendrier);--accent2:var(--view-calendrier)}
+body:not(.theme-midnight)[data-view="dessiner"]{--accent:var(--view-dessiner);--accent2:var(--view-dessiner)}
 /* Forge keeps its indigo beyond the panel: the nav, selection and scrollbars match
    --forge-accent so the view no longer carries two accents. */
-body:not(.theme-midnight)[data-view="forge"]{--accent:#9aa6ff;--accent2:#9aa6ff}
-body:not(.theme-midnight)[data-view="fichiers"]{--accent:#5fd0f0;--accent2:#5fd0f0}
-body:not(.theme-midnight)[data-view="projets"]{--accent:#7fb0ff;--accent2:#7fb0ff}
-body:not(.theme-midnight)[data-view="inventaire"]{--accent:#a8dc72;--accent2:#a8dc72}
-body:not(.theme-midnight)[data-view="lecteur"]{--accent:#ff7fb8;--accent2:#ff7fb8}
-body:not(.theme-midnight)[data-view="intime"]{--accent:#ff4d8d;--accent2:#ff4d8d}
-body:not(.theme-midnight)[data-view="musique"]{--accent:#c084fc;--accent2:#c084fc}
-body:not(.theme-midnight)[data-view="plus"],body:not(.theme-midnight)[data-view="ops"]{--accent:#3dffb5;--accent2:#3dffb5}
+body:not(.theme-midnight)[data-view="forge"]{--accent:var(--view-forge);--accent2:var(--view-forge)}
+body:not(.theme-midnight)[data-view="fichiers"]{--accent:var(--view-fichiers);--accent2:var(--view-fichiers)}
+body:not(.theme-midnight)[data-view="projets"]{--accent:var(--view-projets);--accent2:var(--view-projets)}
+body:not(.theme-midnight)[data-view="inventaire"]{--accent:var(--view-inventaire);--accent2:var(--view-inventaire)}
+body:not(.theme-midnight)[data-view="lecteur"]{--accent:var(--view-lecteur);--accent2:var(--view-lecteur)}
+body:not(.theme-midnight)[data-view="intime"]{--accent:var(--view-intime);--accent2:var(--view-intime)}
+body:not(.theme-midnight)[data-view="musique"]{--accent:var(--view-musique);--accent2:var(--view-musique)}
+body:not(.theme-midnight)[data-view="playground"]{--accent:var(--view-playground);--accent2:var(--view-playground)}
+body:not(.theme-midnight)[data-view="atelier3d"]{--accent:var(--view-atelier3d);--accent2:var(--view-atelier3d)}
+body:not(.theme-midnight)[data-view="robotique"]{--accent:var(--view-robotique);--accent2:var(--view-robotique)}
+body:not(.theme-midnight)[data-view="engine"]{--accent:var(--view-engine);--accent2:var(--view-engine)}
+body:not(.theme-midnight)[data-view="securite"]{--accent:var(--view-securite);--accent2:var(--view-securite)}
+body:not(.theme-midnight)[data-view="repas"]{--accent:var(--view-repas);--accent2:var(--view-repas)}
+body:not(.theme-midnight)[data-view="budget"]{--accent:var(--view-budget);--accent2:var(--view-budget)}
+body:not(.theme-midnight)[data-view="plus"],body:not(.theme-midnight)[data-view="ops"]{--accent:var(--view-plus);--accent2:var(--view-plus)}
 @media (prefers-color-scheme: light){
-  body:not(.theme-midnight)[data-view="accueil"]{--accent:#a4461b;--accent2:#a4461b}
-  body:not(.theme-midnight)[data-view="carnet"]{--accent:#7d5810;--accent2:#7d5810}
-  body:not(.theme-midnight)[data-view="calendrier"]{--accent:#6440b0;--accent2:#6440b0}
-  body:not(.theme-midnight)[data-view="dessiner"]{--accent:#a63d26;--accent2:#a63d26}
-  body:not(.theme-midnight)[data-view="forge"]{--accent:#2f3fbe;--accent2:#2f3fbe}
-  body:not(.theme-midnight)[data-view="fichiers"]{--accent:#0b6680;--accent2:#0b6680}
-  body:not(.theme-midnight)[data-view="projets"]{--accent:#1f4fae;--accent2:#1f4fae}
-  body:not(.theme-midnight)[data-view="inventaire"]{--accent:#366b17;--accent2:#366b17}
-  body:not(.theme-midnight)[data-view="lecteur"]{--accent:#a12a63;--accent2:#a12a63}
-  body:not(.theme-midnight)[data-view="intime"]{--accent:#b01856;--accent2:#b01856}
-  body:not(.theme-midnight)[data-view="musique"]{--accent:#6d28d9;--accent2:#6d28d9}
-  body:not(.theme-midnight)[data-view="plus"],body:not(.theme-midnight)[data-view="ops"]{--accent:#08724f;--accent2:#08724f}
+  :root{
+    --view-accueil:#a4461b;--view-carnet:#7d5810;--view-calendrier:#6440b0;--view-dessiner:#a63d26;--view-forge:#2f3fbe;
+    --view-fichiers:#0b6680;--view-projets:#1f4fae;--view-inventaire:#366b17;--view-lecteur:#a12a63;--view-intime:#b01856;
+    --view-musique:#6d28d9;--view-playground:#0d6b5f;--view-atelier3d:#a3237a;--view-robotique:#2f5c0e;--view-engine:#8a3d00;
+    --view-securite:#a01840;--view-repas:#5f5300;--view-budget:#1c6b45;--view-plus:#08724f;--view-ops:#08724f
+  }
 }
 ::selection{background:color-mix(in srgb,var(--accent) 32%,transparent)}
 html{scrollbar-color:color-mix(in srgb,var(--accent) 35%,var(--line)) transparent}
@@ -106,4 +116,18 @@ html{scrollbar-color:color-mix(in srgb,var(--accent) 35%,var(--line)) transparen
 }
 @media (prefers-reduced-motion:reduce){
   body.hq-vt-wash::after{display:none}
+}
+
+/* ---------------------------------------------------------------- nav tint
+   A tab may be somewhere else than the page you are on, so the nav cannot read that page's --accent. These are
+   DERIVED from --view-<page> above (never written twice) and let every entry keep a whisper of its own colour:
+   the rail reads as spaces instead of one grey column. Painted by the .hq-nav-tint rules in BASE_CSS. */
+:root{
+  --nav-accueil:var(--view-accueil);--nav-carnet:var(--view-carnet);--nav-calendrier:var(--view-calendrier);
+  --nav-dessiner:var(--view-dessiner);--nav-forge:var(--view-forge);--nav-fichiers:var(--view-fichiers);
+  --nav-projets:var(--view-projets);--nav-inventaire:var(--view-inventaire);--nav-lecteur:var(--view-lecteur);
+  --nav-intime:var(--view-intime);--nav-musique:var(--view-musique);--nav-playground:var(--view-playground);
+  --nav-atelier3d:var(--view-atelier3d);--nav-robotique:var(--view-robotique);--nav-engine:var(--view-engine);
+  --nav-securite:var(--view-securite);--nav-repas:var(--view-repas);--nav-budget:var(--view-budget);
+  --nav-plus:var(--view-plus);--nav-ops:var(--view-ops)
 }

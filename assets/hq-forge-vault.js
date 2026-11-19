@@ -67,6 +67,8 @@
       state.textContent = open ? "Ouvert" : "Verrouillé";
       button.append(tile, name, state);
       button.setAttribute("aria-label", ctx.vaultName(v) + ", " + state.textContent.toLowerCase());
+      // The name and state are already visible; do not repeat them in a tooltip.
+      button.setAttribute("data-help-skip", "");
       button.addEventListener("click", () => {
         if (v.id === ctx.openVid) {
           ctx.vaultsNote(quoted(ctx.vaultName(v)) + " est déjà ouvert.");

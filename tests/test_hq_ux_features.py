@@ -58,42 +58,101 @@ class UxFeatureTests(unittest.TestCase):
 
     def test_system_jump_and_access_disclosure(self):
         plus = self.html.split('<div data-panel="plus"', 1)[1].split("</main>", 1)[0]
-        # The plus panel now carries two navs: the space links first, then the Système jump list.
+        accueil = self.html.split('<div data-panel="accueil"', 1)[1].split('<div data-panel="carnet"', 1)[0]
+        # The disclosure lists places first and actions second; every section is reachable from the places nav.
         nav, rest = plus.split('<nav class="sys-jump"', 1)[1].split("</nav>", 1)
         self.assertIn('aria-label="Sections Système"', nav)
         for target in (
             "system-session",
+            "system-access",
             "system-backups",
             "system-notifications",
             "system-alerts",
             "system-info",
             "system-automations",
-            "system-tasks",
             "system-journal",
-            "system-brief",
+            "system-transferania",
+            "system-mini-quests",
+            "system-nvidia",
         ):
             self.assertIn(f'id="{target}"', plus)
-            if target != "system-brief":
-                self.assertIn(f'data-jump="{target}"', nav)
+            self.assertIn(f'data-jump="{target}"', nav)
+        # Every system-* section in the panel is reachable from the jump list.
+        import re
+        sections = set(re.findall(r'<section class="hq[^"]*" id="(system-[a-z0-9-]+)"', plus)) | set(
+            re.findall(r'<details class="hq[^"]*" id="(system-[a-z0-9-]+)"', plus)
+        )
+        self.assertTrue(sections, "the panel still carries its sections")
+        for section in sections:
+            self.assertIn(f'data-jump="{section}"', nav, section + " is reachable from the jump list")
         journal = nav.split('data-jump="system-journal"', 1)[0].rsplit("<button", 1)[1]
         self.assertNotIn("mode-complet-only", journal)
         self.assertIn('id="system-journal"', plus)
-        for advanced in ("system-automations", "system-tasks"):
+        for advanced in ("system-automations",):
             button = nav.split(f'data-jump="{advanced}"', 1)[0].rsplit("<button", 1)[1]
             self.assertIn("mode-complet-only", button)
-        session, after = rest.split('id="system-brief"', 1)
-        self.assertLess(session.index('id="hq-disk"'), session.index("<details"))
-        self.assertIn("Partager l'accès", session)
-        self.assertIn('aria-label="QR d\'accès"', session)
+        actions = plus.split('<div class="sys-actions">', 1)[1].split("</div>", 1)[0]
+        self.assertIn('id="system-robotics-settings"', actions)
+        self.assertNotIn("data-jump=", actions)
+        # The empty Tâches stub is gone (the board lives in Projets), and the facts card is now « Pont », followed by a
+        # separate « Transferania » section for the per-device companion preferences.
+        self.assertNotIn('id="system-tasks"', plus)
+        self.assertIn("Dossier PC", plus.split('id="system-info"', 1)[1].split('id="system-transferania"', 1)[0])
+        transferania = plus.split('id="system-transferania"', 1)[1]
+        self.assertIn('id="hq-companion-persona"', transferania)
+        self.assertNotIn('id="hq-companion-persona"', plus.split('id="system-transferania"', 1)[0])
+        # État is a status strip: four tiles, and the static facts (hôte, max upload) moved to Pont.
+        etat = plus.split('id="system-session"', 1)[1].split('id="system-security"', 1)[0]
+        for needle in ('id="hq-disk"', 'id="hq-uptime"', 'id="hq-role"', 'id="hq-attn-count"', 'id="hq-build"', 'class="sys-tiles"'):
+            self.assertIn(needle, etat)
+        self.assertNotIn('id="hq-host"', etat)
+        self.assertNotIn('id="hq-max"', etat)
+        pont = plus.split('id="system-info"', 1)[1]
+        self.assertIn('id="hq-host"', pont)
+        self.assertIn('id="hq-max"', pont)
+        # Accès owns the QR, wallboard and PWA block; the QR payloads stay server-built.
+        access = plus.split('id="system-access"', 1)[1].split('id="system-info"', 1)[0]
+        self.assertIn("Partager l'accès", access)
+        self.assertIn('aria-label="QR d\'accès"', access)
+        self.assertIn("PWA", access)
         source = (ROOT / "iphone_bridge.py").read_text(encoding="utf-8")
         share = source.split('class="access-share"', 1)[1].split("</details>", 1)[0]
         self.assertIn("{qr_lan}", share)
         self.assertIn("{qr_ts}", share)
-        self.assertNotIn("<details", session.split('id="hq-status"', 1)[0])
+        # Brief du jour is a home summary: it lives on Accueil now, not in the settings list.
+        self.assertIn('id="system-brief"', accueil)
+        self.assertNotIn('id="system-brief"', plus)
+        # Scope chips say who owns a setting: this browser, this PC, the bridge, or admin only.
+        for scope in ("ce navigateur", "ce PC", "le pont", "admin"):
+            self.assertIn(f'<span class="scope">{scope}</span>', plus)
+        # Backups are an instrument: summary line, a backup-now action, and a guarded restore.
+        backups = plus.split('id="system-backups"', 1)[1].split("</section>", 1)[0]
+        self.assertIn('id="hq-backup-summary"', backups)
+        self.assertIn('id="btn-backup-now"', backups)
+        self.assertIn('Tape " + folder + " pour confirmer', self.hq_js)
+        self.assertIn('sauvegarde de sécurité créée', self.hq_js)
+        # Sections fetch when revealed; the disclosure state and the section hash survive a reload.
+        self.assertIn("IntersectionObserver", self.hq_js)
+        self.assertIn("setupOpenPrefs", self.hq_js)
+        self.assertIn("data-open-key=\"system-journal\"", plus)
+        self.assertIn("hqSectionFromHash", self.html)
+        self.assertIn('"#plus/" + id', self.hq_js)
         self.assertIn("scrollIntoView", self.hq_js)
         self.assertIn("prefers-reduced-motion: reduce", self.hq_js)
-        self.assertNotIn("IntersectionObserver", self.hq_js)
-        self.assertIn('id="hq-role"', session)
+
+    def test_sections_load_only_when_revealed(self):
+        users = (ROOT / "assets" / "hq-users.js").read_text(encoding="utf-8")
+        quests = (ROOT / "assets" / "hq-mini-quests.js").read_text(encoding="utf-8")
+        nvidia = (ROOT / "assets" / "hq-nvidia-settings.js").read_text(encoding="utf-8")
+        # One shared rule: a section's own fetch waits until it has been revealed.
+        self.assertIn("window.hqWhenRevealed = whenRevealed;", self.hq_js)
+        self.assertIn('hqWhenRevealed(host, "mini-quests"', quests)
+        self.assertIn("if (!revealedOnce) return;", quests)
+        self.assertIn("hqWhenRevealed", users)
+        self.assertIn("whenRevealed(loadUsers)", users)
+        # The role is published on <body>; the section must not spend a request rediscovering it.
+        self.assertNotIn("apiFetch('/api/me')", users)
+        self.assertIn('hqWhenRevealed(section, "nvidia", load)', nvidia)
 
     def test_calendar_legend_is_static_ui(self):
         legend = self.cal_js.split("function legendPanel", 1)[1].split("function dayView", 1)[0]

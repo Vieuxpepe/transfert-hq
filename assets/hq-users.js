@@ -7,8 +7,6 @@
   const root = document.getElementById('hq-users-root');
   if (!root) return;
 
-  let currentUserRole = null;
-  let currentUserId = null;
   let usersList = [];
 
   function esc(str) {
@@ -180,7 +178,7 @@
       <div class="hq-passkeys-box" style="margin-top:32px;padding:22px 24px;border-radius:18px;background:rgba(255,255,255,0.02);border:1px solid var(--border);">
         <div class="hq-users-bar" style="margin-bottom:14px">
           <div>
-            <h3 style="font-size:1.05rem;font-weight:700;color:var(--text);margin-bottom:4px">Clés d'accès biométriques (Passkeys / Face ID)</h3>
+            <h3 style="font-size:17px;font-weight:700;color:var(--text);margin-bottom:4px">Clés d'accès biométriques (Passkeys / Face ID)</h3>
             <p class="sec-hint" style="margin:0">Déverrouillage instantané sans PIN via Face ID, Touch ID ou Windows Hello</p>
           </div>
           <button type="button" class="btn-primary-hq" id="btnRegisterPasskey" style="background:linear-gradient(135deg, #a855f7 0%, #ec4899 100%)">
@@ -433,10 +431,10 @@
         html += `
           <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 16px;background:rgba(255,255,255,0.03);border:1px solid var(--border);border-radius:12px">
             <div>
-              <div style="font-weight:600;color:var(--text);font-size:0.92rem">${esc(k.name)}</div>
-              <div style="font-size:0.75rem;color:var(--text-muted);margin-top:2px">Ajoutée le ${esc(k.created_at || 'inconnu')} ${k.last_used_at ? '· Utilisée le ' + esc(k.last_used_at) : ''}</div>
+              <div style="font-weight:600;color:var(--text);font-size:15px">${esc(k.name)}</div>
+              <div style="font-size:13px;color:var(--text-muted);margin-top:2px">Ajoutée le ${esc(k.created_at || 'inconnu')} ${k.last_used_at ? '· Utilisée le ' + esc(k.last_used_at) : ''}</div>
             </div>
-            <button type="button" class="btn-danger btn-del-passkey" data-kid="${esc(k.id)}" style="padding:6px 12px;font-size:0.8rem">Supprimer</button>
+            <button type="button" class="btn-danger btn-del-passkey" data-kid="${esc(k.id)}" style="padding:6px 12px;font-size:13px">Supprimer</button>
           </div>
         `;
       });
@@ -536,26 +534,36 @@
     }
   }
 
-  async function init() {
-    try {
-      const me = await apiFetch('/api/me');
-      currentUserRole = me.role;
-      currentUserId = me.user_id;
+  function dropForUpload() {
+    const sec = document.getElementById('system-security');
+    if (sec) sec.remove();
+    const jump = document.querySelector('[data-jump="system-security"]');
+    if (jump) jump.remove();
+  }
 
-      if (currentUserRole !== 'admin') {
-        const sec = document.getElementById('system-security');
-        if (sec) sec.remove();
-        const jump = document.querySelector('[data-jump="system-security"]');
-        if (jump) jump.remove();
-        return;
-      }
+  // The session role decides whether the section exists at all; it is not section data.
+  // The users list itself waits until the section is revealed, so entering Plus costs no request.
+  function whenRevealed(fn) {
+    const host = document.getElementById('system-security') || root;
+    if (typeof window.hqWhenRevealed === 'function') window.hqWhenRevealed(host, 'users', fn);
+    else fn();
+  }
 
-      await loadUsers();
-    } catch (_) {
-      // Not logged in or error
-      const sec = document.getElementById('system-security');
-      if (sec) sec.remove();
+  function init() {
+    const role = document.body.dataset.role || '';
+    if (role === 'admin') {
+      whenRevealed(loadUsers);
+      return;
     }
+    if (role === 'upload') {
+      dropForUpload();
+      return;
+    }
+    // APP_JS publishes the role once /api/me answers; wait for that instead of asking again.
+    window.addEventListener('hq:session-role', () => {
+      if (document.body.dataset.role === 'admin') whenRevealed(loadUsers);
+      else dropForUpload();
+    }, { once: true });
   }
 
   if (document.readyState === 'loading') {

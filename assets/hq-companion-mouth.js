@@ -98,6 +98,25 @@
     return pose;
   }
 
+  // A gesture's head leads its mouth: a short counter-move, then a small
+  // overshoot that settles back. It rides the gesture's own clock, so nothing
+  // new runs per frame, and the rig's head spring damps it further.
+  const GESTURE_HEAD = {
+    smile: [.22, .012], listen: [.10, .008], linger: [.16, .010], hmm: [.26, .020],
+    exhale: [.12, .026], press: [.08, .012], laugh: [.24, .034], bite: [.14, .012],
+    quicklick: [.06, .008]
+  };
+  function gestureHead(kind, elapsed, side = 1, strength = 1) {
+    const spec = GESTURE_HEAD[kind];
+    if (!spec || !(elapsed >= 0)) return { tilt: 0, nod: 0 };
+    // −34 % against the coming move by 90 ms, full by 230 ms, +18 % at ~395 ms.
+    const f = elapsed < 90 ? -.34 * smooth(0, 90, elapsed) :
+      elapsed < 230 ? -.34 + 1.34 * smooth(90, 230, elapsed) :
+      elapsed < 560 ? 1 + .18 * Math.sin(Math.PI * (elapsed - 230) / 330) : 1;
+    const amp = clamp(strength, 0, 1) * f;
+    return { tilt: spec[0] * amp * (side < 0 ? -1 : 1), nod: spec[1] * amp };
+  }
+
   // Face-image names the reply morph can request. Keys are reply primaries; values
   // are the filename slug in face-<slug>-v1.webp. Primaries omitted here, including
   // "pleased", stay on the procedural mouth and do not request an image.
@@ -257,6 +276,47 @@
       pose[key] = VISEMES.M[key] + (value - VISEMES.M[key]) * release;
     }
     return pose;
+  }
+
+  // How the last turn colours stillness. A clipped answer keeps her quiet
+  // longer; a warm, long one lets a smile linger; a considered answer (the
+  // packet's thoughtful/concentration/reassurance pose, which is what a
+  // correction produces) moves less and holds more. Pure: the rig only feeds it
+  // what the turn already carries, and no emotion is invented.
+  function turnCharacter(parts) {
+    const p = parts || {};
+    const chars = Math.max(0, Number(p.chars) || 0);
+    const primary = String(p.primary || "");
+    if (primary === "thoughtful" || primary === "concentration" || primary === "reassurance") {
+      return { kind: "careful", gapMin: 21000, gapMax: 32000, linger: .55, amplitude: .62, holdMs: 1400 };
+    }
+    if (chars >= 220 || (p.warm && chars >= 120) || p.playful) {
+      return { kind: "warm", gapMin: 6000, gapMax: 11500, linger: p.warm ? 1.35 : 1, amplitude: 1.05, holdMs: 500 };
+    }
+    if (chars > 0 && chars <= 90) {
+      return { kind: "clipped", gapMin: 15000, gapMax: 24000, linger: .5, amplitude: .75, holdMs: 900 };
+    }
+    return { kind: "neutral", gapMin: 9000, gapMax: 16000, linger: 1, amplitude: 1, holdMs: 700 };
+  }
+
+  // One gap per idle beat: same spread per class, no per-frame work.
+  function nextIdleGap(character, roll) {
+    const c = character || turnCharacter({});
+    const r = Math.max(0, Math.min(1, Number(roll) || 0));
+    return Math.round(c.gapMin + (c.gapMax - c.gapMin) * r);
+  }
+
+  // Not every beat of the idle rhythm has to become a movement. A considered
+  // turn also lets some beats pass in silence — same clock, fewer gestures.
+  // Indexed deterministically so the pattern is reproducible and costs nothing
+  // per frame.
+  const GESTURE_DUTY = { careful: 1 / 3, clipped: 2 / 3 };
+  function idleBeatAllowed(character, beat = 0) {
+    const c = character || turnCharacter({});
+    const duty = GESTURE_DUTY[c.kind] ?? 1;
+    if (duty >= 1) return true;
+    const n = Math.max(0, Math.floor(Number(beat) || 0));
+    return Math.floor(n * duty) > Math.floor((n - 1) * duty);
   }
 
   function textEnvelope(word, elapsed, duration) {
@@ -658,10 +718,12 @@
     let textBeat = null, replyExpression = null;
     let gesture = null, anticipation = null, lifePose = null, nextSide = 1, lastWarm = false, lastPlayful = false;
     let thinkingCount = 0, nextLaughAt = 0, lastPreparedAt = -Infinity, wetGlossUntil = 0;
-    let nextIdleAt = win.performance.now() + 9000 + Math.random() * 7000, nextListenAt = 0;
+    let turn = { chars: 0, words: 0, warm: false, playful: false, primary: "" };
+    let character = turnCharacter(turn);
+    let nextIdleAt = win.performance.now() + nextIdleGap(character, Math.random()), nextListenAt = 0, idleBeat = 0;
     let wasThinking = false, wasTyping = false, wasVoice = false, wasTickled = false;
     let nextSpeechBlinkAt = 0;
-    const postponeIdle = time => { nextIdleAt = time + 9500 + Math.random() * 10000; };
+    const postponeIdle = time => { nextIdleAt = time + nextIdleGap(character, Math.random()); };
     const clearGesture = () => { if (gesture?.audioOwned) reactionAudio?.stop(gesture.kind); gesture = null; };
     const beginGesture = (kind, time, strength = 1) => {
       clearGesture();
@@ -672,8 +734,9 @@
       postponeIdle(time);
     };
     const afterSpeech = (time, warm, playful) => {
+      character = turnCharacter({ ...turn, warm: !!warm, playful: !!playful });
       if (playful && time >= nextLaughAt) { beginGesture("laugh", time); nextLaughAt = time + 12000; }
-      else beginGesture("linger", time, warm ? 1 : .55);
+      else beginGesture("linger", time, (warm ? 1 : .55) * character.linger);
     };
     try { const saved = win.localStorage.getItem("hq_companion_mouth_mode"); if (saved in MODES) mode = saved; } catch (_) {}
     try { const saved = win.localStorage.getItem("hq_companion_brow_mode"); if (saved in BROW_MODES) browMode = saved; } catch (_) {}
@@ -729,8 +792,15 @@
             else { clearGesture(); postponeIdle(time); }
           }
           if (!gesture && !thinking && !typing && time >= nextIdleAt) {
-            beginGesture(Math.random() < .60 ? "smile" : "exhale", time);
-            lifePose = lifeGesture(gesture.kind, 0, gesture.side); label = gesture.kind;
+            // A considered answer prefers a quiet exhale to a fresh smile, and
+            // every class moves at the amplitude its own turn implies.
+            idleBeat += 1;
+            if (!idleBeatAllowed(character, idleBeat)) postponeIdle(time);
+            else {
+              const kind = character.kind === "careful" ? "exhale" : (Math.random() < .60 ? "smile" : "exhale");
+              beginGesture(kind, time, character.amplitude);
+              lifePose = lifeGesture(gesture.kind, 0, gesture.side, gesture.strength); label = gesture.kind;
+            }
           }
         }
       }
@@ -804,6 +874,8 @@
     const rig = {
       setReplyExpression(primary, at) {
         replyExpression = { primary, at };
+        turn.primary = String(primary || "");
+        character = turnCharacter(turn);
         postponeIdle(at);
         lastPaint = -Infinity;
         if (wake) wake();
@@ -818,9 +890,12 @@
           { open: current.open, smile: current.smile, round: current.round, seal: current.seal },
           env,
           reduced());
+        // The gesture's own lead/overshoot is added raw: the smoothed mouth
+        // channels would flatten a 90 ms counter-move into nothing.
+        const lifeHead = gesture ? gestureHead(gesture.kind, (now - gesture.at) * gesture.rate, gesture.side, gesture.strength) : null;
         return {
-          headTilt: current.headTilt,
-          headNod: current.headNod,
+          headTilt: current.headTilt + (lifeHead ? lifeHead.tilt : 0),
+          headNod: current.headNod + (lifeHead ? lifeHead.nod : 0),
           browLeft: brows.left,
           browRight: brows.right,
           browAuto: browMode === "auto",
@@ -833,6 +908,8 @@
       },
       prepareSpeech(word, owner, phonemes, warm = false, playful = false) {
         if (reduced() || !/\p{L}/u.test(String(word || ""))) return;
+        turn = { chars: 0, words: 0, warm: !!warm, playful: !!playful, primary: turn.primary };
+        character = turnCharacter(turn);
         const first = (Array.isArray(phonemes) ? phonemes.find(id => Object.hasOwn(VISEMES, id)) : wordVisemes(word)[0]) || "M";
         anticipation = { first, owner, at: win.performance.now(), warm: !!warm, playful: !!playful };
         lastWarm = !!warm; lastPlayful = !!playful; lastPreparedAt = anticipation.at;
@@ -849,6 +926,9 @@
         const startPose = Object.fromEntries(["open", "smile", "round", "bite", "seal"].map(key => [key, current[key]]));
         const warm = anticipation?.owner === owner ? anticipation.warm : textBeat?.owner === owner ? textBeat.warm : lastWarm;
         const playful = anticipation?.owner === owner ? anticipation.playful : textBeat?.owner === owner ? textBeat.playful : lastPlayful;
+        turn.chars += String(word || "").length + 1; turn.words += 1;
+        turn.warm = turn.warm || !!warm; turn.playful = turn.playful || !!playful;
+        character = turnCharacter(turn);
         if (anticipation?.owner === owner) anticipation = null;
         clearGesture(); lifePose = null;
         const pauseMs = textPause(String(word || ""));
@@ -868,6 +948,7 @@
         if (ownText) textBeat = null;
         if (ownPreparation) anticipation = null;
         lifePose = null; postponeIdle(win.performance.now());
+        character = turnCharacter({ ...turn, warm, playful });
         if (completed && ownText && mode === "auto" && !reduced() && !host.classList.contains("is-bust-pull") &&
             !host.classList.contains("is-speaking") && !host.classList.contains("is-voice-lipsync")) afterSpeech(win.performance.now(), warm, playful);
         lastPaint = -Infinity;
@@ -1024,5 +1105,5 @@
     rig.syncInteraction();
     return rig;
   }
-  return { attach, geometry, target, browTarget, eyeGeometry, blinkClosure, textEnvelope, wordVisemes, visemeAt, textWordDuration, lifeGesture, replyFace, expressionFaceKind, expressionFacePath, expressionMorphState, EXPRESSION_FACE_BY_PRIMARY, speechJaw, speechHeadMotion, VISEMES, MODES, BROW_MODES };
+  return { attach, geometry, target, browTarget, eyeGeometry, blinkClosure, textEnvelope, wordVisemes, visemeAt, textWordDuration, lifeGesture, gestureHead, turnCharacter, nextIdleGap, idleBeatAllowed, replyFace, expressionFaceKind, expressionFacePath, expressionMorphState, EXPRESSION_FACE_BY_PRIMARY, speechJaw, speechHeadMotion, VISEMES, MODES, BROW_MODES };
 });

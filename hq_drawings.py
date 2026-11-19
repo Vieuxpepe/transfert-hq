@@ -37,6 +37,7 @@ import math
 import os
 import re
 import secrets
+import base64
 import stat
 import struct
 import threading
@@ -44,6 +45,7 @@ import time
 import unicodedata
 from pathlib import Path
 
+import hq_params
 import hq_solid
 import hq_solid_occ  # noqa: F401  (loads OpenCascade on the main thread at startup, when installed)
 import hq_solid_ops
@@ -58,6 +60,11 @@ DOC_SUFFIX = ".hqdraw.json"
 PNG_SUFFIX = ".png"
 DXF_SUFFIX = ".dxf"
 STL_SUFFIX = ".stl"
+PDF_SUFFIX = ".pdf"
+DRAFT_KEEP = 5                      # per stem: the latest draft plus up to four earlier snapshots
+DRAFT_TTL_DAYS = 14                 # older snapshots are pruned when the library is listed
+DRAFTS_DIR = ".drafts"                # scratch copies live in a hidden sub-folder: never listed, never part of a lineage
+DRAFT_SUFFIX = ".hqdraw.draft.json"
 
 MAX_BODY = 6 * 1024 * 1024          # whole POST body
 MAX_DOC_BYTES = 2 * 1024 * 1024     # normalized JSON document
@@ -79,6 +86,11 @@ DEFAULT_SOURCE_SUFFIX = "_HQWeb"
 MODES = {"quick", "construction"}
 ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
 STEM_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,119}$")
+COLOR_RE = re.compile(r"#[0-9a-fA-F]{6}")  # annotation ink on a stroke (optional; the theme ink is used when absent)
+PARAM_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,30}")  # a named value driving dimensions
+DRIVABLE = ("depth", "thickness", "radius", "distance", "angle", "dx", "dy", "cx", "cy")  # feature fields an expression may drive
+PARAM_RESERVED = {"__proto__", "constructor", "prototype"}
+_CTRL_RE = re.compile(r"[\x00-\x1f\x7f]")  # control characters never reach a saved name or expression
 WIN_RESERVED = {"con", "prn", "aux", "nul"} | {f"com{i}" for i in range(1, 10)} | {f"lpt{i}" for i in range(1, 10)}
 FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 PNG_SIG = b"\x89PNG\r\n\x1a\n"
@@ -228,7 +240,8 @@ def _xy(v, what: str) -> list[float]:
     return [_num(v[0], what), _num(v[1], what)]
 
 
-GEOMETRIC_CONSTRAINTS = ("horizontal", "vertical", "parallel", "perpendicular", "equal", "tangent", "radius", "fixed")
+GEOMETRIC_CONSTRAINTS = ("horizontal", "vertical", "parallel", "perpendicular", "equal", "tangent", "radius", "fixed",
+                        "concentric", "symmetric", "midpoint", "collinear", "point_on_curve")
 
 
 def _edge_ref(e, fid) -> dict:
@@ -262,14 +275,35 @@ def _geometric_constraint(k, kid, kind, line_ends, arc_ids, kinds, point_ids) ->
         if item not in rounds:
             raise DrawingError(f"{kid} : cercle ou arc attendu")
         return {"id": kid, "type": kind, "item": item, "value": _num(k.get("value"), f"{kid} rayon", lo=1e-9)}
+    if kind == "midpoint":
+        point, line = _id(k.get("point"), kid), _id(k.get("line"), kid)
+        if point not in point_ids or line not in lines:
+            raise DrawingError(f"{kid} : un point et une ligne attendus")
+        return {"id": kid, "type": kind, "point": point, "line": line}
+    if kind == "symmetric":
+        pts = k.get("points")
+        if not isinstance(pts, list) or len(pts) != 2:
+            raise DrawingError(f"{kid} : deux points attendus")
+        pa, pb = _id(pts[0], kid), _id(pts[1], kid)
+        line = _id(k.get("line"), kid)
+        if pa == pb or pa not in point_ids or pb not in point_ids or line not in lines:
+            raise DrawingError(f"{kid} : deux points et une ligne d'axe attendus")
+        return {"id": kid, "type": kind, "points": [pa, pb], "line": line}
+    if kind == "point_on_curve":
+        point, item = _id(k.get("point"), kid), _id(k.get("item"), kid)
+        if point not in point_ids or kinds.get(item) not in ("line", "centerline", "circle", "arc", "ellipse"):
+            raise DrawingError(f"{kid} : point ou courbe inconnue")
+        return {"id": kid, "type": kind, "point": point, "item": item}
     items = k.get("items")
     if not isinstance(items, list) or len(items) != 2:
         raise DrawingError(f"{kid} : deux éléments attendus")
     a, b = _id(items[0], kid), _id(items[1], kid)
     if a == b:
         raise DrawingError(f"{kid} : deux éléments distincts attendus")
-    if kind in ("parallel", "perpendicular") and not ({a, b} <= lines):
+    if kind in ("parallel", "perpendicular", "collinear") and not ({a, b} <= lines):
         raise DrawingError(f"{kid} : deux lignes attendues")
+    if kind == "concentric" and not ({a, b} <= rounds):
+        raise DrawingError(f"{kid} : deux cercles ou arcs attendus")
     if kind == "equal" and not ({a, b} <= lines or {a, b} <= rounds):
         raise DrawingError(f"{kid} : deux lignes ou deux cercles/arcs attendus")
     if kind == "tangent" and not ((a in lines and b in rounds) or (a in rounds and b in lines) or {a, b} <= rounds):
@@ -286,8 +320,11 @@ def check_underlay(value, version=VERSION) -> dict:
     return {"asset_id": value["asset_id"], "fit": value["fit"]}
 
 
-def validate_document(doc) -> dict:
-    """Validate + normalize a client document. Returns a clean copy (known keys only)."""
+def validate_document(doc, *, build: bool = True) -> dict:
+    """Validate + normalize a client document. Returns a clean copy (known keys only).
+
+    `build=False` keeps every structural and field check (names, driven expressions, profiles) but skips the exact
+    mesh: the shared-drawing hub validates what it publishes without paying for a rebuild on each edit."""
     if not isinstance(doc, dict):
         raise DrawingError("Document invalide")
     if doc.get("format") != FORMAT:
@@ -297,6 +334,11 @@ def validate_document(doc) -> dict:
     units = doc.get("units")
     if units not in UNITS:
         raise DrawingError("Unités invalides")
+    if doc["version"] >= 6:  # same expressions the editor evaluates, now enforced on the server
+        try:
+            doc = hq_params.resolve(doc)
+        except hq_params.ParamError as e:
+            raise DrawingError(str(e)) from e
     grid = doc.get("grid") or {}
     snap = doc.get("snap") or {}
     if not isinstance(grid, dict) or not isinstance(snap, dict):
@@ -350,10 +392,52 @@ def validate_document(doc) -> dict:
             if sk["face"] not in (1, -1) or isinstance(sk["face"], bool):
                 raise DrawingError(f"Esquisse {i} : face invalide")
             entry["face"] = sk["face"]  # a sketch on a part's face: which way is outward along its normal
+        if sk.get("locked") is True:
+            entry["locked"] = True  # locked sketch: the editor refuses to draw in it
+        if sk.get("hidden") is True:
+            entry["hidden"] = True  # hidden sketch: drawn nowhere in the 2D editor
         sketches.append(entry)
     if v6:
         out["sketches"] = sketches
     sketch_ids = {sk["id"] for sk in sketches}
+
+    raw_params = doc.get("params") or []
+    if not isinstance(raw_params, list) or len(raw_params) > 40 or (raw_params and not v6):
+        raise DrawingError("Paramètres invalides")
+    params = []
+    param_names: set[str] = set()
+    for i, p in enumerate(raw_params):
+        if not isinstance(p, dict):
+            raise DrawingError(f"Paramètre {i} invalide")
+        name = p.get("name")
+        if not isinstance(name, str) or not PARAM_RE.fullmatch(name) or name in PARAM_RESERVED:
+            raise DrawingError(f"Paramètre {i} : nom invalide")
+        if name in param_names:
+            raise DrawingError(f"Paramètre en double : {name}")
+        param_names.add(name)
+        expr = p.get("expr")
+        if not isinstance(expr, str) or not expr.strip() or len(expr) > 120 or _CTRL_RE.search(expr):
+            raise DrawingError(f"Paramètre {name} : expression invalide")
+        params.append({"id": claim(_id(p.get("id"), f"paramètre {i}")), "name": name, "expr": expr.strip()})
+    if v6 and params:
+        out["params"] = params
+
+    raw_assumptions = doc.get("assumptions") or []
+    if not isinstance(raw_assumptions, list) or len(raw_assumptions) > 20 or (raw_assumptions and not v6):
+        raise DrawingError("Hypothèses invalides")
+    assumptions = []
+    for i, item in enumerate(raw_assumptions):
+        if not isinstance(item, dict):
+            raise DrawingError(f"Hypothèse {i} invalide")
+        aid = claim(_id(item.get("id"), f"hypothèse {i}"))
+        assumptions.append({
+            "id": aid,
+            "name": _text(item.get("name"), f"{aid} nom", max_len=40, allow_empty=False),
+            "value": _text(item.get("value"), f"{aid} valeur", max_len=200, allow_empty=False),
+            "reason": _text(item.get("reason"), f"{aid} raison", max_len=200),
+        })
+    if v6:
+        out["assumptions"] = assumptions
 
     def sketch_of(item, raw, label):
         sid = raw.get("sketch")
@@ -430,6 +514,32 @@ def validate_document(doc) -> dict:
             if c not in point_ids:
                 raise DrawingError(f"{oid} : centre invalide")
             item.update(center=c, r=_num(o.get("r"), f"{oid} rayon", lo=1e-9))
+        elif kind == "ellipse":
+            if not v6:
+                raise DrawingError(f"{oid} : les ellipses exigent la version 6")
+            c = _id(o.get("center"), oid)
+            if c not in point_ids:
+                raise DrawingError(f"{oid} : centre d'ellipse invalide")
+            same_sketch(c)
+            item.update(center=c, rx=_num(o.get("rx"), f"{oid} rayon x", lo=1e-9), ry=_num(o.get("ry"), f"{oid} rayon y", lo=1e-9))
+        elif kind == "spline":
+            if not v6:
+                raise DrawingError(f"{oid} : les splines exigent la version 6")
+            pts = o.get("pts")
+            if not isinstance(pts, list) or not 2 <= len(pts) <= 500:
+                raise DrawingError(f"{oid} : spline invalide")
+            pts = [_id(p, oid) for p in pts]
+            if len(set(pts)) != len(pts) or any(p not in point_ids for p in pts):
+                raise DrawingError(f"{oid} : points de spline invalides")
+            same_sketch(*pts)
+            item["pts"] = pts
+            closed = o.get("closed")
+            if closed is not None and not isinstance(closed, bool):
+                raise DrawingError(f"{oid} : spline invalide")
+            if closed is True:
+                if len(pts) < 3:
+                    raise DrawingError(f"{oid} : une spline fermée demande au moins trois points")
+                item["closed"] = True
         elif kind == "stroke":
             pts = o.get("pts")
             if not isinstance(pts, list) or len(pts) < 1:
@@ -453,6 +563,11 @@ def validate_document(doc) -> dict:
                     if not isinstance(ks, list) or len(ks) != len(item["pts"]):
                         raise DrawingError(f"{oid} : épaisseur invalide")
                     item["k"] = [_num(v, f"{oid} facteur", lo=0.05, hi=4) for v in ks]
+            color = o.get("color")
+            if color is not None:
+                if not isinstance(color, str) or not COLOR_RE.fullmatch(color):
+                    raise DrawingError(f"{oid} : couleur invalide")
+                item["color"] = color.lower()
         elif kind == "text":
             item.update(
                 x=_num(o.get("x"), oid),
@@ -477,13 +592,48 @@ def validate_document(doc) -> dict:
             )
         else:
             raise DrawingError(f"{oid} : type d'objet inconnu")
+        if o.get("drive") is not None:
+            drv = o["drive"]
+            if kind not in ("dim_linear", "dim_angle"):
+                raise DrawingError(f"{oid} : seules les cotes pilotent la géométrie")
+            if not v6:
+                raise DrawingError(f"{oid} : cote pilotée en version 6 requise")
+            if not isinstance(drv, dict) or not isinstance(drv.get("expr"), str) or not drv["expr"].strip() or len(drv["expr"]) > 120:
+                raise DrawingError(f"{oid} : cote pilotée invalide")
+            entry: dict = {"expr": drv["expr"].strip()}
+            if kind == "dim_linear":
+                pts = drv.get("points")
+                if not isinstance(pts, list) or len(pts) != 2:
+                    raise DrawingError(f"{oid} : cote pilotée invalide")
+                entry["points"] = [_id(pid, oid) for pid in pts]
+            else:
+                lines = drv.get("lines")
+                if not isinstance(lines, list) or len(lines) != 2:
+                    raise DrawingError(f"{oid} : cote pilotée invalide")
+                entry["lines"] = [_id(lid, oid) for lid in lines]
+                entry["vertex"] = _id(drv.get("vertex"), oid)
+            if drv.get("keepLabel") is True:
+                entry["keepLabel"] = True
+            item["drive"] = entry
         group = o.get("group")
         if group is not None:
             item["group"] = _id(group, f"{oid} groupe")
+        if o.get("construction") is True:
+            item["construction"] = True
         objects.append(item)
     out["objects"] = objects
 
     object_kinds = {o["id"]: o["type"] for o in objects}
+    for o in objects:
+        drv = o.get("drive")
+        if not drv:
+            continue
+        if o["type"] == "dim_linear":
+            if any(pid not in point_ids for pid in drv["points"]) or drv["points"][0] == drv["points"][1]:
+                raise DrawingError(f"{o['id']} : cote pilotée sur des points inconnus")
+        else:
+            if drv["vertex"] not in point_ids or any(object_kinds.get(lid) != "line" for lid in drv["lines"]):
+                raise DrawingError(f"{o['id']} : cote pilotée sur des lignes inconnues")
     raw_cons = doc.get("constraints") or []
     if not isinstance(raw_cons, list):
         raise DrawingError("Contraintes invalides")
@@ -528,6 +678,8 @@ def validate_document(doc) -> dict:
         raise DrawingError("Les fonctions 3D exigent la version 2")
     features = []
     object_types = {o["id"]: o["type"] for o in objects}
+    objects_by_id = {o["id"]: o for o in objects}
+    construction_ids = {o["id"] for o in objects if o.get("construction")}
     seen_features = []
     for i, f in enumerate(raw_features):
         if not isinstance(f, dict):
@@ -542,7 +694,18 @@ def validate_document(doc) -> dict:
             raise DrawingError("Une pièce de base (extrusion, révolution, balayage, lissage), puis des fonctions, sont requises")
         if kind in hq_solid_ops.V5_TYPES and doc["version"] < 5:
             raise DrawingError(f"{fid} : cette fonction 3D exige la version 5")
-        profile_kinds = ("line", "circle", "arc") if v6 else ("line", "circle")
+        profile_kinds = ("line", "circle", "arc", "ellipse", "spline") if v6 else ("line", "circle")
+
+        def profile_shape(profile):
+            curves = [objects_by_id[v] for v in profile if objects_by_id[v]["type"] in ("ellipse", "spline")]
+            if curves:
+                if len(profile) != 1:
+                    raise DrawingError(f"{fid} : une ellipse ou une spline fermée forme seule son contour")
+                try:
+                    hq_solid.curve_kind(curves[0])
+                except hq_solid.SolidError as exc:
+                    raise DrawingError(f"{fid} : {exc}") from exc
+            return profile
 
         def profile_of(key="profile"):
             profile = f.get(key)
@@ -551,7 +714,9 @@ def validate_document(doc) -> dict:
             profile = [_id(v, f"{fid} profil") for v in profile]
             if len(set(profile)) != len(profile) or any(object_types.get(v) not in profile_kinds for v in profile):
                 raise DrawingError(f"{fid} : profil invalide")
-            return profile
+            if any(v in construction_ids for v in profile):
+                raise DrawingError(f"{fid} : la géométrie de construction ne forme pas un profil")
+            return profile_shape(profile)
 
         if kind in ("extrude", "cut"):
             profile = profile_of()
@@ -633,8 +798,23 @@ def validate_document(doc) -> dict:
             for prof in profiles:
                 if not isinstance(prof, list) or not 1 <= len(prof) <= 500 or any(object_types.get(_id(v, fid)) not in profile_kinds for v in prof):
                     raise DrawingError(f"{fid} : profil invalide")
-                out_profiles.append([str(v) for v in prof])
+                if any(v in construction_ids for v in prof):
+                    raise DrawingError(f"{fid} : la géométrie de construction ne forme pas un profil")
+                out_profiles.append(profile_shape([str(v) for v in prof]))
             item = {"id": fid, "type": kind, "profiles": out_profiles}
+        name = f.get("name")
+        if name is not None:
+            if not isinstance(name, str) or not name.strip() or len(name) > 40 or _CTRL_RE.search(name):
+                raise DrawingError(f"{fid} : nom de fonction invalide")
+            item["name"] = name.strip()
+        driven = f.get("driven")
+        if driven is not None:
+            if not v6 or not isinstance(driven, dict) or not driven or len(driven) > 6:
+                raise DrawingError(f"{fid} : valeur pilotée invalide")
+            for field, expr in driven.items():
+                if field not in DRIVABLE or not isinstance(expr, str) or not expr.strip() or len(expr) > 120 or _CTRL_RE.search(expr):
+                    raise DrawingError(f"{fid} : valeur pilotée invalide")
+            item["driven"] = {str(field): expr.strip() for field, expr in driven.items()}
         if v6:
             op = f.get("op", "add")
             if kind in ("extrude", "revolve", "sweep", "loft"):
@@ -717,12 +897,17 @@ def validate_document(doc) -> dict:
         radius = _num(item.get("radius"), f"{rid} rayon", lo=1e-6, hi=MAX_COORD)
         round_features.append({"id": rid, "a": start, "b": end, "radius": radius})
     out["roundFeatures"] = round_features if doc["version"] >= 3 else []
-    if features or face_features or round_features:
+    if build and (features or face_features or round_features):
         try:
             hq_solid.build_mesh(out)
         except hq_solid.SolidError as e:
             raise DrawingError(str(e), 422) from e
     return out
+
+
+def live_doc(doc) -> dict:
+    """A document published to the shared hub: the same validation as a save, without the geometry build."""
+    return validate_document(doc, build=False)
 
 
 def stroke_widths(obj: dict) -> list[float]:
@@ -802,6 +987,18 @@ def simplify(pts: list, tol: float) -> list:
     return [list(pts[i]) for i in range(n) if keep[i]]
 
 
+def _curve_points(o: dict, pts: dict) -> list[tuple[float, float]]:
+    """Sampled model-space points of an ellipse or spline; the one curve sampler used by DXF, PDF and extents."""
+    if o.get("type") == "ellipse":
+        c = pts.get(o.get("center"))
+        return hq_solid.ellipse_ring(c[0], c[1], o["rx"], o["ry"]) if c else []
+    if o.get("type") == "spline":
+        ids = o.get("pts") or []
+        ctrl = [pts[i] for i in ids if i in pts]
+        return hq_solid.spline_polyline(ctrl, bool(o.get("closed"))) if len(ctrl) == len(ids) else []
+    return []
+
+
 def build_dxf(doc: dict) -> str:
     """ASCII DXF (AC1009 entities + $INSUNITS). doc must be validated."""
     units = doc["units"]
@@ -821,6 +1018,19 @@ def build_dxf(doc: dict) -> str:
         ents.append(("LINE", [(8, layer), (10, _f(a[0])), (20, _f(a[1])), (30, "0"),
                               (11, _f(b[0])), (21, _f(b[1])), (31, "0")]))
 
+    def polyline(layer, points, closed=False):
+        """An R12 POLYLINE (closed flag optional); the faithful flattening for curves R12 has no entity for."""
+        points = [(float(x), float(y)) for x, y in points]
+        if len(points) < 2:
+            return
+        for x, y in points:
+            seen(x, y)
+        ents.append(("POLYLINE", [(8, layer), (66, "1"), (70, "1" if closed else "0"),
+                                  (10, "0"), (20, "0"), (30, "0")]))
+        for x, y in points:
+            ents.append(("VERTEX", [(8, layer), (10, _f(x)), (20, _f(y)), (30, "0")]))
+        ents.append(("SEQEND", [(8, layer)]))
+
     def text(layer, x, y, h, s, rot=0.0):
         s = _dxf_text(s)
         if not s:
@@ -831,10 +1041,37 @@ def build_dxf(doc: dict) -> str:
             codes.append((50, _f(rot)))
         ents.append(("TEXT", codes))
 
+    sketches = {s["id"]: s for s in doc.get("sketches") or []}
+    sketch_layers: dict[str, str] = {}
+
+    def layer_of(o) -> str | None:
+        """The layer for one object: GEOMETRIE / AXES / … for the flat drawing, one layer per sketch in the XY plane.
+        A sketch on XZ/YZ (or raised above XY) is part of the 3D part and stays out of the DXF, as before."""
+        sid = o.get("sketch")
+        if not sid:
+            return "GEOMETRIE"
+        sk = sketches.get(sid)
+        if sk is None or sk.get("plane") != "XY" or abs(float(sk.get("offset") or 0.0)) > 1e-9:
+            return None
+        name = sketch_layers.get(sid)
+        if name is None:
+            # ASCII only: a DXF layer name travels through cp1252 and every CAM tool, accents do not survive it
+            folded = unicodedata.normalize("NFKD", str(sk.get("name") or sid)).encode("ascii", "ignore").decode("ascii")
+            safe = "".join(c if c.isalnum() else "_" for c in folded).strip("_").upper()[:20]
+            name = "ESQ_" + (safe or "%s" % sid.upper())
+            n = 1
+            while name in sketch_layers.values():
+                n += 1
+                name = "ESQ_" + (safe or sid.upper())[:18] + "_" + str(n)
+            sketch_layers[sid] = name
+            LAYERS.setdefault(name, (7, "CONTINUOUS"))
+        return name
+
     for o in doc["objects"]:
         t = o["type"]
-        if o.get("sketch"):
-            continue  # DXF is the base XY drawing; sketches on other planes live in the 3D part (STEP)
+        layer = layer_of(o)
+        if layer is None:
+            continue
         if t == "arc":
             cx, cy = pts[o["center"]]
             ax, ay = pts[o["p1"]]
@@ -844,16 +1081,18 @@ def build_dxf(doc: dict) -> str:
             seen(cx + r, cy + r)
             start = math.degrees(math.atan2(ay - cy, ax - cx)) % 360
             end = math.degrees(math.atan2(by - cy, bx - cx)) % 360
-            ents.append(("ARC", [(8, "GEOMETRIE"), (10, _f(cx)), (20, _f(cy)), (30, "0"), (40, _f(r)), (50, _f(start)), (51, _f(end))]))
+            ents.append(("ARC", [(8, layer), (10, _f(cx)), (20, _f(cy)), (30, "0"), (40, _f(r)), (50, _f(start)), (51, _f(end))]))
             continue
         if t in ("line", "centerline"):
-            line("GEOMETRIE" if t == "line" else "AXES", pts[o["p1"]], pts[o["p2"]])
+            line(layer if t == "line" else "AXES", pts[o["p1"]], pts[o["p2"]])
         elif t == "circle":
             cx, cy = pts[o["center"]]
             r = o["r"]
             seen(cx - r, cy - r)
             seen(cx + r, cy + r)
-            ents.append(("CIRCLE", [(8, "GEOMETRIE"), (10, _f(cx)), (20, _f(cy)), (30, "0"), (40, _f(r))]))
+            ents.append(("CIRCLE", [(8, layer), (10, _f(cx)), (20, _f(cy)), (30, "0"), (40, _f(r))]))
+        elif t in ("ellipse", "spline"):
+            polyline(layer, _curve_points(o, pts), t == "ellipse" or bool(o.get("closed")))
         elif t == "stroke":
             # Width (w, k) is a screen/PNG concern. DXF stays a plain POLYLINE: no width group codes.
             simp = simplify(o["pts"], spacing * 0.05)
@@ -872,6 +1111,8 @@ def build_dxf(doc: dict) -> str:
             _dim_linear(o, spacing, line, text)
         elif t == "dim_angle":
             _dim_angle(o, spacing, line, text, ents, seen)
+        elif t in ("dim_diameter", "dim_radius"):
+            _dim_radial(o, doc, pts, spacing, line, text, seen)
 
     if not xs:
         xs, ys = [0.0], [0.0]
@@ -945,6 +1186,47 @@ def _dim_linear(o, spacing, line, text):
     text("COTATIONS", mx + nx * h * 0.4, my + ny * h * 0.4, h, label, rot % 360)
 
 
+def _dim_radial(o, doc, pts, spacing, line, text, seen):
+    """Ø / R cote: the leader through (or from) the centre, tick marks on the edge, the real value as text."""
+    item = next((x for x in doc["objects"] if x["id"] == o.get("item")), None)
+    if item is None:
+        return
+    if item["type"] == "circle":
+        cx, cy = pts[item["center"]]
+        r = float(item["r"])
+    elif item["type"] == "arc":
+        cx, cy = pts[item["center"]]
+        ax, ay = pts[item["p1"]]
+        r = math.hypot(ax - cx, ay - cy)
+    else:
+        return
+    if r <= 0:
+        return
+    ang = float(o.get("ang") if o.get("ang") is not None else 0.6)
+    ux, uy = math.cos(ang), math.sin(ang)
+    edge = (cx + ux * r, cy + uy * r)
+    diameter = o["type"] == "dim_diameter" and item["type"] == "circle"
+    far = (cx - ux * r, cy - uy * r) if diameter else (cx, cy)
+    line("COTATIONS", far, edge)
+    t = spacing * 0.12  # the tick across the leader (same style as the other cotes: no arrow blocks in AC1009 here)
+    line("COTATIONS", (edge[0] - uy * t, edge[1] + ux * t), (edge[0] + uy * t, edge[1] - ux * t))
+    if diameter:
+        line("COTATIONS", (far[0] - uy * t, far[1] + ux * t), (far[0] + uy * t, far[1] - ux * t))
+    raw = str(o.get("label") or "").strip()
+    if raw:
+        label = raw
+    elif o["type"] == "dim_diameter":
+        label = "%%c" + _f(round(2 * r, 3))
+    else:
+        label = "R" + _f(round(r, 3))
+    if o.get("tol"):
+        label += " " + str(o["tol"])
+    if o.get("ref"):
+        label = "(" + label + ")"
+    h = spacing * 0.35
+    text("COTATIONS", edge[0] + ux * h * 0.9, edge[1] + uy * h * 0.9, h, label)
+
+
 def _dim_angle(o, spacing, line, text, ents, seen):
     (cx, cy), (ax, ay), (bx, by) = o["c"], o["a"], o["b"]
     a1 = math.degrees(math.atan2(ay - cy, ax - cx))
@@ -965,6 +1247,272 @@ def _dim_angle(o, spacing, line, text, ents, seen):
     h = spacing * 0.35
     label = o["label"] or (_f(round(sweep, 2)) + "%%d")
     text("COTATIONS", cx + math.cos(mid) * (r + h), cy + math.sin(mid) * (r + h), h, label)
+
+
+GLYPH_FIX = {"\u2300": "\u00d8", "\u2205": "\u00d8", "\u2192": "->", "\u2190": "<-", "\u2264": "<=", "\u2265": ">=",
+             "\u2212": "-", "\u2013": "-", "\u2014": "-", "\u2018": "'", "\u2019": "'", "\u201c": '"', "\u201d": '"',
+             "\u00a0": " "}
+
+
+def _pdf_text(s: str) -> str:
+    """One PDF string literal: glyphs WinAnsi cannot carry mapped to their plain equivalent (a Ø cote must not print as
+    "?10" on the shop sheet), control chars out, parentheses escaped, WinAnsi bytes in latin-1."""
+    s = "".join(" " if unicodedata.category(c) in ("Cc", "Cf", "Zl", "Zp") else GLYPH_FIX.get(c, c) for c in str(s or ""))
+    s = s.replace("\\", r"\\").replace("(", r"\(").replace(")", r"\)")
+    return s.encode("cp1252", "replace").decode("latin-1").strip()
+
+
+def _drawing_extent(doc: dict) -> tuple[float, float, float, float] | None:
+    pts = {p["id"]: (p["x"], p["y"]) for p in doc["points"]}
+    circles = {o["id"]: o for o in doc["objects"] if o["type"] in ("circle", "arc")}
+    xs: list[float] = []
+    ys: list[float] = []
+
+    def see(x, y):
+        xs.append(float(x))
+        ys.append(float(y))
+
+    for o in doc["objects"]:
+        t = o["type"]
+        if t in ("line", "centerline"):
+            for k in ("p1", "p2"):
+                if o.get(k) in pts:
+                    see(*pts[o[k]])
+        elif t == "circle":
+            c = pts.get(o.get("center"))
+            if c:
+                see(c[0] - o["r"], c[1] - o["r"])
+                see(c[0] + o["r"], c[1] + o["r"])
+        elif t == "arc":
+            c, p1 = pts.get(o.get("center")), pts.get(o.get("p1"))
+            if c and p1:
+                r = math.hypot(p1[0] - c[0], p1[1] - c[1])
+                see(c[0] - r, c[1] - r)
+                see(c[0] + r, c[1] + r)
+        elif t in ("ellipse", "spline"):
+            for x, y in _curve_points(o, pts):
+                see(x, y)
+        elif t == "stroke":
+            for p in o["pts"]:
+                see(p[0], p[1])
+        elif t == "text":
+            see(o["x"], o["y"])
+        elif t == "dim_linear":
+            see(o["a"][0], o["a"][1])
+            see(o["b"][0], o["b"][1])
+        elif t == "dim_angle":
+            see(o["c"][0] - o["r"], o["c"][1] - o["r"])
+            see(o["c"][0] + o["r"], o["c"][1] + o["r"])
+        elif t in ("dim_diameter", "dim_radius"):
+            item = circles.get(o.get("item"))
+            c = pts.get(item.get("center")) if item else None
+            if c and item:
+                if item["type"] == "circle":
+                    r = float(item["r"])
+                else:
+                    p1 = pts.get(item.get("p1"))
+                    r = math.hypot(p1[0] - c[0], p1[1] - c[1]) if p1 else 0.0
+                see(c[0] - r, c[1] - r)
+                see(c[0] + r, c[1] + r)
+    if not xs:
+        return None
+    return (min(xs), min(ys), max(xs), max(ys))
+
+
+def build_pdf(doc: dict, *, name: str = "", material: str = "", note: str = "", now=None) -> bytes:
+    """One A4 landscape shop sheet: frame, the flat drawing at a stated scale, a title block.
+
+    Vector output built from the same document the DXF carries (no raster, no external library, standard library only).
+    """
+    W, H = 842.0, 595.0  # A4 landscape, points
+    AREA = (30.0, 150.0, W - 30.0, H - 40.0)  # left, bottom, right, top of the drawing area
+    ops: list[str] = []
+
+    def line(x0, y0, x1, y1):
+        ops.append(f"{x0:.2f} {y0:.2f} m {x1:.2f} {y1:.2f} l S")
+
+    def rect(x, y, w, h, width=0.8):
+        ops.append(f"{width:.2f} w {x:.2f} {y:.2f} {w:.2f} {h:.2f} re S")
+
+    def text_at(x, y, s, size=9.0, bold=False):
+        body = _pdf_text(s)
+        if body:
+            ops.append(f"BT /{'F2' if bold else 'F1'} {size:.1f} Tf {x:.2f} {y:.2f} Td ({body}) Tj ET")
+
+    ops.append("0.8 w 0.15 0.15 0.15 RG")
+    rect(18, 18, W - 36, H - 36, 1.0)
+    ax0, ay0, ax1, ay1 = AREA
+
+    ext = _drawing_extent(doc)
+    if ext:
+        ex0, ey0, ex1, ey1 = ext
+        dw, dh = max(ex1 - ex0, 1e-9), max(ey1 - ey0, 1e-9)
+        k = min((ax1 - ax0) * 0.94 / dw, (ay1 - ay0) * 0.94 / dh)
+        ox = ax0 + ((ax1 - ax0) - dw * k) / 2 - ex0 * k
+        oy = ay0 + ((ay1 - ay0) - dh * k) / 2 - ey0 * k
+    else:
+        k, ox, oy = 1.0, ax0, ay0
+
+    def P(x, y):
+        return (ox + float(x) * k, oy + float(y) * k)
+
+    pts = {p["id"]: (p["x"], p["y"]) for p in doc["points"]}
+    ops.append("0.7 w 0 0 0 RG")
+    for o in doc["objects"]:
+        t = o["type"]
+        if t in ("line", "centerline"):
+            if o.get("p1") in pts and o.get("p2") in pts:
+                a, b = P(*pts[o["p1"]]), P(*pts[o["p2"]])
+                line(a[0], a[1], b[0], b[1])
+        elif t == "circle":
+            c = pts.get(o.get("center"))
+            r = float(o["r"]) * k
+            if c and r > 0:
+                cx, cy = P(*c)
+                bc = 0.5523 * r
+                ops.append(f"{cx + r:.2f} {cy:.2f} m "
+                           f"{cx + r:.2f} {cy + bc:.2f} {cx + bc:.2f} {cy + r:.2f} {cx:.2f} {cy + r:.2f} c "
+                           f"{cx - bc:.2f} {cy + r:.2f} {cx - r:.2f} {cy + bc:.2f} {cx - r:.2f} {cy:.2f} c "
+                           f"{cx - r:.2f} {cy - bc:.2f} {cx - bc:.2f} {cy - r:.2f} {cx:.2f} {cy - r:.2f} c "
+                           f"{cx + bc:.2f} {cy - r:.2f} {cx + r:.2f} {cy - bc:.2f} {cx + r:.2f} {cy:.2f} c S")
+        elif t == "arc":
+            c, p1, p2 = pts.get(o.get("center")), pts.get(o.get("p1")), pts.get(o.get("p2"))
+            if c and p1 and p2:
+                r = math.hypot(p1[0] - c[0], p1[1] - c[1])
+                a0 = math.atan2(p1[1] - c[1], p1[0] - c[0])
+                a1 = math.atan2(p2[1] - c[1], p2[0] - c[0])
+                sweep = a1 - a0
+                while sweep <= 0:
+                    sweep += 2 * math.pi
+                steps = max(8, int(48 * sweep / (2 * math.pi)))
+                first = P(c[0] + math.cos(a0) * r, c[1] + math.sin(a0) * r)
+                ops.append(f"{first[0]:.2f} {first[1]:.2f} m")
+                for i in range(1, steps + 1):
+                    a = a0 + sweep * i / steps
+                    q = P(c[0] + math.cos(a) * r, c[1] + math.sin(a) * r)
+                    ops.append(f"{q[0]:.2f} {q[1]:.2f} l")
+                ops.append("S")
+        elif t in ("ellipse", "spline"):
+            curve = _curve_points(o, pts)
+            if len(curve) > 1:
+                first = P(*curve[0])
+                ops.append(f"{first[0]:.2f} {first[1]:.2f} m")
+                for p in curve[1:]:
+                    q = P(*p)
+                    ops.append(f"{q[0]:.2f} {q[1]:.2f} l")
+                ops.append("h S" if t == "ellipse" or o.get("closed") else "S")
+        elif t == "stroke":
+            if len(o["pts"]) > 1:
+                first = P(o["pts"][0][0], o["pts"][0][1])
+                ops.append(f"{first[0]:.2f} {first[1]:.2f} m")
+                for p in o["pts"][1:]:
+                    q = P(p[0], p[1])
+                    ops.append(f"{q[0]:.2f} {q[1]:.2f} l")
+                ops.append("S")
+        elif t == "text":
+            q = P(o["x"], o["y"])
+            text_at(q[0], q[1], o["text"], max(5.0, min(12.0, float(o["h"]) * k)))
+        elif t == "dim_linear":
+            dx, dy = o["b"][0] - o["a"][0], o["b"][1] - o["a"][1]
+            length = math.hypot(dx, dy)
+            if length > 0:
+                nx, ny = -dy / length, dx / length
+                off = float(o.get("offset") or 0.0)
+                a2 = (o["a"][0] + nx * off, o["a"][1] + ny * off)
+                b2 = (o["b"][0] + nx * off, o["b"][1] + ny * off)
+                A, B, A2, B2 = P(*o["a"]), P(*o["b"]), P(*a2), P(*b2)
+                line(A[0], A[1], A2[0], A2[1])
+                line(B[0], B[1], B2[0], B2[1])
+                line(A2[0], A2[1], B2[0], B2[1])
+                text_at((A2[0] + B2[0]) / 2, (A2[1] + B2[1]) / 2 + 3, o.get("label") or _f(round(length, 3)), 8.0)
+        elif t == "dim_angle":
+            c = P(o["c"][0], o["c"][1])
+            r = float(o["r"]) * k
+            a0 = math.atan2(o["a"][1] - o["c"][1], o["a"][0] - o["c"][0])
+            a1 = math.atan2(o["b"][1] - o["c"][1], o["b"][0] - o["c"][0])
+            sweep = a1 - a0
+            while sweep <= 0:
+                sweep += 2 * math.pi
+            steps = max(6, int(32 * sweep / (2 * math.pi)))
+            first = (c[0] + math.cos(a0) * r, c[1] + math.sin(a0) * r)
+            ops.append(f"{first[0]:.2f} {first[1]:.2f} m")
+            for i in range(1, steps + 1):
+                a = a0 + sweep * i / steps
+                ops.append(f"{c[0] + math.cos(a) * r:.2f} {c[1] + math.sin(a) * r:.2f} l")
+            ops.append("S")
+            mid = a0 + sweep / 2
+            text_at(c[0] + math.cos(mid) * (r + 6), c[1] + math.sin(mid) * (r + 6),
+                     o.get("label") or (_f(round(math.degrees(sweep), 2)) + "\u00b0"), 8.0)
+        elif t in ("dim_diameter", "dim_radius"):
+            item = next((x for x in doc["objects"] if x["id"] == o.get("item")), None)
+            c = pts.get(item.get("center")) if item else None
+            if item and c:
+                r = float(item["r"]) if item["type"] == "circle" else math.hypot(
+                    pts[item["p1"]][0] - c[0], pts[item["p1"]][1] - c[1])
+                ang = float(o.get("ang") if o.get("ang") is not None else 0.6)
+                ux, uy = math.cos(ang), math.sin(ang)
+                edge = (c[0] + ux * r, c[1] + uy * r)
+                far = (c[0] - ux * r, c[1] - uy * r) if (o["type"] == "dim_diameter" and item["type"] == "circle") else c
+                A, B = P(*far), P(*edge)
+                line(A[0], A[1], B[0], B[1])
+                raw = str(o.get("label") or "").strip()
+                if not raw:
+                    raw = ("\u2300" + _f(round(2 * r, 3))) if o["type"] == "dim_diameter" else ("R" + _f(round(r, 3)))
+                if o.get("tol"):
+                    raw += " " + str(o["tol"])
+                if o.get("ref"):
+                    raw = "(" + raw + ")"
+                text_at(B[0] + ux * 8, B[1] + uy * 8, raw, 8.0)
+
+    unit_mm = UNIT_MM.get(doc.get("units"), 1.0)
+    paper_mm = k * 25.4 / 72.0  # one model unit, in millimetres on the sheet
+    ratio = unit_mm / paper_mm if paper_mm > 0 else 0.0
+    if ratio >= 1:
+        scale_txt = "1:%d" % max(1, round(ratio))
+    else:
+        scale_txt = "%.1f:1" % (1.0 / ratio if ratio > 0 else 1.0)
+    stamp = time.strftime("%Y-%m-%d", time.localtime(now() if now else time.time()))
+    bx, by, bw, bh = W - 348.0, 24.0, 330.0, 108.0
+    rect(bx, by, bw, bh, 0.9)
+    line(bx, by + bh - 26, bx + bw, by + bh - 26)
+    text_at(bx + 10, by + bh - 18, name or "Sans nom", 13.0, bold=True)
+    rows = [("\u00c9chelle", scale_txt), ("Unit\u00e9s", str(doc.get("units") or "mm")), ("Date", stamp),
+            ("Mati\u00e8re", material or "\u2014"), ("Note", note or "\u2014")]
+    for i, (label, value) in enumerate(rows):
+        y = by + bh - 44 - i * 15
+        text_at(bx + 10, y, label, 9.0, bold=True)
+        text_at(bx + 86, y, str(value), 9.0)
+    text_at(30, 30, "Transfert HQ \u00b7 Dessiner \u00b7 fiche d'atelier", 9.0)
+    if ext:
+        text_at(30, 44, "%s \u00d7 %s %s" % (_f(round(ext[2] - ext[0], 2)), _f(round(ext[3] - ext[1], 2)), doc.get("units") or ""), 9.0)
+    assumptions = doc.get("assumptions") or []
+    for i, item in enumerate(assumptions[:8]):
+        reason = (" \u2014 " + item["reason"]) if item.get("reason") else ""
+        text_at(30, 140 - i * 10, "%s : %s%s" % (item.get("name"), item.get("value"), reason), 6.5)
+    if len(assumptions) > 8:
+        text_at(30, 140 - 8 * 10, "(+ %d autres hypoth\u00e8ses)" % (len(assumptions) - 8), 6.5)
+
+    content = ("\n".join(ops)).encode("latin-1", "replace")
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        ("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 %d %d] /Resources << /Font << /F1 5 0 R /F2 6 0 R >> >> /Contents 4 0 R >>"
+         % (W, H)).encode(),
+        b"<< /Length " + str(len(content)).encode() + b" >>\nstream\n" + content + b"\nendstream",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>",
+    ]
+    out = bytearray(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
+    offsets: list[int] = []
+    for i, body in enumerate(objects, start=1):
+        offsets.append(len(out))
+        out += ("%d 0 obj\n" % i).encode() + body + b"\nendobj\n"
+    xref = len(out)
+    out += ("xref\n0 %d\n" % (len(objects) + 1)).encode() + b"0000000000 65535 f \n"
+    for off in offsets:
+        out += ("%010d 00000 n \n" % off).encode()
+    out += ("trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (len(objects) + 1, xref)).encode()
+    return bytes(out)
 
 
 # ---------------------------------------------------------------- storage
@@ -1238,6 +1786,12 @@ def open_drawing(root: Path, stem) -> dict:
 
 def read_file(root: Path, stem, kind: str) -> tuple[bytes, str, str]:
     stem = valid_stem(stem)
+    if kind == "pdf":
+        # the shop sheet is built from the stored document on demand: nothing extra is written next to the drawing
+        doc = open_drawing(root, stem)["doc"]
+        meta = doc.get("meta") or {}
+        return (build_pdf(doc, name=str(meta.get("name") or stem), material=str(meta.get("material") or ""),
+                          note=str(meta.get("note") or "")), "application/pdf", stem + PDF_SUFFIX)
     suffix, ctype, cap = {
         "png": (PNG_SUFFIX, "image/png", MAX_PNG_BYTES),
         "dxf": (DXF_SUFFIX, "application/dxf", 16 * 1024 * 1024),
@@ -1253,7 +1807,339 @@ def read_file(root: Path, stem, kind: str) -> tuple[bytes, str, str]:
     return _read_regular(directory, name, cap), ctype, name
 
 
+def delete_drawing(root: Path, stem) -> dict:
+    """Delete one saved drawing and its companions (PNG / DXF / STL). The stem is the only key: never a path.
+
+    Only the known regular files of that stem are removed: no directory, no link / reparse point, never another
+    drawing. A stem with nothing left to remove is a 404 so the caller can refresh its list.
+    """
+    stem = valid_stem(stem)
+    directory = drawings_dir(root, create=False)
+    if directory is None:
+        raise DrawingError("Dessin introuvable", 404)
+    removed: list[str] = []
+    for suffix in (DOC_SUFFIX, PNG_SUFFIX, DXF_SUFFIX, STL_SUFFIX):
+        path = directory / (stem + suffix)
+        try:
+            est = os.lstat(path)
+        except OSError:
+            continue
+        if not stat.S_ISREG(est.st_mode) or _is_link_or_reparse(est):
+            continue
+        try:
+            path.unlink()
+        except OSError as e:
+            raise DrawingError("Suppression impossible", 500) from e
+        removed.append(path.name)
+    if not removed:
+        raise DrawingError("Dessin introuvable", 404)
+    return {"ok": True, "stem": stem, "removed": removed}
+
+
+def _drafts_dir(root: Path, *, create: bool) -> Path | None:
+    """The hidden scratch folder inside Inbox/Drawings. Never a link, never the drawings folder itself."""
+    directory = drawings_dir(root, create=create)
+    if directory is None:
+        return None
+    store = directory / DRAFTS_DIR
+    if create:
+        try:
+            store.mkdir(exist_ok=True)
+        except OSError as e:
+            raise DrawingError("Brouillon impossible", 500) from e
+    try:
+        est = os.lstat(store)
+    except OSError:
+        return None
+    if not stat.S_ISDIR(est.st_mode) or _is_link_or_reparse(est):
+        raise DrawingError("Brouillon impossible", 409)
+    return store
+
+
+def write_draft(root: Path, payload: dict, *, now=time.time) -> dict:
+    """One scratch copy of the drawing in progress, overwritten each time it is flushed.
+
+    It is validated exactly like a save, but it never enters the library or a lineage: it is only the durable copy
+    that replaces a full localStorage. Stored in Inbox/Drawings/.drafts so no listing ever shows it.
+    """
+    if not isinstance(payload, dict):
+        raise DrawingError("Requête invalide")
+    doc = validate_document(payload.get("doc"))
+    stem = payload.get("stem")
+    key = valid_stem(stem) if isinstance(stem, str) and STEM_RE.match(stem) else "scratch"
+    store = _drafts_dir(root, create=True)
+    if store is None:
+        raise DrawingError("Brouillon impossible", 500)
+    at = int(now())
+    body = json.dumps({"format": FORMAT, "draft": 1, "at": at, "stem": "" if key == "scratch" else key,
+                       "name": str(payload.get("name") or "")[:120],
+                       "objects": len(doc["objects"]), "points": len(doc["points"]), "doc": doc},
+                      ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    if len(body) > MAX_DOC_BYTES:
+        raise DrawingError("Brouillon trop volumineux", 413)
+    with _SAVE_LOCK:
+        tmp = _write_temp(store, body)
+        try:
+            _keep_previous(store, key, store / (key + DRAFT_SUFFIX))
+            os.replace(tmp, store / (key + DRAFT_SUFFIX))
+        except OSError as e:
+            raise DrawingError("Brouillon impossible", 500) from e
+        finally:
+            _unlink_quiet(tmp)
+        try:
+            _prune_key(store, key)  # bounded: the latest + DRAFT_KEEP-1 dated snapshots
+        except OSError:
+            pass
+    return {"ok": True, "key": key, "at": at}
+
+
+def _draft_snapshot_name(key: str, at: int) -> str:
+    return f"{key}.hqdraw.draft-{int(at)}.json"
+
+
+def _draft_snapshots(store: Path, key: str) -> list[tuple[int, Path]]:
+    """Dated copies of a draft, newest first. Only plain files: never a link or a reparse point."""
+    prefix, suffix = key + ".hqdraw.draft-", ".json"
+    out: list[tuple[int, Path]] = []
+    try:
+        names = os.listdir(store)
+    except OSError:
+        return out
+    for name in names:
+        if not (name.startswith(prefix) and name.endswith(suffix)):
+            continue
+        middle = name[len(prefix):-len(suffix)]
+        if not middle.isdigit():
+            continue
+        path = store / name
+        try:
+            est = os.lstat(path)
+        except OSError:
+            continue
+        if stat.S_ISREG(est.st_mode) and not _is_link_or_reparse(est):
+            out.append((int(middle), path))
+    out.sort(key=lambda x: x[0], reverse=True)
+    return out
+
+
+def _keep_previous(store: Path, key: str, latest: Path) -> None:
+    """The draft being replaced becomes a dated snapshot, so a bad edit never destroys the only copy."""
+    try:
+        est = os.lstat(latest)
+    except OSError:
+        return
+    if not stat.S_ISREG(est.st_mode) or _is_link_or_reparse(est):
+        return
+    try:
+        at = int(json.loads(latest.read_text("utf-8")).get("at") or est.st_mtime)
+    except (OSError, ValueError, TypeError, AttributeError):
+        at = int(est.st_mtime)
+    target = store / _draft_snapshot_name(key, at)
+    if os.path.lexists(target):
+        return
+    os.replace(latest, target)
+
+
+def _prune_key(store: Path, key: str) -> int:
+    removed = 0
+    for i, (_, path) in enumerate(_draft_snapshots(store, key)):
+        if i < max(0, DRAFT_KEEP - 1):  # the latest draft counts as one of the kept copies
+            continue
+        _unlink_quiet(path)
+        removed += 1
+    return removed
+
+
+def prune_drafts(root: Path, *, now=time.time) -> dict:
+    """Bounded scratch storage: per stem the latest draft + DRAFT_KEEP-1 snapshots; snapshots older than
+    DRAFT_TTL_DAYS (their write time) go, and a draft whose drawing was deleted goes with it. Never follows links.
+
+    Cheap by design: it stats the folder, never parses a draft.
+    """
+    try:
+        store = _drafts_dir(root, create=False)
+    except DrawingError:
+        return {"ok": True, "removed": 0}
+    if store is None:
+        return {"ok": True, "removed": 0}
+    directory = drawings_dir(root, create=False)
+    names: set[str] = set()
+    if directory is not None:
+        try:
+            names = set(os.listdir(directory))
+        except OSError:
+            names = set()
+    cutoff = now() - DRAFT_TTL_DAYS * 86400
+    removed = 0
+    keys: set[str] = set()
+    snaps: dict[str, list[tuple[int, str]]] = {}  # per key, the dated copies seen in THIS pass (one listing, no rescans)
+    try:
+        entries = list(os.scandir(store))
+    except OSError:
+        return {"ok": True, "removed": 0}
+    for entry in entries:
+        name = entry.name
+        ts = None
+        if name.endswith(DRAFT_SUFFIX):
+            key = name[: -len(DRAFT_SUFFIX)]
+        else:
+            m = re.match(r"^(.*)\.hqdraw\.draft-(\d+)\.json$", name)
+            if not m:
+                continue
+            key, ts = m.group(1), int(m.group(2))
+        if not re.match(r"^[A-Za-z0-9_-]{1,120}$", key):
+            continue
+        path = store / name
+        try:
+            est = entry.stat(follow_symlinks=False)  # already cached by scandir: no second syscall per file
+        except OSError:
+            try:
+                est = os.lstat(path)
+            except OSError:
+                continue
+        if not stat.S_ISREG(est.st_mode) or _is_link_or_reparse(est):
+            continue
+        # The write time, not the draft's content: a listing must not parse every draft (a full drawing document each
+        # time, ~1 s for a thousand files). Each write sets it, and turning the previous draft into a snapshot is a
+        # rename, which keeps the moment that content was written.
+        written = float(est.st_mtime)
+        orphan = key != "scratch" and directory is not None and (key + DOC_SUFFIX) not in names
+        if orphan or written < cutoff:
+            _unlink_quiet(path)
+            removed += 1
+        else:
+            keys.add(key)
+            if ts is not None:
+                snaps.setdefault(key, []).append((ts, name))
+    for key in keys:
+        dated = sorted(snaps.get(key, ()), key=lambda item: item[0], reverse=True)
+        for i, (_, name) in enumerate(dated):
+            if i < max(0, DRAFT_KEEP - 1):  # the latest draft counts as one of the kept copies
+                continue
+            _unlink_quiet(store / name)
+            removed += 1
+    return {"ok": True, "removed": removed}
+
+
+def clear_draft(root: Path, key) -> dict:
+    """Forget the scratch copy of one key (called once the drawing is really saved)."""
+    stem = str(key or "")
+    name = (stem if STEM_RE.match(stem) else "scratch") + DRAFT_SUFFIX
+    try:
+        store = _drafts_dir(root, create=False)
+    except DrawingError:
+        return {"ok": True, "cleared": False}
+    if store is None:
+        return {"ok": True, "cleared": False}
+    path = store / name
+    try:
+        est = os.lstat(path)
+    except OSError:
+        return {"ok": True, "cleared": False}
+    if not stat.S_ISREG(est.st_mode) or _is_link_or_reparse(est):
+        return {"ok": True, "cleared": False}
+    _unlink_quiet(path)
+    try:  # the dated snapshots of that key go with it: a saved drawing needs no scratch copy
+        for _, snap in _draft_snapshots(store, stem if STEM_RE.match(stem) else "scratch"):
+            _unlink_quiet(snap)
+    except OSError:
+        pass
+    return {"ok": True, "cleared": True}
+
+
+def duplicate_drawing(root: Path, stem, name=None, *, now=time.time) -> dict:
+    """Save a copy of an existing drawing under a new immutable stem, with the same PNG and its lineage kept."""
+    opened = open_drawing(root, stem)
+    doc = opened["doc"]
+    meta = doc.pop("meta", None) or {}
+    directory = drawings_dir(root, create=False)
+    if directory is None:
+        raise DrawingError("Dessin introuvable", 404)
+    png = _read_regular(directory, valid_stem(stem) + PNG_SUFFIX, MAX_PNG_BYTES)
+    label = str(name or "").strip()[:MAX_NAME] or ((str(meta.get("name") or stem))[:MAX_NAME] + " copie")
+    res = save_drawing(root, {
+        "name": label,
+        "source": "desktop",
+        "doc": doc,
+        "png": "data:image/png;base64," + base64.b64encode(png).decode("ascii"),
+        "base": valid_stem(stem),
+    }, now=now)
+    res["name"] = label
+    return res
+
+
+PARENT_RE = re.compile(r'"parent"\s*:\s*"([A-Za-z0-9][A-Za-z0-9_-]{0,119})"')
+
+
+def _doc_tail(directory: Path, name: str, cap: int = 2048) -> str:
+    """The end of a saved document — `meta` is written last, so it is all a lineage needs (no full parse)."""
+    path = directory / name
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return ""
+    if _is_link_or_reparse(st) or not stat.S_ISREG(st.st_mode) or st.st_size <= 0:
+        return ""
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError:
+        return ""
+    try:
+        size = os.fstat(fd).st_size
+        os.lseek(fd, max(0, size - cap), os.SEEK_SET)
+        raw = os.read(fd, cap)
+    except OSError:
+        return ""
+    finally:
+        os.close(fd)
+    return raw.decode("utf-8", errors="ignore")
+
+
+def lineage_of(tail: str) -> str:
+    """The parent stem stored in the document's meta, read from its tail; "" when it has none."""
+    at = tail.rfind('"meta"')
+    if at < 0:
+        return ""
+    m = PARENT_RE.search(tail, at)
+    return m.group(1) if m else ""
+
+
+def _attach_lineage(directory: Path, items: list[dict]) -> None:
+    """Add `parent` / `root` / `versions` to a library listing: each copy points at its source, and a family shares
+    one root, so the list can say « version de … » without opening a single drawing."""
+    by_stem = {it["stem"]: it for it in items}
+    if len(items) < 2:
+        return
+    for it in items:
+        parent = lineage_of(_doc_tail(directory, it["stem"] + DOC_SUFFIX))
+        if parent and parent != it["stem"] and parent in by_stem:
+            it["parent"] = parent
+    roots: dict[str, str] = {}
+    for it in items:
+        seen = {it["stem"]}
+        cur = it
+        for _ in range(50):  # a hand-edited cycle must never hang the listing
+            up = cur.get("parent")
+            if not up or up in seen or up not in by_stem:
+                break
+            seen.add(up)
+            cur = by_stem[up]
+        roots[it["stem"]] = cur["stem"]
+    counts: dict[str, int] = {}
+    for root in roots.values():
+        counts[root] = counts.get(root, 0) + 1
+    for it in items:
+        it["root"] = roots[it["stem"]]
+        if counts[it["root"]] > 1:
+            it["versions"] = counts[it["root"]]
+
+
 def list_drawings(root: Path) -> dict:
+    try:
+        prune_drafts(root)  # no silent disk growth: old scratch copies and orphans go at every listing
+    except Exception:  # pruning is housekeeping: it must never make the library fail to list
+        pass
     directory = drawings_dir(root, create=False)
     items: list[dict] = []
     if directory is not None:
@@ -1285,6 +2171,8 @@ def list_drawings(root: Path) -> dict:
                 "stl": (stem + STL_SUFFIX) in names,
                 "source": "Mobile" if stem.endswith("_HQWeb-Mobile") else ("Desktop" if stem.endswith("_HQWeb-Desktop") else ""),
             })
+    if directory is not None:
+        _attach_lineage(directory, items)
     items.sort(key=lambda x: (-x["mtime"], x["stem"]))
     return {"ok": True, "dir": "/".join(SUBDIR), "items": items[:LIST_MAX], "total": len(items)}
 

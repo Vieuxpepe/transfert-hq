@@ -28,6 +28,9 @@ LINK_MAX = 80
 RANGE_MAX_DAYS = 366
 REMINDERS_MAX = 3
 REMINDER_CATCHUP_SEC = 5 * 60
+RECURRENCE_FREQUENCIES = ("daily", "weekdays", "weekly")
+RECURRENCE_COUNT_MAX = 1000
+OCCURRENCE_QUERY_MAX = 10000
 # All-day reminders anchor at 08:00 HQ local on the start date.
 ALL_DAY_REMINDER_HOUR = 8
 ALL_DAY_REMINDER_MINUTE = 0
@@ -69,7 +72,6 @@ _FORBIDDEN = {
     "password",
     "token",
     "rrule",
-    "recurrence",
     "cron",
 }
 
@@ -285,6 +287,67 @@ def _event_bounds(event: dict) -> tuple[datetime, datetime]:
     return start, end
 
 
+def _recurrence_pattern(value: Any, start: datetime) -> dict | None:
+    """Validate the small structured recurrence pattern stored on one event.
+
+    This is deliberately not an RRULE parser: only frequency, a weekly weekday
+    selection, and one end condition are accepted. Raw scheduling strings stay
+    rejected by _reject_forbidden.
+    """
+    if value is None or value == {}:
+        return None
+    if not isinstance(value, dict):
+        raise CalendarError("Récurrence invalide")
+    allowed = {"frequency", "weekdays", "until", "count"}
+    if set(value) - allowed:
+        raise CalendarError("Récurrence invalide")
+    frequency = value.get("frequency")
+    if frequency not in RECURRENCE_FREQUENCIES:
+        raise CalendarError("Fréquence de récurrence invalide")
+    raw_days = value.get("weekdays")
+    if raw_days is None:
+        raw_days = []
+    if not isinstance(raw_days, list):
+        raise CalendarError("Jours de récurrence invalides")
+    weekdays: list[int] = []
+    for day in raw_days:
+        if isinstance(day, bool) or not isinstance(day, int) or day < 0 or day > 6:
+            raise CalendarError("Jours de récurrence invalides")
+        if day not in weekdays:
+            weekdays.append(day)
+    weekdays.sort()
+    if frequency == "weekly":
+        if not weekdays:
+            raise CalendarError("Choisis au moins un jour de la semaine")
+    elif weekdays:
+        raise CalendarError("Jours de récurrence invalides")
+    until_raw = value.get("until")
+    until: str | None = None
+    if until_raw not in (None, ""):
+        if not isinstance(until_raw, str):
+            raise CalendarError("Date de fin invalide")
+        parsed_until = parse_date(until_raw.strip())
+        if parsed_until is None:
+            raise CalendarError("Date de fin invalide")
+        if parsed_until.date() < start.date():
+            raise CalendarError("La fin de la récurrence doit suivre le début")
+        until = _fmt_date(parsed_until)
+    count = value.get("count")
+    if count is not None:
+        if isinstance(count, bool) or not isinstance(count, int):
+            raise CalendarError("Nombre d'occurrences invalide")
+        if count < 1 or count > RECURRENCE_COUNT_MAX:
+            raise CalendarError("Nombre d'occurrences invalide")
+    if until is not None and count is not None:
+        raise CalendarError("Choisis une seule fin de récurrence")
+    return {
+        "frequency": frequency,
+        "weekdays": weekdays,
+        "until": until,
+        "count": count,
+    }
+
+
 def validate_event(payload: dict, *, existing: dict | None = None, categories=CATEGORIES) -> dict:
     """Return a stored manual event. Server assigns id, rev, and timestamps."""
     _reject_forbidden(payload)
@@ -314,6 +377,7 @@ def validate_event(payload: dict, *, existing: dict | None = None, categories=CA
         if start is None or end is None or end <= start:
             raise CalendarError("La fin doit être après le début")
         start_s, end_s = _fmt_minute(start), _fmt_minute(end)
+    recurrence = _recurrence_pattern(payload.get("recurrence"), start)
     done = payload.get("done", False)
     if not isinstance(done, bool):
         raise CalendarError("Fait invalide")
@@ -343,6 +407,8 @@ def validate_event(payload: dict, *, existing: dict | None = None, categories=CA
         "updated_at": stamp,
         "rev": rev,
     }
+    if recurrence is not None:
+        stored["recurrence"] = recurrence
     scene_id = _link(payload.get("scene_id"))
     action_id = _link(payload.get("action_id"))
     device_id = _link(payload.get("device_id"))
@@ -607,10 +673,110 @@ def manual_between(start: datetime, end: datetime) -> tuple[list[dict], bool]:
     return _manual_items(state or {}, start, end), bad
 
 
+def _recurrence_day_matches(day: datetime, recurrence: dict) -> bool:
+    frequency = recurrence.get("frequency")
+    if frequency == "daily":
+        return True
+    if frequency == "weekdays":
+        return day.weekday() < 5
+    return day.weekday() in (recurrence.get("weekdays") or [])
+
+
+def _occurrence_spans(event: dict, start: datetime, end: datetime):
+    """Yield (start, end) for projected occurrences overlapping [start, end).
+
+    Iteration is bounded by the query window for open-ended series and by the
+    stored count for counted series. The base event is never moved: every
+    occurrence keeps the same duration, including multi-day all-day events.
+    """
+    recurrence = event.get("recurrence")
+    if not isinstance(recurrence, dict):
+        return
+    try:
+        series_start, series_end = _event_bounds(event)
+    except CalendarError:
+        return
+    duration = series_end - series_start
+    first_day = series_start.date()
+    count = recurrence.get("count")
+    until = parse_date(str(recurrence.get("until") or ""))
+
+    def projected(day: datetime) -> tuple[datetime, datetime]:
+        occurrence_start = datetime.combine(day, series_start.time())
+        return occurrence_start, occurrence_start + duration
+
+    if isinstance(count, int) and not isinstance(count, bool) and count >= 1:
+        day = first_day
+        emitted = 0
+        while emitted < count:
+            if _recurrence_day_matches(day, recurrence):
+                emitted += 1
+                occurred_start, occurred_end = projected(day)
+                if occurred_start < end and occurred_end > start:
+                    yield occurred_start, occurred_end
+            day += timedelta(days=1)
+        return
+
+    # A timed occurrence can begin before the window and still overlap it;
+    # one extra day of lookback is enough for any event shorter than a day,
+    # plus duration.days for multi-day events.
+    lookback = max(1, duration.days + 1)
+    lower = max(first_day, (start - timedelta(days=lookback)).date())
+    upper = end.date()
+    if until is not None:
+        upper = min(upper, until.date())
+    day = lower
+    while day <= upper:
+        if _recurrence_day_matches(day, recurrence):
+            occurred_start, occurred_end = projected(day)
+            if occurred_start < end and occurred_end > start:
+                yield occurred_start, occurred_end
+        day += timedelta(days=1)
+
+
+def _occurrence_items(event: dict, start: datetime, end: datetime, remaining: int) -> list[dict]:
+    recurrence = event.get("recurrence")
+    base_id = str(event.get("id") or "")
+    out: list[dict] = []
+    for occurred_start, occurred_end in _occurrence_spans(event, start, end):
+        if len(out) >= remaining:
+            break
+        if event.get("all_day"):
+            suffix = occurred_start.strftime("%Y%m%d")
+            item_start = _fmt_date(occurred_start)
+            item_end = _fmt_date(occurred_end)
+        else:
+            suffix = occurred_start.strftime("%Y%m%dT%H%M")
+            item_start = _fmt_minute(occurred_start)
+            item_end = _fmt_minute(occurred_end)
+        item = dict(event)
+        item.update({
+            "id": f"{base_id}@{suffix}",
+            "start": item_start,
+            "end": item_end,
+            "series_id": base_id,
+            "series_start": str(event.get("start") or ""),
+            "series_end": str(event.get("end") or ""),
+            "recurrence": dict(recurrence),
+            "source": "manual",
+            "read_only": False,
+        })
+        out.append(item)
+    return out
+
+
 def _manual_items(state: dict, start: datetime, end: datetime) -> list[dict]:
-    found = []
+    found: list[dict] = []
     for event in state.get("events") or []:
-        if isinstance(event, dict) and _overlaps(event, start, end):
+        if not isinstance(event, dict):
+            continue
+        recurrence = event.get("recurrence")
+        if isinstance(recurrence, dict):
+            found.extend(_occurrence_items(event, start, end, OCCURRENCE_QUERY_MAX - len(found)))
+            if len(found) >= OCCURRENCE_QUERY_MAX:
+                break
+            continue
+        if _overlaps(event, start, end):
             item = dict(event)
             item["source"] = "manual"
             item["read_only"] = False
@@ -874,21 +1040,19 @@ def next_manual(days: int = 7) -> dict | None:
     wall = _local_now().replace(second=0, microsecond=0)
     horizon = wall + timedelta(days=days)
     best: tuple[datetime, dict] | None = None
-    for event in state.get("events") or []:
-        if not isinstance(event, dict) or event.get("all_day"):
+    for item in _manual_items(state, wall, horizon):
+        if item.get("all_day"):
             continue
         try:
-            start, end = _event_bounds(event)
+            start, _end = _event_bounds(item)
         except CalendarError:
             continue
-        if end <= wall or start >= horizon:
-            continue
         if best is None or start < best[0]:
-            best = (start, event)
+            best = (start, item)
     if best is None:
         return None
     event = best[1]
-    out = _compact(dict(event, source="manual", read_only=False))
+    out = _compact(event)
     out["rev"] = event.get("rev")
     return out
 
@@ -904,6 +1068,9 @@ def streak(days: int = 120) -> dict:
     for event in state.get("events") or []:
         if not isinstance(event, dict) or event.get("all_day"):
             continue
+        if isinstance(event.get("recurrence"), dict):
+            continue  # a series is not ticked off occurrence by occurrence, so it cannot make a streak
+
         try:
             start, end = _event_bounds(event)
         except CalendarError:
@@ -940,6 +1107,13 @@ def _compact(item: dict) -> dict:
         out["category"] = item.get("category")
     if item.get("when"):
         out["when"] = item.get("when")
+    # A projected occurrence stays a series event when the home/countdown card
+    # carries it: without these, opening it would edit or delete one occurrence.
+    for key in ("series_id", "series_start", "series_end"):
+        if item.get(key):
+            out[key] = item.get(key)
+    if isinstance(item.get("recurrence"), dict):
+        out["recurrence"] = dict(item["recurrence"])
     return out
 
 
@@ -1045,6 +1219,43 @@ def _reminder_anchor(event: dict) -> datetime | None:
     return parse_minute(str(event.get("start") or ""))
 
 
+def _reminder_instances(event: dict, now: datetime) -> list[tuple[datetime, str]]:
+    """Anchors and occurrence start keys that can have a reminder around `now`.
+
+    One-off events keep their single anchor. A series is projected only over the
+    small window in which one of its reminders can become due, including a
+    reminder one day before an upcoming occurrence.
+    """
+    recurrence = event.get("recurrence")
+    if not isinstance(recurrence, dict):
+        anchor = _reminder_anchor(event)
+        return [(anchor, str(event.get("start") or ""))] if anchor is not None else []
+    offsets = [
+        int(offset) for offset in (event.get("reminders_min") or [])
+        if isinstance(offset, int) and not isinstance(offset, bool)
+    ]
+    if not offsets:
+        return []
+    latest = max(offsets)
+    window_start = now - timedelta(seconds=REMINDER_CATCHUP_SEC)
+    window_end = now + timedelta(minutes=latest) + timedelta(minutes=1)
+    out: list[tuple[datetime, str]] = []
+    for occurrence_start, _occurrence_end in _occurrence_spans(event, window_start, window_end):
+        if event.get("all_day"):
+            anchor = occurrence_start.replace(
+                hour=ALL_DAY_REMINDER_HOUR,
+                minute=ALL_DAY_REMINDER_MINUTE,
+                second=0,
+                microsecond=0,
+            )
+            start_key = _fmt_date(occurrence_start)
+        else:
+            anchor = occurrence_start
+            start_key = _fmt_minute(occurrence_start)
+        out.append((anchor, start_key))
+    return out
+
+
 def tick() -> list[dict]:
     """Fire due reminders once. Never starts a linked scene or action.
 
@@ -1071,33 +1282,30 @@ def tick() -> list[dict]:
         for event in state["events"]:
             if not isinstance(event, dict):
                 continue
-            anchor = _reminder_anchor(event)
-            if anchor is None:
-                continue
-            start_key = str(event.get("start") or "")
             event_id = str(event.get("id") or "")
-            for offset in event.get("reminders_min") or []:
-                if isinstance(offset, bool) or not isinstance(offset, int):
-                    continue
-                fire_at = anchor - timedelta(minutes=int(offset))
-                key = f"{event_id}|{start_key}|{offset}"
-                if key in state["reminder_fired"]:
-                    continue
-                delta = (now - fire_at).total_seconds()
-                if delta < 0:
-                    continue
-                status = "fired" if delta <= REMINDER_CATCHUP_SEC else "skipped"
-                state["reminder_fired"][key] = {"at": _now(), "status": status}
-                changed = True
-                if status == "fired":
-                    due.append(
-                        {
-                            "id": event_id,
-                            "title": str(event.get("title") or "Événement")[:TITLE_MAX],
-                            "start": start_key,
-                            "offset": int(offset),
-                        }
-                    )
+            for anchor, start_key in _reminder_instances(event, now):
+                for offset in event.get("reminders_min") or []:
+                    if isinstance(offset, bool) or not isinstance(offset, int):
+                        continue
+                    fire_at = anchor - timedelta(minutes=int(offset))
+                    key = f"{event_id}|{start_key}|{offset}"
+                    if key in state["reminder_fired"]:
+                        continue
+                    delta = (now - fire_at).total_seconds()
+                    if delta < 0:
+                        continue
+                    status = "fired" if delta <= REMINDER_CATCHUP_SEC else "skipped"
+                    state["reminder_fired"][key] = {"at": _now(), "status": status}
+                    changed = True
+                    if status == "fired":
+                        due.append(
+                            {
+                                "id": event_id,
+                                "title": str(event.get("title") or "Événement")[:TITLE_MAX],
+                                "start": start_key,
+                                "offset": int(offset),
+                            }
+                        )
         if changed:
             _write_state(state)
     for item in due:

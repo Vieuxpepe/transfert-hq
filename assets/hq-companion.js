@@ -139,14 +139,14 @@
   const RIG_NEUTRAL_BASE = "/assets/companion/rig-neutral-v1/";
   const BUST_SLAP_FALLBACK = null;
   const BUST_SLAP_SFX = [
-    "/assets/companion/chat/reactions/elevenlabs_20261103/else_enthusiastic_slap_on_tits_01.8465daef.ogg",
-    "/assets/companion/chat/reactions/elevenlabs_20261103/else_enthusiastic_slap_on_tits_02.adb1d64a.ogg",
-    "/assets/companion/chat/reactions/elevenlabs_20261103/else_enthusiastic_slap_on_tits_03.7db333dd.ogg",
+    "/assets/companion/chat/reactions/elevenlabs_20261103/transferania_enthusiastic_slap_on_tits_01.8465daef.ogg",
+    "/assets/companion/chat/reactions/elevenlabs_20261103/transferania_enthusiastic_slap_on_tits_02.adb1d64a.ogg",
+    "/assets/companion/chat/reactions/elevenlabs_20261103/transferania_enthusiastic_slap_on_tits_03.7db333dd.ogg",
   ];
   const PLEASURE_GRUNT_SFX = [
-    "/assets/companion/chat/reactions/elevenlabs_20261103/else_yap_of_pleasure_01.03b4a7e1.ogg",
-    "/assets/companion/chat/reactions/elevenlabs_20261103/else_yap_of_pleasure_02.29257906.ogg",
-    "/assets/companion/chat/reactions/elevenlabs_20261103/else_yap_of_pleasure_03.26af343f.ogg",
+    "/assets/companion/chat/reactions/elevenlabs_20261103/transferania_yap_of_pleasure_01.03b4a7e1.ogg",
+    "/assets/companion/chat/reactions/elevenlabs_20261103/transferania_yap_of_pleasure_02.29257906.ogg",
+    "/assets/companion/chat/reactions/elevenlabs_20261103/transferania_yap_of_pleasure_03.26af343f.ogg",
   ];
 
   function rigNeutralLayerSrc(asset) {
@@ -514,6 +514,23 @@
     if (!dist) return { x: 0, y: 0 };
     const k = Math.min(1, dist / 240);
     return { x: Math.round((dx / dist) * k * 2.4 * 10) / 10, y: Math.round((dy / dist) * k * 1.6 * 10) / 10 };
+  }
+
+  // A message just arrived: where the bubble sits relative to her face, read
+  // once per line rather than every frame. The policy raises the eyes to it for
+  // a beat and then lets them go.
+  function gazeAnchorFor(win, el) {
+    const G = win && win.HqCompanionGaze;
+    if (!G || !S.face || !el || typeof el.getBoundingClientRect !== "function") return null;
+    try {
+      const node = (el.closest && el.closest(".hq-companion-bubble")) || el;
+      const box = node.getBoundingClientRect();
+      const face = S.face.getBoundingClientRect();
+      if (!box.width && !box.height) return null;
+      const g = G.glance(box.left + box.width / 2 - (face.left + face.width / 2),
+        box.top + Math.min(box.height * .5, 90) - (face.top + face.height * .38));
+      return { x: g.x, y: g.y, until: win.performance.now() + 1400 };
+    } catch (_) { return null; }
   }
 
   // The day's mood (server) as the orb's breath and warmth: softer = slower, warmer = a bit quicker and rosier.
@@ -934,6 +951,31 @@
     }
   }
 
+  // False once Transferania is switched off in Compagnons (on-box or persona "off"): no sound of any kind.
+  function companionAudible(win) {
+    return readOn(win) && readPersona(win) !== "off";
+  }
+
+  // One choke point for every synthesized/buffered companion sound: while she is off the shared AudioContext
+  // is suspended and cannot be resumed, so no leftover trigger anywhere can make a sound.
+  function companionGateCtx(ctx) {
+    const win = S.win;
+    if (!ctx || !win) return ctx;
+    if (!ctx.__hqGate) {
+      ctx.__hqGate = true;
+      const realResume = ctx.resume.bind(ctx);
+      ctx.resume = () => (companionAudible(win) ? realResume() : Promise.resolve());
+    }
+    try {
+      if (!companionAudible(win)) { if (ctx.state === "running") ctx.suspend().catch(() => {}); }
+      else if (ctx.state === "suspended" && !win.document.hidden) ctx.resume().catch(() => {});
+    } catch (_) {}
+    return ctx;
+  }
+  function newCompanionCtx(AC) {
+    return companionGateCtx(new AC());
+  }
+
   function readPersona(win) {
     try {
       return win.localStorage.getItem(LS_PERSONA) || "flirt";
@@ -943,6 +985,8 @@
   }
 
   function muted(win) {
+    // Switched off in Compagnons counts as muted everywhere: every sound path consults this.
+    if (!companionAudible(win)) return true;
     try {
       return Number(win.localStorage.getItem(LS_MUTE) || 0) > Date.now();
     } catch (_) {
@@ -1014,6 +1058,7 @@
     setCollapsed(false, false);
     applyCompanionFloat(win);
     syncVisibility();
+    clampSpeechLane(win);  // the reading column is a different lane than the page
     noteActivity(win, "nav");
   }
 
@@ -1026,6 +1071,7 @@
     S.intimeMode = false;
     applyCompanionFloat(win);
     syncVisibility();
+    clampSpeechLane(win);
   }
 
   function syncIntimeView(win, view) {
@@ -2023,7 +2069,7 @@
   }
 
   function playForgeSfx(win, kind) {
-    if (!readForgeSound(win)) return;
+    if (!readForgeSound(win) || !companionAudible(win)) return;
     try {
       const Ctx = win.AudioContext || win.webkitAudioContext;
       if (!Ctx) return;
@@ -2089,7 +2135,10 @@
     if (pose === "rhythm-lick") {
       if (S.adultShaft) S.adultShaft.hidden = false;
       if (S.adultShaftTrack) S.adultShaftTrack.hidden = false;
-      if (S.el) S.el.classList.add("is-nsfw-fx-rhythm", "is-nsfw-rhythm-lick");
+      if (S.el) {
+        S.el.classList.add("is-nsfw-fx-rhythm", "is-nsfw-rhythm-lick");
+        clampClimaxBar(win);
+      }
       playForgeSfx(win, "rhythm");
       playAdultFx(win, "rhythm", 3600);
       win.setTimeout(() => {
@@ -2764,7 +2813,7 @@
           if (!p || !p.label) return;
           const card = doc.createElement("div");
           card.className = "hq-companion-proposal-card";
-          card.style.cssText = "display:flex;align-items:center;gap:6px;margin-top:6px;padding:4px 8px;border-radius:8px;background:rgba(255,255,255,0.06);font-size:12px;";
+          card.style.cssText = "display:flex;align-items:center;gap:6px;margin-top:6px;padding:4px 8px;border-radius:8px;background:rgba(255,255,255,0.06);font-size:13px;";
           const lbl = doc.createElement("span");
           lbl.style.flex = "1";
           lbl.textContent = String(p.label);
@@ -3671,7 +3720,7 @@
           list.slice().reverse().slice(0, 6).forEach((th) => {
             if (!th || !th.text) return;
             const row = doc.createElement("div");
-            row.style.cssText = "font-size:0.86em;opacity:0.86;margin:4px 0;";
+            row.style.cssText = "font-size:13px;opacity:0.86;margin:4px 0;";
             const when = th.at ? new Date(th.at * 1000).toLocaleTimeString("fr-CA", { hour: "2-digit", minute: "2-digit", hour12: false }) : "";
             row.textContent = (when ? "[" + when + "] " : "• ") + String(th.text);
             thoughtsSec.body.appendChild(row);
@@ -3711,10 +3760,10 @@
             card.appendChild(img);
           }
           const cap = doc.createElement("p");
-          cap.style.cssText = "margin:0;font-size:0.88em;line-height:1.35;flex:1;";
+          cap.style.cssText = "margin:0;font-size:13px;line-height:1.35;flex:1;";
           cap.textContent = "« " + String(sv.text || "") + " »";
           const meta = doc.createElement("div");
-          meta.style.cssText = "display:flex;align-items:center;justify-content:space-between;font-size:0.75em;opacity:0.78;gap:6px;";
+          meta.style.cssText = "display:flex;align-items:center;justify-content:space-between;font-size:11px;opacity:0.78;gap:6px;";
           const dateStr = sv.at ? new Date(sv.at * 1000).toLocaleDateString("fr-CA") : "";
           const info = doc.createElement("span");
           info.textContent = [dateStr, sv.view ? "sur " + sv.view : ""].filter(Boolean).join(" · ");
@@ -4379,6 +4428,12 @@
   function syncVisibility() {
     if (!S.el) return;
     syncWakePill();
+    if (S.audioCtx) companionGateCtx(S.audioCtx);
+    if (S.win && !companionAudible(S.win) && (S.currentAudio || S.reactionAudio?.isPlaying?.() || S.el.classList.contains("is-speaking"))) {
+      stopSpeech(S.win);
+      stopImpactAudio();
+      try { S.win.HqDangleAudio?.stopAll?.(); } catch (_) {}
+    }
     const view = S.win.document.body.dataset.view || "accueil";
     if (view === "intime") {
       if (!S.sessionAdmin) {
@@ -4484,6 +4539,7 @@
     }
     S.mouthRig?.endTextSpeech(el.__hqPace);
     const run = (el.__hqPace = {});
+    S.gazeAnchor = gazeAnchorFor(win, el);
     if (calm(win) || S.collapsed) {
       el.textContent = t;
       if (done) done();
@@ -4694,6 +4750,7 @@
         S.bubble.classList.remove("is-in", "is-typing");
         void S.bubble.offsetWidth;
         S.bubble.classList.add("is-in", "is-new");
+        clampSpeechLane(win);
         nudgeBubbleWeight(win, 1.15);
         win.setTimeout(() => S.bubble && S.bubble.classList.remove("is-new"), 700);
       }
@@ -5058,7 +5115,7 @@
     try {
       const AC = win.AudioContext || win.webkitAudioContext;
       if (!AC) return;
-      if (!S.audioCtx) S.audioCtx = new AC();
+      if (!S.audioCtx) S.audioCtx = newCompanionCtx(AC);
       const ctx = S.audioCtx;
       if (ctx.state === "suspended") ctx.resume();
       const now = ctx.currentTime;
@@ -5205,7 +5262,7 @@
     if (!audio || S.speechWebVoice?.audio === audio) return;
     const AC = win.AudioContext || win.webkitAudioContext;
     if (!AC) return;
-    if (!S.audioCtx) S.audioCtx = new AC();
+    if (!S.audioCtx) S.audioCtx = newCompanionCtx(AC);
     const ctx = S.audioCtx;
     if (ctx.state === "suspended") ctx.resume().catch(() => {});
     ensureCompanionSfxBus(ctx);
@@ -5284,16 +5341,16 @@
     return load;
   }
 
-  const TIT_PULL_ELASTIC_RE = /else_tit_pull_(01|07)\./i;
-  const TIT_PULL_SLOSH_RE = /else_tit_pull_(10|13)\./i;
-  const TIT_PULL_LOOP_RE = /else_tit_pull_02\./i;
+  const TIT_PULL_ELASTIC_RE = /transferania_tit_pull_(01|07)\./i;
+  const TIT_PULL_SLOSH_RE = /transferania_tit_pull_(10|13)\./i;
+  const TIT_PULL_LOOP_RE = /transferania_tit_pull_02\./i;
 
   function titPullStemPool(pool, kind, stemId) {
     if (!pool?.length) return pool;
     const urls = pool.map(String);
     if (stemId) {
       const stem = String(stemId).padStart(2, "0");
-      const one = urls.filter(u => new RegExp(`else_tit_pull_${stem}\\.`, "i").test(u));
+      const one = urls.filter(u => new RegExp(`transferania_tit_pull_${stem}\\.`, "i").test(u));
       if (one.length) return one;
     }
     if (kind === "slosh") {
@@ -5612,7 +5669,7 @@
     try {
       const AC = win.AudioContext || win.webkitAudioContext;
       if (!AC) return;
-      if (!S.audioCtx) S.audioCtx = new AC();
+      if (!S.audioCtx) S.audioCtx = newCompanionCtx(AC);
       const ctx = S.audioCtx;
       if (ctx.state === "suspended") ctx.resume();
       ensureBustSlapBuffer(win, ctx, url).then(buf => {
@@ -5661,7 +5718,7 @@
     try {
       const AC = win.AudioContext || win.webkitAudioContext;
       if (!AC) return Promise.resolve([]);
-      if (!S.audioCtx) S.audioCtx = new AC();
+      if (!S.audioCtx) S.audioCtx = newCompanionCtx(AC);
       const pool = bustSlapImpactUrls();
       const urls = [primaryUrl];
       const extra = pool.find(u => u !== primaryUrl && !impactBufferReady(u));
@@ -5723,7 +5780,7 @@
     try {
       const AC = win.AudioContext || win.webkitAudioContext;
       if (!AC) return;
-      if (!S.audioCtx) S.audioCtx = new AC();
+      if (!S.audioCtx) S.audioCtx = newCompanionCtx(AC);
       const ctx = S.audioCtx;
       if (ctx.state === "suspended") ctx.resume();
       if (!S.impactSelections) S.impactSelections = {};
@@ -6048,7 +6105,7 @@
 
   function playRecordedReaction(win, kind) {
     if (!S.reactionAudio?.has(kind)) return false;
-    if (!win || muted(win) || !readForgeSound(win) || win.document.hidden || S.voicePreview) return true;
+    if (!win || !companionAudible(win) || muted(win) || !readForgeSound(win) || win.document.hidden || S.voicePreview) return true;
     if (["slap", "pleasure", "moan", "whimper"].includes(kind) && !S.nsfwOn) return true;
     S.reactionAudio.start(kind, { interrupt: false, priority: 1 });
     return true;
@@ -6062,7 +6119,7 @@
   }
 
   function playPleasureGruntSfx(win, tension, kind = "pleasure") {
-    if (!win || muted(win) || !readForgeSound(win) || calm(win)) return;
+    if (!win || !companionAudible(win) || muted(win) || !readForgeSound(win) || calm(win)) return;
     if (playRecordedReaction(win, kind)) return;
     const requestedAt = Date.now();
     if (S.lastFallbackGruntAt !== undefined && requestedAt - S.lastFallbackGruntAt < 1200) return;
@@ -6070,7 +6127,7 @@
     try {
       const AC = win.AudioContext || win.webkitAudioContext;
       if (!AC) return;
-      if (!S.audioCtx) S.audioCtx = new AC();
+      if (!S.audioCtx) S.audioCtx = newCompanionCtx(AC);
       const ctx = S.audioCtx;
       if (ctx.state === "suspended") ctx.resume().catch(() => {});
       if (typeof S.pleasureGruntVariant !== "number") S.pleasureGruntVariant = 0;
@@ -6675,7 +6732,7 @@
     try {
       const AC = win.AudioContext || win.webkitAudioContext;
       if (!AC) return;
-      if (!S.audioCtx) S.audioCtx = new AC();
+      if (!S.audioCtx) S.audioCtx = newCompanionCtx(AC);
       const ctx = S.audioCtx;
       if (ctx.state === "suspended") ctx.resume();
       const now = ctx.currentTime;
@@ -8164,7 +8221,7 @@
         applyWindBlownShiver(win, av);
         return;
       }
-      if (!S.audioCtx) S.audioCtx = new AC();
+      if (!S.audioCtx) S.audioCtx = newCompanionCtx(AC);
       const ctx = S.audioCtx;
       if (ctx.state === "suspended") await ctx.resume();
       const src = ctx.createMediaStreamSource(stream);
@@ -8904,7 +8961,7 @@
     try {
       const AC = win.AudioContext || win.webkitAudioContext;
       if (!AC) return;
-      if (!S.audioCtx) S.audioCtx = new AC();
+      if (!S.audioCtx) S.audioCtx = newCompanionCtx(AC);
       ensureCompanionSfxBus(S.audioCtx);
       if (S.audioCtx.state === "suspended") S.audioCtx.resume().catch(() => {});
       updateCompanionSfxDuck(win);
@@ -8965,7 +9022,7 @@
     if (S.reactionAudio) return S.reactionAudio.ready;
     if (!win.HqCompanionReactionAudio) return Promise.resolve(false);
     primeCompanionAudioContext(win);
-    S.reactionAudio = win.HqCompanionReactionAudio.create(win, () => readForgeSound(win) && !muted(win) &&
+    S.reactionAudio = win.HqCompanionReactionAudio.create(win, () => companionAudible(win) && readForgeSound(win) && !muted(win) &&
       !win.document.hidden && !!S.el && !S.el.classList.contains("is-speaking") && !S.el.classList.contains("is-voice-lipsync"), Math.random,
       () => {
         primeCompanionAudioContext(win);
@@ -10462,7 +10519,7 @@
     try {
       const AC = win.AudioContext || win.webkitAudioContext;
       if (!AC) return;
-      if (!S.audioCtx) S.audioCtx = new AC();
+      if (!S.audioCtx) S.audioCtx = newCompanionCtx(AC);
       const ctx = S.audioCtx;
       if (ctx.state === "suspended") ctx.resume();
       const t = ctx.currentTime + Math.max(0, Number(delayMs) || 0) / 1000;
@@ -10954,7 +11011,7 @@
     try {
       const AC = win.AudioContext || win.webkitAudioContext;
       if (!AC) return;
-      if (!S.audioCtx) S.audioCtx = new AC();
+      if (!S.audioCtx) S.audioCtx = newCompanionCtx(AC);
       const ctx = S.audioCtx;
       if (ctx.state === "suspended") ctx.resume().catch(() => {});
       const now = ctx.currentTime;
@@ -11555,7 +11612,7 @@
     const AC = win.AudioContext || win.webkitAudioContext;
     if (!AC) return;
     try {
-      if (!S.audioCtx) S.audioCtx = new AC();
+      if (!S.audioCtx) S.audioCtx = newCompanionCtx(AC);
       const ctx = S.audioCtx;
       if (ctx.state === "suspended") ctx.resume().catch(() => {});
       const master = ctx.createGain();
@@ -11658,7 +11715,7 @@
     // CORS permission. Keep its normal playback and use the fallback cadence.
     try {
       if (new win.URL(audio.src, win.location.href).origin !== win.location.origin) return;
-      if (!S.audioCtx) S.audioCtx = new AC();
+      if (!S.audioCtx) S.audioCtx = newCompanionCtx(AC);
       const ctx = S.audioCtx;
       const connect = () => {
         if (S.currentAudio !== audio || ctx.state !== "running" || S.voiceMeter) return;
@@ -12631,6 +12688,29 @@
       // 5. Commit CSS Custom Properties to S.el
       const stEl = S.el.style;
       sampleVoiceMeter(nowMs);
+      // Eyes: one attention target, sampled here and nowhere else. A short
+      // saccade to it, a hold, a deliberate look away while the reply is being
+      // composed, and a return when she starts speaking. No timer, no new rAF.
+      if (S.face && win.HqCompanionGaze && !reducedMotion) {
+        const gaze = win.HqCompanionGaze.step(S.gaze || (S.gaze = win.HqCompanionGaze.create()), {
+          now: nowMs, dt: dt * 1000,
+          composing: S.el.classList.contains("is-chat-thinking") || S.el.classList.contains("hq-companion-listening"),
+          speaking: S.el.classList.contains("is-speaking") || S.el.classList.contains("is-voice-lipsync") ||
+            S.el.classList.contains("is-speech-articulating"),
+          pointer: S.pointerGaze, anchor: S.gazeAnchor
+        });
+        if (gaze.mode !== S.gazeMode || Math.abs(gaze.x - (S.gazeX || 0)) > 0.04 ||
+            Math.abs(gaze.y - (S.gazeY || 0)) > 0.04) {
+          S.gazeMode = gaze.mode;
+          S.gazeX = gaze.x;
+          S.gazeY = gaze.y;
+          // Readable from the outside (inspector, gates) without touching the rig.
+          if (S.el.dataset.gazeMode !== gaze.mode) S.el.dataset.gazeMode = gaze.mode;
+          S.face.style.setProperty("--gx", gaze.x + "px");
+          S.face.style.setProperty("--gy", gaze.y + "px");
+          setLive2DTarget(win, gaze.x * 1.85, gaze.y * 1.85);
+        }
+      }
       if (S.mouthRig && S.el.classList.contains("has-layered-portrait")) S.mouthRig.tick(dt, nowMs);
       tickJawFollow(st, dt, nowMs, warmth, reducedMotion);
       tickEyeLife(st, nowMs, reducedMotion);
@@ -12643,13 +12723,30 @@
       setLive2dStyleVar(stEl, "--rig-phone-x", phoneX.toFixed(2) + "px");
       setLive2dStyleVar(stEl, "--rig-phone-y", phoneY.toFixed(2) + "px");
       setLive2dStyleVar(stEl, "--rig-phone-rot", clampNum(phoneX * (floatDragging ? 0.22 : 0.12), -6.5, 6.5).toFixed(2) + "deg");
-      setLive2dStyleVar(stEl, "--l2d-head-x", st.head.x.toFixed(2) + "px");
-      setLive2dStyleVar(stEl, "--l2d-head-y", st.head.y.toFixed(2) + "px");
-      setLive2dStyleVar(stEl, "--l2d-head-rot", headRot.toFixed(2) + "deg");
+      // One head, one writer. The look's translation and rotation, the gesture's
+      // lead/overshoot and the nod are composed once into `headDrive`, and only
+      // the four --rig-head-* variables below reach the portrait. Nothing else
+      // writes head position.
+      const headArb = win.HqCompanionGaze?.arbitrateHead;
+      const swayScale = circ.swayCap * (1 + wNorm * 0.1) * (floatDragging ? 1.42 : 1);
+      const headDrive = headArb && !reducedMotion
+        ? win.HqCompanionGaze.arbitrateHead({ lookX: st.head.x, lookY: st.head.y, scale: swayScale,
+          gesture: mouthMotion?.headTilt || 0 })
+        : { x: st.head.x, y: st.head.y, sway: headRot * 0.4 * swayScale + (mouthMotion?.headTilt || 0) };
+      // Readable from outside (inspector, gates) without a DOM write per frame;
+      // inert under reduced motion, where this path is not taken.
+      if (!reducedMotion) S.el.__hqHeadDrive = headDrive.sway;
+      // Reduced motion writes no head channel at all: x/y exist only as the
+      // composed look's translation, so when the look is parked they stay at
+      // their CSS defaults instead of being rewritten every frame.
+      if (!reducedMotion) {
+        setLive2dStyleVar(stEl, "--rig-head-x", headDrive.x.toFixed(2) + "px");
+        setLive2dStyleVar(stEl, "--rig-head-y", headDrive.y.toFixed(2) + "px");
+      }
       // Pivot the head just below the chin; the stationary lower-neck layer
       // joins the torso while hair retains its own delayed motion.
-      const headSway = clampNum((headRot * 0.4 + st.bust.x * 0.16 +
-        st.head.sway + idleNoise(5.3, nowMs) * 0.7 * (1 - (st.tired || 0) * 0.22)) * circ.swayCap * (1 + wNorm * 0.1) * (floatDragging ? 1.42 : 1) + (mouthMotion?.headTilt || 0) + characterPose.tilt,
+      const headSway = clampNum((st.bust.x * 0.16 +
+        st.head.sway + idleNoise(5.3, nowMs) * 0.7 * (1 - (st.tired || 0) * 0.22)) * swayScale + headDrive.sway + characterPose.tilt,
         floatDragging ? -5.6 : -3.8, floatDragging ? 5.6 : 3.8);
       setLive2dStyleVar(stEl, "--rig-head-sway", headSway.toFixed(2) + "deg");
       const speaking =
@@ -12661,7 +12758,10 @@
         speechBeat * 0.034 + voiceLevel * 0.028 + Math.sin(nowMs * 0.0115) * 0.006 : 0;
       const voiceNod = parseFloat(S.el.style.getPropertyValue("--rig-voice-nod")) || 1;
       const voiceBump = S.el.classList.contains("is-voice-lipsync") ? (voiceNod - 1) * 1.35 : 0;
-      const nodMix = speechNod + voiceBump + (mouthMotion?.headNod || 0);
+      const nodDrive = headArb && !reducedMotion
+        ? win.HqCompanionGaze.arbitrateHead({ nod: mouthMotion?.headNod || 0, speechNod }).nod
+        : speechNod + (mouthMotion?.headNod || 0);
+      const nodMix = nodDrive + voiceBump;
       setLive2dStyleVar(stEl, "--rig-head-nod", clampNum(1 + st.head.nod * (floatDragging ? 0.034 : 0.022) + nodMix + characterPose.nod,
         floatDragging ? 0.928 : 0.956, floatDragging ? 1.072 : 1.044).toFixed(4));
       setLive2dStyleVar(stEl, "--rig-neck-lift", (-nodMix * 2.6).toFixed(2) + "px");
@@ -13349,7 +13449,7 @@
           (tInfo.topFavs ? ", ce que Marco aime le plus : " + tInfo.topFavs : "") +
           ")]"
         : "";
-      const fullDigest = digest(win) + "\n[Événement interactif en direct : " + interactionPrompt + modeHint + tensionHint + ". Réponds en 1 phrase unique, vivante et personnelle.]";
+      const fullDigest = digest(win) + "\n[Événement interactif en direct : " + interactionPrompt + modeHint + tensionHint + ". Reply in one single, lively, personal sentence, in English.]";
       const out = await callAmbient(win, view, fullDigest, persona === "off" ? "flirt" : persona);
       const aiLine = (out && !out.fallback && out.line && String(out.line).trim()) || instantLine;
       S.lastInteractiveLine = aiLine;
@@ -13585,6 +13685,33 @@
     const line = DIRTY_TALK_WHISPERS[Math.floor(Math.random() * DIRTY_TALK_WHISPERS.length)];
     S.line.textContent = line;
     playVocalSynthFx(win, Math.random() > 0.4 ? "gag" : "purr");
+  }
+
+  // The finish bar is centred on her, and she floats near the viewport edge: keep it on-screen for as
+  // long as the rhythm lasts. The transform transition is suspended while visible so re-clamping is stable.
+  function clampClimaxBar(win) {
+    const bar = S.climaxBar;
+    if (!bar) return;
+    win.clearTimeout(S.climaxClampTimer);
+    if (!S.el || !S.el.classList.contains("is-nsfw-fx-rhythm")) {
+      bar.style.transform = "";
+      bar.style.transition = "";
+      return;
+    }
+    bar.style.transition = "opacity 0.25s ease";
+    bar.style.transform = "";
+    const box = bar.getBoundingClientRect();
+    const width = win.innerWidth || 0;
+    if (box.width && width) {
+      let shift = 0;
+      if (box.right > width - 8) shift = (width - 8) - box.right;
+      if (box.left + shift < 8) shift = 8 - box.left;
+      if (shift) {
+        const px = Math.round(shift);
+        bar.style.transform = `translateX(calc(-50% ${px < 0 ? "-" : "+"} ${Math.abs(px)}px))`;
+      }
+    }
+    S.climaxClampTimer = win.setTimeout(() => clampClimaxBar(win), 300);
   }
 
   function setRhythmFinishMode(win, mode) {
@@ -14119,6 +14246,7 @@
         "is-nsfw-finish-cleanup"
       );
       S.el.classList.add("is-nsfw-fx-rhythm");
+      clampClimaxBar(win);
     }
 
     // Set duration to 22000ms (covers 14.125s animation + 7.2s finish aftermath)
@@ -14720,11 +14848,16 @@
             }
           }
           const g = glance(dx, dy);
-          S.gazeX = g.x;
-          S.gazeY = g.y;
-          S.face.style.setProperty("--gx", g.x + "px");
-          S.face.style.setProperty("--gy", g.y + "px");
-          setLive2DTarget(win, g.x * 1.85, g.y * 1.85);
+          // The policy in the rig loop owns the eyes when it is loaded; without
+          // it, the old direct write stays as the fallback.
+          S.pointerGaze = { dx: dx, dy: dy, at: win.performance.now() };
+          if (!win.HqCompanionGaze) {
+            S.gazeX = g.x;
+            S.gazeY = g.y;
+            S.face.style.setProperty("--gx", g.x + "px");
+            S.face.style.setProperty("--gy", g.y + "px");
+            setLive2DTarget(win, g.x * 1.85, g.y * 1.85);
+          }
           // 3D Tilt perspective following cursor
           const tiltX = Math.max(-12, Math.min(12, dx * 0.04));
           const tiltY = Math.max(-12, Math.min(12, -dy * 0.04));
@@ -14936,7 +15069,7 @@
   }
 
   function stopSpeech(win) {
-    if (muted(win) || win.document.hidden || !readForgeSound(win)) stopImpactAudio();
+    if (!companionAudible(win) || muted(win) || win.document.hidden || !readForgeSound(win)) stopImpactAudio();
     stopIdleHumming(win);
     S.reactionAudio?.stop();
     S.speechRequest = (S.speechRequest || 0) + 1;
@@ -14944,7 +15077,7 @@
     win.clearTimeout(S.speechPause);
     const previousAudio = S.currentAudio;
     S.currentAudio = null;
-    const speechImmediate = muted(win) || win.document.hidden || !readVoice(win);
+    const speechImmediate = !companionAudible(win) || muted(win) || win.document.hidden || !readVoice(win);
     if (speechImmediate) stopSpeechWebVoice(win, true);
     fadeAudioOut(win, previousAudio);
     updateCompanionSfxDuck(win);
@@ -14956,7 +15089,7 @@
   }
 
   function playAudioUrl(win, url, onFailure, visemes) {
-    if (!url || !readVoice(win) || win.document.hidden) return;
+    if (!url || !companionAudible(win) || !readVoice(win) || win.document.hidden) return;
     try {
       stopSpeech(win);
       const request = S.speechRequest;
@@ -15018,11 +15151,11 @@
         stopVoiceLipsyncLoop(win);
       };
       const next = index => {
-        if (request !== S.speechRequest || !readVoice(win) || win.document.hidden) return;
+        if (request !== S.speechRequest || !companionAudible(win) || !readVoice(win) || win.document.hidden) return;
         if (index >= segments.length) { finish(); if (S.voiceStatus) S.voiceStatus.textContent = "Lecture terminée"; return; }
         const u = new win.SpeechSynthesisUtterance(segments[index]);
         if (v) u.voice = v;
-        u.lang = v ? v.lang : "fr-CA";
+        u.lang = v ? v.lang : "en-US";
         u.rate = delivery.rate;
         u.pitch = delivery.pitch;
         u.volume = .95;
@@ -15044,10 +15177,44 @@
     } catch (_) {}
   }
 
+  // The bubble floats above the page. Keep its width inside the reserved right lane (the wrap's
+  // right padding on narrow layouts, the free margin around the centred wrap on wide ones) so a
+  // displayed message never runs over the content column.
+  // One measurement for every bubble decision: the widest visible content edge and its lane.
+  function measureSpeechLane(win) {
+    const doc = win.document;
+    let contentRight = 0;
+    doc.querySelectorAll("main.wrap").forEach((wrap) => {
+      const rect = wrap.getBoundingClientRect();
+      if (!rect.width) return;
+      const cs = win.getComputedStyle(wrap);
+      contentRight = Math.max(contentRight, rect.right - parseFloat(cs.paddingRight || 0));
+    });
+    const width = win.innerWidth || 0;
+    if (!contentRight || !width) return null;
+    return { contentRight, width, free: Math.max(104, Math.round(width - contentRight - 16)) };
+  }
+
+  function clampSpeechLane(win) {
+    const lane = measureSpeechLane(win);
+    if (!lane) return;
+    const free = lane.free;
+    // data-lane="ready" releases the CSS paint gate; it is only ever set here, after the width.
+    const apply = (el) => {
+      if (!el) return;
+      el.style.setProperty("max-width", free + "px", "important");
+      el.style.setProperty("min-width", "0px", "important");
+      el.setAttribute("data-lane", "ready");
+    };
+    // An expanded chat is a user-opened panel; only the speech state is clamped.
+    if (!(S.root && S.root.classList.contains("is-expanded"))) apply(S.bubble);
+    win.document.querySelectorAll('[class*="-chip-bubble"]').forEach(apply);
+  }
+
   function speak(win, text, directAudioUrl, conversationMode, deliveryStyle) {
     if (S.voicePreview && !deliveryStyle) return;
     const t = String(text || "").replace(/[♥✨🔥💋🍓☕🌹🥂🎲🫧🙈💄💘🐾🧽🕯️👗📸💌]/g, "").trim();
-    if (!t || !readVoice(win) || win.document.hidden) return;
+    if (!t || !companionAudible(win) || !readVoice(win) || win.document.hidden) return;
     stopSpeech(win);
     if (S.voiceStatus) S.voiceStatus.textContent = "Préparation de la voix…";
     const request = S.speechRequest;
@@ -15071,7 +15238,7 @@
     })
       .then((r) => r.json())
       .then((data) => {
-        if (request !== S.speechRequest || !readVoice(win) || win.document.hidden) return;
+        if (request !== S.speechRequest || !companionAudible(win) || !readVoice(win) || win.document.hidden) return;
         if (data && data.ok && data.audio_url) {
           playAudioUrl(win, data.audio_url, () => fallbackSpeech(win, t, delivery), data.visemes);
         } else {
@@ -15079,7 +15246,7 @@
         }
       })
       .catch(() => {
-        if (request === S.speechRequest && readVoice(win) && !win.document.hidden) fallbackSpeech(win, t, delivery);
+        if (request === S.speechRequest && companionAudible(win) && readVoice(win) && !win.document.hidden) fallbackSpeech(win, t, delivery);
       });
   }
 
@@ -15640,6 +15807,33 @@
     const bubble = doc.createElement("div");
     bubble.className = "hq-companion-bubble";
     S.bubble = bubble;
+    // Keep every speech bubble inside the reserved lane: the only place bubble width is decided.
+    try {
+      win.HQSpeechLane = () => measureSpeechLane(win);
+      win.addEventListener("resize", () => clampSpeechLane(win), { passive: true });
+      win.addEventListener("pageshow", () => clampSpeechLane(win));
+      if (win.MutationObserver) {
+        let scheduled = false;
+        const schedule = () => {
+          if (scheduled) return;
+          scheduled = true;
+          win.requestAnimationFrame(() => { scheduled = false; clampSpeechLane(win); });
+        };
+        // Only bubble/dock and view changes re-clamp; idle portrait animations toggle other
+        // classes constantly, and the clamp's own inline style writes are not observed at all.
+        const relevant = (records) => records.some((record) => {
+          if (record.type === "childList" || record.attributeName === "data-view") return true;
+          const el = record.target;
+          return !!(el.classList && (el.classList.contains("hq-companion")
+            || /-chip-bubble$|-chip-dock$/.test(el.className)));
+        });
+        new win.MutationObserver((records) => { if (relevant(records)) schedule(); })
+          .observe(doc.body, {
+            subtree: true, childList: true, attributes: true, attributeFilter: ["data-view", "class"],
+          });
+      }
+      win.requestAnimationFrame(() => clampSpeechLane(win));
+    } catch (_) {}
 
     const head = doc.createElement("div");
     head.className = "hq-companion-head";
@@ -15933,7 +16127,7 @@
       }
       stopSpeech(win);
       const rec = new SpeechRec();
-      rec.lang = "fr-CA";
+      rec.lang = "en-US";
       rec.interimResults = false;
       rec.maxAlternatives = 1;
       S.activeSpeechRec = rec;

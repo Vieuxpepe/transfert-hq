@@ -38,6 +38,11 @@ def main() -> None:
                     ignore=lambda folder, names: ["voice_cache"] if Path(folder).name == "chat" and "voice_cache" in names else [])
     B.ROOT = root
     B.SESSIONS_PATH = root / "bridge_sessions.json"
+    # Importing the bridge bound the visit telemetry to the checkout; this script
+    # runs outside ``tests/__init__``, so nothing else repoints it at the temp root.
+    import hq_assistant_visits
+
+    hq_assistant_visits.bind_state_root(root)
     B.CONFIG.update({
         "pin": "", "discord_webhook_url": "", "push_enabled": False,
         "users": [{"name": "admin-test", "pin": "424242", "role": "admin"}, {"name": "upload-test", "pin": "111111", "role": "upload"}],
@@ -59,6 +64,23 @@ def main() -> None:
         B.CONFIG["transcribe_command"] = [sys.executable, str(script), "{input}"]
     B.bind_cc_ext()
     B.bind_hq()
+    # Browser suites that exercise daytime calendar behaviour can pin the fixture's local clock to an
+    # hour today. Production code and the real bridge stay untouched; the page receives server_now
+    # from this clock, so its live fill and recap agree with the seeded timestamps.
+    if os.environ.get("HQ_CAL_TEST_HOUR") is not None:
+        try:
+            test_hour = int(os.environ["HQ_CAL_TEST_HOUR"])
+        except ValueError as exc:
+            raise SystemExit("HQ_CAL_TEST_HOUR must be an integer 0-23") from exc
+        if not 0 <= test_hour <= 23:
+            raise SystemExit("HQ_CAL_TEST_HOUR must be an integer 0-23")
+        import hq_calendar
+        from datetime import datetime as _datetime
+
+        def _test_hour_now() -> _datetime:
+            return _datetime.now().replace(hour=test_hour, minute=0, second=0, microsecond=0)
+
+        hq_calendar.bind(local_now=_test_hour_now)
     if os.environ.get("HQ_FORGE_MOCK") == "ready":
         import base64
         import io

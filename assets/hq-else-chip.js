@@ -362,6 +362,8 @@
     const sis = sisterApi(win);
 
     const root = doc.createElement("div");
+    function sfx(kind) { try { if (win.HqAssistantSfx) win.HqAssistantSfx.play("else", kind, win); } catch (_) {} }
+    try { if (win.HqAssistantSfx) win.HqAssistantSfx.register("else", () => root, win); } catch (_) {}
     root.id = "hq-else";
     root.className = "hq-else";
 
@@ -659,6 +661,7 @@
 
     function syncChromeBusy(on) {
       const busy = !!on || sisterBusy() || chatBusy;
+      if (busy !== root.classList.contains("is-busy")) sfx(busy ? "think" : "reply");
       root.classList.toggle("is-busy", busy);
       if (busy) {
         setHold("busy", "busy", null);
@@ -1150,7 +1153,7 @@
         }
         win.speechSynthesis.cancel();
         const u = new win.SpeechSynthesisUtterance(t.slice(0, 280));
-        u.lang = "fr-FR";
+        u.lang = "en-US";
         u.rate = 0.9;
         u.pitch = 1.02;
         u.volume = 0.42;
@@ -1620,6 +1623,7 @@
     }
 
     function setOpen(next) {
+      if (!!next && !open) sfx("open");
       open = !!next;
       root.classList.toggle("is-open", open);
       try { win.localStorage.setItem(LS_OPEN, open ? "1" : "0"); } catch (_) {}

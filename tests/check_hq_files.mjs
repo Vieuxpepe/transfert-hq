@@ -41,6 +41,52 @@ assert.deepEqual(F.filterItems(items, "ELAN").map((i) => i.name), ["élan.md"]);
 assert.deepEqual(F.filterItems(items, "b txt").map((i) => i.name), ["b10.txt", "b2.txt"]);
 assert.equal(F.filterItems(items, "  ").length, 5);
 
+assert.ok(F.matchPill({ name: "alpha", type: "dir" }, ""));
+assert.ok(!F.matchPill({ name: "alpha", type: "dir" }, "image"));
+assert.ok(F.matchPill({ name: "photo.jpg", type: "file" }, "image"));
+assert.ok(!F.matchPill({ name: "plan.pdf", type: "file" }, "image"));
+assert.ok(F.matchPill({ name: "plan.pdf", type: "file" }, "doc_pdf"));
+assert.ok(F.matchPill({ name: "b10.txt", type: "file" }, "doc_pdf"));
+assert.ok(F.matchPill({ name: "sound.mp3", type: "file" }, "audio"));
+assert.ok(F.matchPill({ name: "clip.mp4", type: "file" }, "video"));
+assert.ok(F.matchPill({ name: "part.stl", type: "file" }, "model"));
+assert.ok(F.matchPill({ name: "main.py", type: "file" }, "code"));
+
+const nowSec = 10000;
+assert.ok(F.isLensMatch({ name: "big.zip", type: "file", size: 60 * 1048576, mtime: nowSec - 500 }, "heavy", nowSec));
+assert.ok(!F.isLensMatch({ name: "small.txt", type: "file", size: 500, mtime: nowSec - 500 }, "heavy", nowSec));
+assert.ok(F.isLensMatch({ name: "empty.dat", type: "file", size: 0, mtime: nowSec - 500 }, "zero", nowSec));
+assert.ok(!F.isLensMatch({ name: "nonempty.dat", type: "file", size: 10, mtime: nowSec - 500 }, "zero", nowSec));
+assert.ok(F.isLensMatch({ name: "new.png", type: "file", size: 100, mtime: nowSec - 1800 }, "recent", nowSec));
+assert.ok(!F.isLensMatch({ name: "old.png", type: "file", size: 100, mtime: nowSec - 10000 }, "recent", nowSec));
+assert.ok(!F.isLensMatch({ name: "sub", type: "dir", size: 0, mtime: nowSec }, "zero", nowSec));
+const dupSet = new Set(["Inbox/dup1.txt", "Inbox/dup2.txt"]);
+assert.ok(F.isLensMatch({ rel: "Inbox/dup1.txt", name: "dup1.txt", type: "file" }, "duplicates", nowSec, dupSet));
+assert.ok(!F.isLensMatch({ rel: "Inbox/other.txt", name: "other.txt", type: "file" }, "duplicates", nowSec, dupSet));
+
+const renamesPrefix = F.computeBatchRenames(["photo.jpg", "plan.pdf"], "prefix_suffix", { prefix: "v2_", suffix: "_final" });
+assert.deepEqual(renamesPrefix, [
+  { oldName: "photo.jpg", newName: "v2_photo_final.jpg" },
+  { oldName: "plan.pdf", newName: "v2_plan_final.pdf" },
+]);
+
+const renamesReplace = F.computeBatchRenames(["img_raw_01.png", "img_raw_02.png"], "find_replace", { find: "_raw", replace: "_edit" });
+assert.deepEqual(renamesReplace, [
+  { oldName: "img_raw_01.png", newName: "img_edit_01.png" },
+  { oldName: "img_raw_02.png", newName: "img_edit_02.png" },
+]);
+
+const renamesSeq = F.computeBatchRenames(["a.png", "b.png"], "sequence", { stem: "scan", start: 1, pad: 3 });
+assert.deepEqual(renamesSeq, [
+  { oldName: "a.png", newName: "scan_001.png" },
+  { oldName: "b.png", newName: "scan_002.png" },
+]);
+
+const renamesCase = F.computeBatchRenames(["My Document Name.PDF"], "case", { target: "kebab" });
+assert.deepEqual(renamesCase, [
+  { oldName: "My Document Name.PDF", newName: "my-document-name.PDF" },
+]);
+
 const order = ["a", "b", "c", "d", "e"];
 assert.deepEqual(F.rangeSelect(order, "b", "d"), ["b", "c", "d"]);
 assert.deepEqual(F.rangeSelect(order, "e", "c"), ["c", "d", "e"]);
@@ -113,6 +159,9 @@ assert.ok(bridge.indexOf("hq-motion-coordinator.js") < bridge.indexOf("hq-home-f
 assert.ok(bridge.indexOf("hq-kinetic-score.js") > bridge.indexOf("hq-motion-coordinator.js"));
 assert.ok(bridge.indexOf("hq-kinetic-score.js") < bridge.indexOf("hq-home-fx.js"));
 assert.ok(readFileSync(new URL("../assets/hq-kinetic-score.js", import.meta.url), "utf8").includes("HqKinetic"));
+assert.ok(bridge.indexOf("hq-companion-gaze.js") > 0, "gaze policy is loaded");
+assert.ok(bridge.indexOf("hq-companion-gaze.js") < bridge.indexOf("hq-companion.js"), "gaze policy loads before the rig");
+assert.ok(readFileSync(new URL("../assets/hq-companion-gaze.js", import.meta.url), "utf8").includes("HqCompanionGaze"));
 const dangle = readFileSync(new URL("../assets/hq-dangling-member.js", import.meta.url), "utf8");
 assert.ok(readFileSync(new URL("../assets/hq-motion-coordinator.js", import.meta.url), "utf8").includes("HqMotion"));
 assert.ok(dangle.includes("shaftNearCompanionFace"), "vein trace face proximity");

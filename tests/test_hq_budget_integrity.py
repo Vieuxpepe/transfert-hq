@@ -49,6 +49,9 @@ class IntegrityTests(Base):
 
     def test_clock_rollback_does_not_release_a_reservation(self):
         system, contents = self.payload()
+        # generate() applies the English language policy before counting tokens; count the same
+        # final prompt here so the reservation fills the TPM window exactly.
+        system = ai.hq_language.apply(system)
         estimate = ai.estimate_context(system, contents)
         ai.bind(companion_context_config=lambda: {"model_input_tpm": {MODEL: ai.estimate_tokens(MODEL, estimate)}})
         ai.generate((MODEL,), system, contents, ambient=True)
@@ -148,13 +151,15 @@ import hq_ai as ai
 root = Path(sys.argv[1])
 contents = [{"role": "user", "parts": [{"text": "hello"}]}]
 model = "gemma-4-26b-a4b-it"
-ai.bind(root=root, key=lambda: "fake", companion_context_config=lambda: {"model_input_tpm": {model: ai.estimate_tokens(model, ai.estimate_context("core", contents))}},
+system = ai.hq_language.apply("core")
+input_tokens = ai.estimate_context(system, contents)
+ai.bind(root=root, key=lambda: "fake", companion_context_config=lambda: {"model_input_tpm": {model: ai.estimate_tokens(model, input_tokens)}},
     post=lambda *args: (200, {"candidates": [{"content": {"parts": [{"text": "ok"}]}}]}))
 deadline = time.monotonic() + 10
 while not (root / "start").exists() and time.monotonic() < deadline:
     time.sleep(.01)
 try:
-    ai.generate((model,), "core", contents)
+    ai.generate((model,), system, contents)
     print("accepted")
 except ai.AiError as error:
     print(error.code)
