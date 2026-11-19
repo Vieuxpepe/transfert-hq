@@ -500,14 +500,15 @@ READY_REQUIRED = ("config", "data_root", "carnet_dir", "static_assets", "modules
 
 
 def readiness(*, root: Any, config: Any, config_path: Any = None, asset_names: list[str] | None = None,
-              voice_mod: Any = None) -> dict:
+              voice_mod: Any = None, code_root: Any = None) -> dict:
+    code = code_root if code_root is not None else root
     checks = {
         "config": check_config_file(config_path, config) if config_path is not None else (_chk("ok", "config_loaded") if isinstance(config, dict) and config else _chk("error", "config_not_loaded")),
         "data_root": check_data_root(root),
         "carnet_dir": check_carnet_dir(root),
-        "static_assets": check_static_assets(root, asset_names or []),
+        "static_assets": check_static_assets(code, asset_names or []),
         "modules": check_modules(),
-        "ocr_assets": check_ocr_assets(root),
+        "ocr_assets": check_ocr_assets(code),
         "transcription": check_voice(config, voice_mod),
         "backup_dir": check_backup_cheap(config),
     }
@@ -617,8 +618,10 @@ def _ask_check(carnet: Any) -> dict:
     return _chk("degraded", "ask_unexpected", http=code, code=str((payload or {}).get("code") or "")[:40])
 
 
-def subsystems(*, root: Any, config: Any, carnet: Any, asset_names: list[str] | None = None) -> dict:
+def subsystems(*, root: Any, config: Any, carnet: Any, asset_names: list[str] | None = None,
+               code_root: Any = None) -> dict:
     r = os.fspath(root)
+    c = os.fspath(code_root if code_root is not None else root)
     data_ok = os.path.isdir(r)
     out: dict[str, dict] = {}
     # The real Carnet read path SEEDS notebook.json on a fresh root. A diagnostic must not create data, so with no notebook yet
@@ -628,8 +631,8 @@ def subsystems(*, root: Any, config: Any, carnet: Any, asset_names: list[str] | 
     out["carnet_read"] = (_carnet_read(carnet) if has_nb else no_nb) if data_ok else _chk("unavailable", "root_missing")
     out["reader"] = (_reader_check(carnet) if has_nb else no_nb) if data_ok else _chk("unavailable", "root_missing")
     out["ask_search"] = (_ask_check(carnet) if has_nb else no_nb) if data_ok else _chk("unavailable", "root_missing")
-    out["static_assets"] = check_static_assets(r, asset_names or [])
-    out["ocr"] = check_ocr_assets(r)
+    out["static_assets"] = check_static_assets(c, asset_names or [])
+    out["ocr"] = check_ocr_assets(c)
     out["transcription"] = check_voice(config)
     for name in CARNET_STORES:
         out[name] = _store_status(r, name) if data_ok else _chk("unavailable", "root_missing")
@@ -2149,6 +2152,7 @@ def session_bundle(
     limit: int = 50,
     capture_effective: dict | None = None,
     session_id: str | None = None,
+    code_root: Any = None,
 ) -> dict:
     """Single JSON snapshot for agents: client tail, server errors, degraded readiness, request_id index."""
     return _assemble_session_snapshot(
@@ -2159,6 +2163,7 @@ def session_bundle(
         limit=limit,
         capture_effective=capture_effective,
         session_id=session_id,
+        code_root=code_root,
     )
 
 
@@ -2171,11 +2176,13 @@ def _assemble_session_snapshot(
     limit: int,
     capture_effective: dict | None,
     session_id: str | None = None,
+    code_root: Any = None,
 ) -> dict:
     lim = max(1, min(int(limit), CLIENT_LOG_RING_MAX))
     sid = normalize_client_session_id(session_id)
-    ident = identity(root)
-    ready = readiness(root=root, config=config, config_path=config_path, asset_names=asset_names, voice_mod=None)
+    code = code_root if code_root is not None else root
+    ident = identity(code)
+    ready = readiness(root=root, config=config, config_path=config_path, asset_names=asset_names, voice_mod=None, code_root=code)
     checks = ready.get("checks") or {}
     degraded = {k: v for k, v in checks.items() if isinstance(v, dict) and v.get("status") not in ("ok", "not_configured")}
     client_lines = CLIENT_LOG.tail(lim, session_id=sid)
@@ -2249,6 +2256,7 @@ def agent_brief(
     limit: int = 50,
     capture_effective: dict | None = None,
     session_id: str | None = None,
+    code_root: Any = None,
 ) -> dict:
     """Compact agent snapshot: triage + timeline + pasteable markdown (no full client_log)."""
     snap = _assemble_session_snapshot(
@@ -2259,6 +2267,7 @@ def agent_brief(
         limit=limit,
         capture_effective=capture_effective,
         session_id=session_id,
+        code_root=code_root,
     )
     triage = snap.get("agent_triage") or {}
     timeline = snap.get("timeline") or []
@@ -2317,6 +2326,7 @@ def persist_agent_packet_from_snapshot(
     limit: int = 50,
     capture_effective: dict | None = None,
     session_id: str | None = None,
+    code_root: Any = None,
 ) -> dict:
     """Write agent-packet-latest.md from current brief (after lag spike or manual save)."""
     brief = agent_brief(
@@ -2327,6 +2337,7 @@ def persist_agent_packet_from_snapshot(
         limit=limit,
         capture_effective=capture_effective,
         session_id=session_id,
+        code_root=code_root,
     )
     md = brief.get("packet_md") or brief.get("brief_md") or ""
     rep = write_agent_packet_file(root, md)
