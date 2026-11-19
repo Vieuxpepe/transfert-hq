@@ -152,6 +152,20 @@ def test_live_split() -> None:
         finances = _json("GET", f"http://127.0.0.1:{PORT}/api/finances/summary", opener)
         if finances[0] != 404 or finances[1].get("code") != "store_absent":
             raise SystemExit(f"store signal {finances}")
+        ready = _json("GET", f"http://127.0.0.1:{PORT}/api/diag/ready", opener)
+        if ready[0] != 200 or (ready[1].get("checks") or {}).get("static_assets", {}).get("status") != "ok":
+            raise SystemExit(f"split readiness failed {ready}")
+        info = _json("GET", f"http://127.0.0.1:{PORT}/api/diag/info", opener)
+        if info[0] != 200 or not info[1].get("build_sha") or info[1].get("restart_pending") is True:
+            raise SystemExit(f"split identity failed {info}")
+        subs = _json("GET", f"http://127.0.0.1:{PORT}/api/diag/subsystems", opener)
+        if subs[0] != 200 or (subs[1].get("subsystems") or {}).get("static_assets", {}).get("status") != "ok":
+            raise SystemExit(f"split subsystems failed {subs}")
+        brief = _json("GET", f"http://127.0.0.1:{PORT}/api/diag/agent-brief", opener)
+        if brief[0] != 200 or not (brief[1].get("identity") or {}).get("build_sha"):
+            raise SystemExit(f"split agent-brief failed {brief}")
+        if "static_assets" in (brief[1].get("readiness_degraded") or {}):
+            raise SystemExit(f"split agent-brief degraded static_assets {brief}")
         if (harness.state / ".hq-household").exists() or (harness.state / "inventory.json").exists():
             raise SystemExit("read initialized household storage")
         if (SOURCE / ".hq-household").exists() or (SOURCE / "inventory.json").exists():

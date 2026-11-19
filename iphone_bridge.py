@@ -11943,12 +11943,17 @@ _DIAG_STATE: dict = {"root": None, "assets": None, "last_probe": None}
 _DIAG_LOCK = threading.Lock()
 
 
+def _diag_code_root() -> Path:
+    """Code/assets/Git checkout root: CODE_ROOT when HQ_STATE_ROOT splits state from code; otherwise ROOT."""
+    return CODE_ROOT if STATE_ROOT_EXPLICIT else ROOT
+
+
 def _diag_ensure() -> None:
     """Lazy, once-per-ROOT: capture identity (build SHA read from .git ONCE) and attach the bounded error log."""
     with _DIAG_LOCK:
         if _DIAG_STATE["root"] == str(ROOT):
             return
-        hq_diagnostics.init_identity(ROOT, version="7.0", started_at=_STARTED_AT)
+        hq_diagnostics.init_identity(_diag_code_root(), version="7.0", started_at=_STARTED_AT)
         hq_diagnostics.ERRORS.attach(ROOT)
         hq_diagnostics.CLIENT_LOG.attach(ROOT)
         hq_diagnostics.SECURITY_LOG.attach(ROOT)
@@ -13158,11 +13163,11 @@ class Handler(BaseHTTPRequestHandler):
                     },
                 )
             elif raw == "/api/diag/ready":
-                rep = hq_diagnostics.readiness(root=ROOT, config=CONFIG, config_path=CONFIG_PATH, asset_names=_diag_asset_names(), voice_mod=None)
+                rep = hq_diagnostics.readiness(root=ROOT, code_root=_diag_code_root(), config=CONFIG, config_path=CONFIG_PATH, asset_names=_diag_asset_names(), voice_mod=None)
                 self._json(200 if rep["status"] != "not_ready" else 503, rep)
             elif raw == "/api/diag/info":
                 exp = (qs.get("expect", [""])[0] or "").strip() or None
-                info = hq_diagnostics.identity(ROOT, expect=exp)
+                info = hq_diagnostics.identity(_diag_code_root(), expect=exp)
                 info["version"] = info.get("version") or "7.0"
                 fatal = hq_diagnostics.startup_fatal(ROOT)
                 if fatal:
@@ -13171,7 +13176,7 @@ class Handler(BaseHTTPRequestHandler):
                 info["errors"] = hq_diagnostics.ERRORS.summary()
                 self._json(200, info)
             elif raw == "/api/diag/subsystems":
-                self._json(200, hq_diagnostics.subsystems(root=ROOT, config=CONFIG, carnet=hq_carnet, asset_names=_diag_asset_names()))
+                self._json(200, hq_diagnostics.subsystems(root=ROOT, code_root=_diag_code_root(), config=CONFIG, carnet=hq_carnet, asset_names=_diag_asset_names()))
             elif raw == "/api/diag/backup":
                 verify = (qs.get("verify", [""])[0] or "") in ("1", "true", "yes")
                 self._json(200, hq_diagnostics.backup_report(config=CONFIG, root=ROOT, verify=verify))
@@ -13223,6 +13228,7 @@ class Handler(BaseHTTPRequestHandler):
                     200,
                     hq_diagnostics.session_bundle(
                         root=ROOT,
+                        code_root=_diag_code_root(),
                         config=CONFIG,
                         config_path=CONFIG_PATH,
                         asset_names=_diag_asset_names(),
@@ -13244,6 +13250,7 @@ class Handler(BaseHTTPRequestHandler):
                     200,
                     hq_diagnostics.agent_brief(
                         root=ROOT,
+                        code_root=_diag_code_root(),
                         config=CONFIG,
                         config_path=CONFIG_PATH,
                         asset_names=_diag_asset_names(),
@@ -13293,6 +13300,7 @@ class Handler(BaseHTTPRequestHandler):
             cap = client_debug_capture_effective()
             brief = hq_diagnostics.agent_brief(
                 root=ROOT,
+                code_root=_diag_code_root(),
                 config=CONFIG,
                 config_path=CONFIG_PATH,
                 asset_names=_diag_asset_names(),
@@ -15781,7 +15789,10 @@ class Handler(BaseHTTPRequestHandler):
             if not rel or ".." in rel.replace("\\", "/"):
                 self._send(404, b"missing")
                 return
-            assets_root = ((ROOT / "assets") if (ROOT / "assets").is_dir() else (CODE_ROOT / "assets")).resolve()
+            if STATE_ROOT_EXPLICIT:
+                assets_root = (CODE_ROOT / "assets").resolve()
+            else:
+                assets_root = ((ROOT / "assets") if (ROOT / "assets").is_dir() else (CODE_ROOT / "assets")).resolve()
             path = (assets_root / rel).resolve()
             try:
                 path.relative_to(assets_root)
@@ -16815,6 +16826,7 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     pkt = hq_diagnostics.persist_agent_packet_from_snapshot(
                         root=ROOT,
+                        code_root=_diag_code_root(),
                         config=CONFIG,
                         config_path=CONFIG_PATH,
                         asset_names=_diag_asset_names(),
